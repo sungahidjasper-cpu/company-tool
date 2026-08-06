@@ -11,3 +11,599 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+/// Coarse, JWT-embeddable access tier used for route-gating in proxy.ts.
+/// Kept deliberately separate from the Role/Permission relation below,
+/// which is for future fine-grained, per-feature authorization checks.
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum ClientStatus {
+  LEAD
+  ACTIVE
+  INACTIVE
+  CHURNED
+}
+
+enum ProjectStatus {
+  PLANNING
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+  CANCELLED
+}
+
+/// Shared by Task and Project — kept as one enum rather than a
+/// near-duplicate ProjectPriority/TaskPriority pair.
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum SeoProjectStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum ContentStatus {
+  DRAFT
+  IN_REVIEW
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ReportType {
+  PROJECT_SUMMARY
+  CLIENT_SUMMARY
+  SEO_PERFORMANCE
+  FINANCIAL
+  CUSTOM
+}
+
+enum ReportStatus {
+  PENDING
+  GENERATING
+  COMPLETED
+  FAILED
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy & Identity
+// ---------------------------------------------------------------------------
+
+/// The tenant/workspace boundary. Every company-owned model below scopes
+/// itself through this model, directly or by walking a parent relation —
+/// none of them duplicate a companyId that can be reached that way.
+model Company {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  name      String
+  slug      String    @unique
+  industry  String?
+  website   String?
+  logoUrl   String?
+  timezone  String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  users           User[]
+  roles           Role[]
+  clients         Client[]
+  projects        Project[]
+  tags            Tag[]
+  seoProjects     SEOProject[]
+  reports         Report[]
+  aiConversations AIConversation[]
+  files           File[]
+
+  @@index([deletedAt])
+}
+
+/// Global catalog of grantable capabilities (e.g. "projects:create").
+/// Not company-scoped and not soft-deletable: permissions are a fixed,
+/// system-managed vocabulary, not tenant data.
+model Permission {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  key         String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  roles Role[]
+}
+
+/// A named bundle of permissions. System roles (isSystem = true) have a
+/// null companyId and are shared across every tenant (e.g. "Owner",
+/// "Member"); custom roles belong to exactly one company.
+model Role {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  companyId   String?   @db.Uuid
+  name        String
+  description String?
+  isSystem    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  company     Company?     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  users       User[]
+  permissions Permission[]
+
+  @@unique([companyId, name])
+  @@index([deletedAt])
+}
+
+model User {
+  id              String     @id @default(uuid(7)) @db.Uuid
+  companyId       String     @db.Uuid
+  email           String     @unique
+  firstName       String
+  lastName        String
+  avatar          String?
+  passwordHash    String?
+  emailVerifiedAt DateTime?
+  role            UserRole   @default(EMPLOYEE)
+  status          UserStatus @default(INVITED)
+  lastLoginAt     DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  deletedAt       DateTime?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  roles   Role[]
+
+  ownedClients        Client[]         @relation("ClientOwner")
+  ownedProjects       Project[]        @relation("ProjectOwner")
+  assignedProjects    Project[]        @relation("ProjectAssignees")
+  assignedTasks       Task[]           @relation("TaskAssignee")
+  createdTasks        Task[]           @relation("TaskCreatedBy")
+  authoredNotes       Note[]           @relation("NoteAuthor")
+  performedActivities Activity[]       @relation("ActivityActor")
+  uploadedFiles       File[]           @relation("FileUploadedBy")
+  attachedFiles       File[]           @relation("FileUser")
+  ownedSeoProjects    SEOProject[]     @relation("SeoProjectOwner")
+  authoredContent     Content[]        @relation("ContentAuthor")
+  aiConversations     AIConversation[]
+  generatedReports    Report[]         @relation("ReportGeneratedBy")
+
+  @@index([companyId, status])
+  @@index([deletedAt])
+}
+
+// ---------------------------------------------------------------------------
+// CRM
+// ---------------------------------------------------------------------------
+
+model Client {
+  id        String       @id @default(uuid(7)) @db.Uuid
+  companyId String       @db.Uuid
+  ownerId   String?      @db.Uuid
+  name      String
+  email     String?
+  industry  String?
+  website   String?
+  phone     String?
+  address   String?
+  status    ClientStatus @default(LEAD)
+  source    String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  deletedAt DateTime?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  owner   User?   @relation("ClientOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+
+  contacts    Contact[]
+  projects    Project[]
+  seoProjects SEOProject[]
+  notes       Note[]
+  activities  Activity[]
+  files       File[]
+  reports     Report[]
+  tags        Tag[]
+
+  @@index([companyId, status])
+  @@index([deletedAt])
+}
+
+model Contact {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  clientId  String    @db.Uuid
+  name      String
+  email     String?
+  phone     String?
+  jobTitle  String?
+  isPrimary Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  notes      Note[]
+  activities Activity[]
+  files      File[]
+
+  @@unique([clientId, email])
+  @@index([deletedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Projects & Tasks
+// ---------------------------------------------------------------------------
+
+model Project {
+  id          String        @id @default(uuid(7)) @db.Uuid
+  companyId   String        @db.Uuid
+  clientId    String?       @db.Uuid
+  ownerId     String?       @db.Uuid
+  name        String
+  description String?
+  status      ProjectStatus @default(PLANNING)
+  priority    Priority      @default(MEDIUM)
+  startDate   DateTime?
+  dueDate     DateTime?
+  budget      Decimal?      @db.Decimal(12, 2)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  deletedAt   DateTime?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  client  Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  owner   User?   @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+
+  assignedUsers User[]     @relation("ProjectAssignees")
+  tasks         Task[]
+  notes         Note[]
+  activities    Activity[]
+  files         File[]
+  reports       Report[]
+  tags          Tag[]
+
+  @@index([companyId, status])
+  @@index([clientId])
+  @@index([deletedAt])
+}
+
+model Task {
+  id           String     @id @default(uuid(7)) @db.Uuid
+  projectId    String     @db.Uuid
+  parentTaskId String?    @db.Uuid
+  assigneeId   String?    @db.Uuid
+  createdById  String?    @db.Uuid
+  title        String
+  description  String?
+  status       TaskStatus @default(TODO)
+  priority     Priority   @default(MEDIUM)
+  dueDate      DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  deletedAt    DateTime?
+
+  project    Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parentTask Task?   @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks   Task[]  @relation("TaskSubtasks")
+  assignee   User?   @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdBy  User?   @relation("TaskCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  notes      Note[]
+  activities Activity[]
+  files      File[]
+  tags       Tag[]
+
+  @@index([projectId, status])
+  @@index([assigneeId])
+  @@index([deletedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Shared attachments (Tag / Note / Activity / File)
+//
+// Prisma has no native polymorphic relation, so Note/Activity/File each
+// carry one nullable FK per attachable entity instead of a single loosely-
+// typed (entityType, entityId) pair. That keeps every attachment a real,
+// referentially-enforced Prisma relation at the cost of "exactly one of
+// these six should be set" being an application-level, not database-level,
+// invariant. Tag instead attaches via five independent implicit many-to-
+// many relations, since a tag legitimately belongs to many entities.
+// ---------------------------------------------------------------------------
+
+model Tag {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  companyId String   @db.Uuid
+  name      String
+  color     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  clients     Client[]
+  projects    Project[]
+  tasks       Task[]
+  seoProjects SEOProject[]
+  content     Content[]
+
+  @@unique([companyId, name])
+}
+
+model Note {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  authorId     String    @db.Uuid
+  clientId     String?   @db.Uuid
+  contactId    String?   @db.Uuid
+  projectId    String?   @db.Uuid
+  taskId       String?   @db.Uuid
+  seoProjectId String?   @db.Uuid
+  contentId    String?   @db.Uuid
+  body         String
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  author     User        @relation("NoteAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  client     Client?     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  contact    Contact?    @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  project    Project?    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task       Task?       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  seoProject SEOProject? @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
+  content    Content?    @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+  @@index([contactId])
+  @@index([projectId])
+  @@index([taskId])
+  @@index([seoProjectId])
+  @@index([contentId])
+}
+
+/// An immutable audit-trail entry — intentionally has no deletedAt.
+/// Enterprise activity logs must stay append-only for the trail to be
+/// trustworthy; updatedAt is kept only because every model in this schema
+/// carries one, and in practice it will always equal createdAt.
+model Activity {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  actorId   String?  @db.Uuid
+  clientId  String?  @db.Uuid
+  contactId String?  @db.Uuid
+  projectId String?  @db.Uuid
+  taskId    String?  @db.Uuid
+  action    String
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  actor   User?    @relation("ActivityActor", fields: [actorId], references: [id], onDelete: SetNull)
+  client  Client?  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  contact Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task    Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+  @@index([contactId])
+  @@index([projectId])
+  @@index([taskId])
+}
+
+model File {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  uploadedById String    @db.Uuid
+  companyId    String?   @db.Uuid
+  clientId     String?   @db.Uuid
+  contactId    String?   @db.Uuid
+  projectId    String?   @db.Uuid
+  taskId       String?   @db.Uuid
+  seoProjectId String?   @db.Uuid
+  contentId    String?   @db.Uuid
+  userId       String?   @db.Uuid
+  fileName     String
+  url          String
+  mimeType     String
+  sizeBytes    Int
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  uploadedBy User        @relation("FileUploadedBy", fields: [uploadedById], references: [id], onDelete: Cascade)
+  company    Company?    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  client     Client?     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  contact    Contact?    @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  project    Project?    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task       Task?       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  seoProject SEOProject? @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
+  content    Content?    @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  /// The user this file is attached to (e.g. an HR document) — distinct
+  /// from uploadedBy, which is who performed the upload.
+  user       User?       @relation("FileUser", fields: [userId], references: [id], onDelete: Cascade)
+  report     Report?
+
+  @@index([companyId])
+  @@index([clientId])
+  @@index([contactId])
+  @@index([projectId])
+  @@index([taskId])
+  @@index([seoProjectId])
+  @@index([contentId])
+  @@index([userId])
+  @@index([deletedAt])
+}
+
+// ---------------------------------------------------------------------------
+// SEO Workspace
+// ---------------------------------------------------------------------------
+
+model SEOProject {
+  id        String           @id @default(uuid(7)) @db.Uuid
+  companyId String           @db.Uuid
+  clientId  String?          @db.Uuid
+  ownerId   String?          @db.Uuid
+  name      String
+  domain    String
+  status    SeoProjectStatus @default(ACTIVE)
+  startDate DateTime?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  deletedAt DateTime?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  client  Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  owner   User?   @relation("SeoProjectOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+
+  keywordClusters KeywordCluster[]
+  keywords        Keyword[]
+  content         Content[]
+  notes           Note[]
+  files           File[]
+  reports         Report[]
+  tags            Tag[]
+
+  @@index([companyId, status])
+  @@index([clientId])
+  @@index([deletedAt])
+}
+
+model KeywordCluster {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  seoProjectId String    @db.Uuid
+  name         String
+  description  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  seoProject SEOProject @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
+  keywords   Keyword[]
+
+  @@index([seoProjectId])
+  @@index([deletedAt])
+}
+
+model Keyword {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  seoProjectId String    @db.Uuid
+  clusterId    String?   @db.Uuid
+  term         String
+  searchVolume Int?
+  difficulty   Int?
+  currentRank  Int?
+  targetUrl    String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  seoProject SEOProject      @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
+  cluster    KeywordCluster? @relation(fields: [clusterId], references: [id], onDelete: SetNull)
+  content    Content[]
+
+  @@unique([seoProjectId, term])
+  @@index([clusterId])
+  @@index([deletedAt])
+}
+
+model Content {
+  id           String        @id @default(uuid(7)) @db.Uuid
+  seoProjectId String        @db.Uuid
+  authorId     String?       @db.Uuid
+  title        String
+  url          String?
+  status       ContentStatus @default(DRAFT)
+  publishedAt  DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  deletedAt    DateTime?
+
+  seoProject SEOProject @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
+  author     User?      @relation("ContentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  keywords   Keyword[]
+
+  notes Note[]
+  files File[]
+  tags  Tag[]
+
+  @@index([seoProjectId, status])
+  @@index([deletedAt])
+}
+
+// ---------------------------------------------------------------------------
+// AI Workspace & Reporting
+// ---------------------------------------------------------------------------
+
+/// Messages are stored as a JSON transcript rather than a normalized
+/// AIMessage model, since AIMessage was not part of the requested model
+/// list. If per-message querying becomes a requirement, extracting a real
+/// child model is the natural next migration.
+model AIConversation {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  companyId String    @db.Uuid
+  userId    String    @db.Uuid
+  title     String?
+  model     String?
+  context   Json?
+  messages  Json?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([userId])
+  @@index([deletedAt])
+}
+
+model Report {
+  id            String       @id @default(uuid(7)) @db.Uuid
+  companyId     String       @db.Uuid
+  generatedById String?      @db.Uuid
+  clientId      String?      @db.Uuid
+  projectId     String?      @db.Uuid
+  seoProjectId  String?      @db.Uuid
+  fileId        String?      @unique @db.Uuid
+  title         String
+  type          ReportType   @default(CUSTOM)
+  status        ReportStatus @default(PENDING)
+  parameters    Json?
+  generatedAt   DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  deletedAt     DateTime?
+
+  company     Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  generatedBy User?       @relation("ReportGeneratedBy", fields: [generatedById], references: [id], onDelete: SetNull)
+  client      Client?     @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  project     Project?    @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  seoProject  SEOProject? @relation(fields: [seoProjectId], references: [id], onDelete: SetNull)
+  file        File?       @relation(fields: [fileId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, status])
+  @@index([clientId])
+  @@index([projectId])
+  @@index([seoProjectId])
+  @@index([deletedAt])
+}

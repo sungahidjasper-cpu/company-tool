@@ -1,0 +1,29 @@
+import { Badge } from "@/components/ui/badge";
+import { formatEnumLabel } from "@/lib/utils";
+
+type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
+
+const STATUS_VARIANTS: Record<string, BadgeVariant> = {
+  ACTIVE: "default",
+  INVITED: "secondary",
+  SUSPENDED: "destructive",
+  LEAD: "secondary",
+  INACTIVE: "outline",
+  CHURNED: "destructive",
+  PLANNING: "secondary",
+  IN_PROGRESS: "default",
+  ON_HOLD: "outline",
+  COMPLETED: "default",
+  CANCELLED: "destructive",
+  ARCHIVED: "outline",
+};
+
+type StatusBadgeProps = {
+  status: string;
+};
+
+export default function StatusBadge({ status }: StatusBadgeProps) {
+  const variant = STATUS_VARIANTS[status] ?? "outline";
+
+  return <Badge variant={variant}>{formatEnumLabel(status)}</Badge>;
+}

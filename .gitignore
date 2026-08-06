@@ -41,3 +41,7 @@ yarn-error.log*
 next-env.d.ts
 
 /lib/generated/prisma
+
+# local file storage (Phase 5) — uploaded content, not source
+/storage/uploads/*
+!/storage/uploads/.gitkeep

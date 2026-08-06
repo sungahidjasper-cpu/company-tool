@@ -49,6 +49,7 @@ export default async function AppHeader() {
           <SearchInput
             action="/search"
             placeholder="Search companies, clients, projects..."
+            buttonVariant="primary"
           />
         </div>
       )}

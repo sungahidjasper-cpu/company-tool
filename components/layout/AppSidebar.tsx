@@ -65,7 +65,7 @@ export default function AppSidebar({ role }: AppSidebarProps) {
     >
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>Navigation</SidebarGroupLabel>
+          <SidebarGroupLabel className="text-slate-400">Navigation</SidebarGroupLabel>
 
           <SidebarGroupContent>
             <SidebarMenu>
@@ -79,6 +79,7 @@ export default function AppSidebar({ role }: AppSidebarProps) {
                       isActive={isActive}
                       tooltip={item.name}
                       render={<Link href={item.href} />}
+                      className="text-slate-300 hover:bg-white/10 hover:text-white"
                     >
                       <item.icon size={18} />
                       <span>{item.name}</span>

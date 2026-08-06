@@ -48,21 +48,21 @@ export default async function QuickActions({ role, companyId }: QuickActionsProp
       {canManageProjects && (
         <ProjectPickerDialog
           triggerLabel="New Task"
-          triggerIcon={CheckSquare}
+          triggerIcon={<CheckSquare size={16} />}
           dialogTitle="New task"
           dialogDescription="Pick which project this task belongs to."
           projectOptions={projectOptions}
-          buildHref={(projectId) => `/projects/${projectId}/tasks/new`}
+          hrefTemplate="/projects/:projectId/tasks/new"
         />
       )}
       {canManageProjects && (
         <ProjectPickerDialog
           triggerLabel="Upload File"
-          triggerIcon={Upload}
+          triggerIcon={<Upload size={16} />}
           dialogTitle="Upload a file"
           dialogDescription="Pick which project to attach the file to, then upload it from that project's Files section."
           projectOptions={projectOptions}
-          buildHref={(projectId) => `/projects/${projectId}`}
+          hrefTemplate="/projects/:projectId"
         />
       )}
     </div>

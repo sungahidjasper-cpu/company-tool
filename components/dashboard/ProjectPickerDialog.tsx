@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import type { LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -22,11 +22,21 @@ type ProjectOption = { id: string; name: string };
 
 type ProjectPickerDialogProps = {
   triggerLabel: string;
-  triggerIcon: LucideIcon;
+  /** A pre-rendered icon element (e.g. <CheckSquare size={16} />), not a
+   * component reference — bare functions can't cross the server/client
+   * boundary as props, only rendered React elements can. */
+  triggerIcon: ReactNode;
   dialogTitle: string;
   dialogDescription: string;
   projectOptions: ProjectOption[];
-  buildHref: (projectId: string) => string;
+  /**
+   * A route template containing the literal token ":projectId", e.g.
+   * "/projects/:projectId/tasks/new" — a plain, serializable string, not a
+   * function. Functions can't cross the Server → Client boundary as props;
+   * only serializable values can. The substitution happens here, in the
+   * Client Component, once the user has actually picked a project.
+   */
+  hrefTemplate: string;
 };
 
 /**
@@ -37,11 +47,11 @@ type ProjectPickerDialogProps = {
  */
 export default function ProjectPickerDialog({
   triggerLabel,
-  triggerIcon: Icon,
+  triggerIcon,
   dialogTitle,
   dialogDescription,
   projectOptions,
-  buildHref,
+  hrefTemplate,
 }: ProjectPickerDialogProps) {
   const router = useRouter();
   const [projectId, setProjectId] = useState(projectOptions[0]?.id ?? "");
@@ -50,7 +60,7 @@ export default function ProjectPickerDialog({
   const handleGo = () => {
     if (!projectId) return;
     setOpen(false);
-    router.push(buildHref(projectId));
+    router.push(hrefTemplate.replace(":projectId", projectId));
   };
 
   return (
@@ -58,7 +68,7 @@ export default function ProjectPickerDialog({
       <DialogTrigger
         render={
           <Button type="button" variant="outline">
-            <Icon size={16} /> {triggerLabel}
+            {triggerIcon} {triggerLabel}
           </Button>
         }
       />

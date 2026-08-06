@@ -1,4 +1,6 @@
-import { Button } from "@/components/ui/button";
+import type { VariantProps } from "class-variance-authority";
+
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 type SearchInputProps = {
@@ -6,6 +8,7 @@ type SearchInputProps = {
   defaultValue?: string;
   placeholder?: string;
   hiddenFields?: Record<string, string>;
+  buttonVariant?: VariantProps<typeof buttonVariants>["variant"];
 };
 
 export default function SearchInput({
@@ -13,6 +16,7 @@ export default function SearchInput({
   defaultValue,
   placeholder = "Search...",
   hiddenFields,
+  buttonVariant = "outline",
 }: SearchInputProps) {
   return (
     <form action={action} method="GET" className="flex gap-2">
@@ -29,7 +33,7 @@ export default function SearchInput({
         className="max-w-sm"
       />
 
-      <Button type="submit" variant="outline">
+      <Button type="submit" variant={buttonVariant}>
         Search
       </Button>
     </form>

@@ -120,6 +120,7 @@ model Company {
   reports         Report[]
   aiConversations AIConversation[]
   files           File[]
+  activities      Activity[]
 
   @@index([deletedAt])
 }
@@ -184,8 +185,10 @@ model User {
   createdTasks        Task[]           @relation("TaskCreatedBy")
   authoredNotes       Note[]           @relation("NoteAuthor")
   performedActivities Activity[]       @relation("ActivityActor")
+  targetedActivities  Activity[]       @relation("ActivityUser")
   uploadedFiles       File[]           @relation("FileUploadedBy")
   attachedFiles       File[]           @relation("FileUser")
+  notifications       Notification[]
   ownedSeoProjects    SEOProject[]     @relation("SeoProjectOwner")
   authoredContent     Content[]        @relation("ContentAuthor")
   aiConversations     AIConversation[]
@@ -389,25 +392,33 @@ model Note {
 model Activity {
   id        String   @id @default(uuid(7)) @db.Uuid
   actorId   String?  @db.Uuid
+  companyId String?  @db.Uuid
   clientId  String?  @db.Uuid
   contactId String?  @db.Uuid
   projectId String?  @db.Uuid
   taskId    String?  @db.Uuid
+  /// The user this activity concerns (e.g. "user created") — distinct
+  /// from actorId, which is who performed the action.
+  userId    String?  @db.Uuid
   action    String
   metadata  Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   actor   User?    @relation("ActivityActor", fields: [actorId], references: [id], onDelete: SetNull)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
   client  Client?  @relation(fields: [clientId], references: [id], onDelete: Cascade)
   contact Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
   project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
   task    Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user    User?    @relation("ActivityUser", fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([companyId, createdAt])
   @@index([clientId])
   @@index([contactId])
   @@index([projectId])
   @@index([taskId])
+  @@index([userId])
 }
 
 model File {
@@ -451,6 +462,33 @@ model File {
   @@index([contentId])
   @@index([userId])
   @@index([deletedAt])
+}
+
+enum NotificationType {
+  TASK_ASSIGNED
+  COMMENT_MENTION
+  DUE_DATE_REMINDER
+  PROJECT_UPDATE
+  FILE_UPLOADED
+}
+
+/// Always personal — userId is the recipient. Due-date reminders are
+/// computed on read (no cron infrastructure exists), not stored here;
+/// every other type is a real row created inline by the action that
+/// triggered it.
+model Notification {
+  id        String           @id @default(uuid(7)) @db.Uuid
+  userId    String           @db.Uuid
+  type      NotificationType
+  message   String
+  link      String?
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([createdAt])
 }
 
 // ---------------------------------------------------------------------------

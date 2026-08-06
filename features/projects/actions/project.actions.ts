@@ -11,6 +11,8 @@ import {
 import { requireUser } from "@/lib/auth";
 import { Permissions } from "@/lib/authorization";
 import { prisma } from "@/lib/prisma";
+import { extractMentionedUserIds } from "@/features/notifications/services/mention.service";
+import { createNotification } from "@/features/notifications/services/notification.service";
 import {
   projectSchema,
   type ProjectInput,
@@ -88,6 +90,7 @@ export async function createProject(
   await logActivity({
     actorId: actor.id,
     action: "project.created",
+    companyId: actor.companyId,
     projectId: project.id,
     metadata: { name: project.name },
   });
@@ -144,9 +147,24 @@ export async function updateProject(
   await logActivity({
     actorId: actor.id,
     action: "project.updated",
+    companyId: actor.companyId,
     projectId: project.id,
     metadata: { name: project.name },
   });
+
+  const interestedUserIds = new Set(
+    [project.ownerId, ...parsed.data.assignedUserIds].filter(
+      (userId): userId is string => Boolean(userId) && userId !== actor.id
+    )
+  );
+  for (const userId of interestedUserIds) {
+    await createNotification({
+      userId,
+      type: "PROJECT_UPDATE",
+      message: `${actor.firstName} updated the project "${project.name}"`,
+      link: `/projects/${id}`,
+    });
+  }
 
   revalidatePath("/projects");
   revalidatePath(`/projects/${id}`);
@@ -173,6 +191,7 @@ export async function archiveProject(id: string): Promise<ActionResult> {
   await logActivity({
     actorId: actor.id,
     action: "project.archived",
+    companyId: actor.companyId,
     projectId: id,
   });
 
@@ -197,6 +216,7 @@ export async function restoreProject(id: string): Promise<ActionResult> {
   await logActivity({
     actorId: actor.id,
     action: "project.restored",
+    companyId: actor.companyId,
     projectId: id,
   });
 
@@ -228,8 +248,23 @@ export async function addProjectNote(
   await logActivity({
     actorId: actor.id,
     action: "project.note_added",
+    companyId: actor.companyId,
     projectId,
   });
+
+  const mentionedUserIds = await extractMentionedUserIds(
+    body,
+    actor.companyId,
+    actor.id
+  );
+  for (const userId of mentionedUserIds) {
+    await createNotification({
+      userId,
+      type: "COMMENT_MENTION",
+      message: `${actor.firstName} mentioned you in a note on ${existing.name}`,
+      link: `/projects/${projectId}`,
+    });
+  }
 
   revalidatePath(`/projects/${projectId}`);
   return actionSuccess();

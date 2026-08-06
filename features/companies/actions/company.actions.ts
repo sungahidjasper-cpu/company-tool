@@ -47,7 +47,8 @@ export async function createCompany(
   await logActivity({
     actorId: user.id,
     action: "company.created",
-    metadata: { companyId: company.id, name: company.name },
+    companyId: company.id,
+    metadata: { name: company.name },
   });
 
   revalidatePath("/companies");
@@ -84,7 +85,8 @@ export async function updateCompany(
   await logActivity({
     actorId: user.id,
     action: "company.updated",
-    metadata: { companyId: company.id, name: company.name },
+    companyId: company.id,
+    metadata: { name: company.name },
   });
 
   revalidatePath("/companies");
@@ -107,7 +109,8 @@ export async function archiveCompany(id: string): Promise<ActionResult> {
   await logActivity({
     actorId: user.id,
     action: "company.archived",
-    metadata: { companyId: company.id, name: company.name },
+    companyId: company.id,
+    metadata: { name: company.name },
   });
 
   revalidatePath("/companies");
@@ -129,7 +132,8 @@ export async function restoreCompany(id: string): Promise<ActionResult> {
   await logActivity({
     actorId: user.id,
     action: "company.restored",
-    metadata: { companyId: company.id, name: company.name },
+    companyId: company.id,
+    metadata: { name: company.name },
   });
 
   revalidatePath("/companies");

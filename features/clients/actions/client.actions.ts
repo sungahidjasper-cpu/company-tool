@@ -11,6 +11,8 @@ import {
 import { requireUser } from "@/lib/auth";
 import { Permissions } from "@/lib/authorization";
 import { prisma } from "@/lib/prisma";
+import { extractMentionedUserIds } from "@/features/notifications/services/mention.service";
+import { createNotification } from "@/features/notifications/services/notification.service";
 import {
   clientSchema,
   type ClientInput,
@@ -48,6 +50,7 @@ export async function createClient(
   await logActivity({
     actorId: actor.id,
     action: "client.created",
+    companyId: actor.companyId,
     clientId: client.id,
     metadata: { name: client.name },
   });
@@ -94,6 +97,7 @@ export async function updateClient(
   await logActivity({
     actorId: actor.id,
     action: "client.updated",
+    companyId: actor.companyId,
     clientId: client.id,
     metadata: { name: client.name },
   });
@@ -123,6 +127,7 @@ export async function archiveClient(id: string): Promise<ActionResult> {
   await logActivity({
     actorId: actor.id,
     action: "client.archived",
+    companyId: actor.companyId,
     clientId: id,
   });
 
@@ -147,6 +152,7 @@ export async function restoreClient(id: string): Promise<ActionResult> {
   await logActivity({
     actorId: actor.id,
     action: "client.restored",
+    companyId: actor.companyId,
     clientId: id,
   });
 
@@ -176,8 +182,23 @@ export async function addClientNote(
   await logActivity({
     actorId: actor.id,
     action: "client.note_added",
+    companyId: actor.companyId,
     clientId,
   });
+
+  const mentionedUserIds = await extractMentionedUserIds(
+    body,
+    actor.companyId,
+    actor.id
+  );
+  for (const userId of mentionedUserIds) {
+    await createNotification({
+      userId,
+      type: "COMMENT_MENTION",
+      message: `${actor.firstName} mentioned you in a note on ${existing.name}`,
+      link: `/clients/${clientId}`,
+    });
+  }
 
   revalidatePath(`/clients/${clientId}`);
   return actionSuccess();

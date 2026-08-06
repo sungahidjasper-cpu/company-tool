@@ -152,3 +152,46 @@ export function getEntityIdFromFile(file: FileTargets, entityType: FileEntityTyp
       return file.userId as string;
   }
 }
+
+/**
+ * Who should be notified about a file uploaded to this target. Company
+ * has no single natural recipient (tenant-wide), so it's intentionally
+ * excluded — see the Phase 6 report.
+ */
+export async function getFileNotificationRecipients(
+  entityType: FileEntityType,
+  entityId: string,
+  excludeUserId: string
+): Promise<string[]> {
+  switch (entityType) {
+    case "client": {
+      const client = await prisma.client.findUnique({ where: { id: entityId } });
+      return client?.ownerId && client.ownerId !== excludeUserId
+        ? [client.ownerId]
+        : [];
+    }
+    case "project": {
+      const project = await prisma.project.findUnique({
+        where: { id: entityId },
+        include: { assignedUsers: { select: { id: true } } },
+      });
+      if (!project) return [];
+      const ids = [project.ownerId, ...project.assignedUsers.map((u) => u.id)];
+      return Array.from(
+        new Set(
+          ids.filter((userId): userId is string => Boolean(userId) && userId !== excludeUserId)
+        )
+      );
+    }
+    case "task": {
+      const task = await prisma.task.findUnique({ where: { id: entityId } });
+      return task?.assigneeId && task.assigneeId !== excludeUserId
+        ? [task.assigneeId]
+        : [];
+    }
+    case "user":
+      return entityId !== excludeUserId ? [entityId] : [];
+    case "company":
+      return [];
+  }
+}

@@ -1,6 +1,15 @@
 import { prisma } from "@/lib/prisma";
 import { parseListParams, type ListSearchParams } from "@/lib/pagination";
 
+/** Lightweight option list for pickers (e.g. the dashboard's Quick Actions). */
+export function listProjectOptions(companyId: string) {
+  return prisma.project.findMany({
+    where: { companyId, deletedAt: null },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
+}
+
 export async function listProjects(
   companyId: string,
   searchParams: ListSearchParams

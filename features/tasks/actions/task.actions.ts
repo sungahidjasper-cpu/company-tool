@@ -11,6 +11,8 @@ import {
 import { requireUser } from "@/lib/auth";
 import { Permissions } from "@/lib/authorization";
 import { prisma } from "@/lib/prisma";
+import { extractMentionedUserIds } from "@/features/notifications/services/mention.service";
+import { createNotification } from "@/features/notifications/services/notification.service";
 import {
   quickSubtaskSchema,
   taskSchema,
@@ -83,10 +85,20 @@ export async function createTask(
   await logActivity({
     actorId: actor.id,
     action: "task.created",
+    companyId: actor.companyId,
     projectId,
     taskId: task.id,
     metadata: { title: task.title },
   });
+
+  if (task.assigneeId && task.assigneeId !== actor.id) {
+    await createNotification({
+      userId: task.assigneeId,
+      type: "TASK_ASSIGNED",
+      message: `${actor.firstName} assigned you the task "${task.title}"`,
+      link: taskDetailPath(projectId, task.id),
+    });
+  }
 
   revalidatePath(taskListPath(projectId));
   revalidatePath(`/projects/${projectId}`);
@@ -132,10 +144,21 @@ export async function updateTask(
   await logActivity({
     actorId: actor.id,
     action: "task.updated",
+    companyId: actor.companyId,
     projectId: existing.projectId,
     taskId: task.id,
     metadata: { title: task.title },
   });
+
+  const assigneeChanged = task.assigneeId !== existing.assigneeId;
+  if (assigneeChanged && task.assigneeId && task.assigneeId !== actor.id) {
+    await createNotification({
+      userId: task.assigneeId,
+      type: "TASK_ASSIGNED",
+      message: `${actor.firstName} assigned you the task "${task.title}"`,
+      link: taskDetailPath(existing.projectId, task.id),
+    });
+  }
 
   revalidatePath(taskListPath(existing.projectId));
   revalidatePath(taskDetailPath(existing.projectId, id));
@@ -176,6 +199,7 @@ export async function updateTaskStatus(
   await logActivity({
     actorId: actor.id,
     action: "task.status_changed",
+    companyId: actor.companyId,
     projectId: existing.projectId,
     taskId: id,
     metadata: { status: parsed.data.status },
@@ -206,6 +230,7 @@ export async function archiveTask(id: string): Promise<ActionResult> {
   await logActivity({
     actorId: actor.id,
     action: "task.archived",
+    companyId: actor.companyId,
     projectId: existing.projectId,
     taskId: id,
   });
@@ -231,6 +256,7 @@ export async function restoreTask(id: string): Promise<ActionResult> {
   await logActivity({
     actorId: actor.id,
     action: "task.restored",
+    companyId: actor.companyId,
     projectId: existing.projectId,
     taskId: id,
   });
@@ -261,9 +287,24 @@ export async function addTaskComment(
   await logActivity({
     actorId: actor.id,
     action: "task.comment_added",
+    companyId: actor.companyId,
     projectId: existing.projectId,
     taskId,
   });
+
+  const mentionedUserIds = await extractMentionedUserIds(
+    body,
+    actor.companyId,
+    actor.id
+  );
+  for (const userId of mentionedUserIds) {
+    await createNotification({
+      userId,
+      type: "COMMENT_MENTION",
+      message: `${actor.firstName} mentioned you in a task comment`,
+      link: taskDetailPath(existing.projectId, taskId),
+    });
+  }
 
   revalidatePath(taskDetailPath(existing.projectId, taskId));
   return actionSuccess();
@@ -301,6 +342,7 @@ export async function createSubtask(
   await logActivity({
     actorId: actor.id,
     action: "task.subtask_created",
+    companyId: actor.companyId,
     projectId: parent.projectId,
     taskId: parentTaskId,
     metadata: { subtaskId: subtask.id, title: subtask.title },

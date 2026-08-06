@@ -11,6 +11,7 @@ import {
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { storage } from "@/lib/storage";
+import { createNotification } from "@/features/notifications/services/notification.service";
 import {
   ALLOWED_MIME_TYPES,
   MAX_FILE_SIZE_BYTES,
@@ -21,6 +22,7 @@ import {
   buildEntityWhere,
   canManageEntityFiles,
   getEntityIdFromFile,
+  getFileNotificationRecipients,
   resolveEntityContext,
   resolveEntityTypeFromFile,
 } from "@/features/files/services/entity-target";
@@ -88,9 +90,24 @@ export async function uploadFile(
   await logActivity({
     actorId: actor.id,
     action: "file.uploaded",
+    companyId: context.companyId,
     metadata: { fileId: record.id, fileName: record.fileName, entityType },
     ...buildActivityRefs(entityType, entityId),
   });
+
+  const recipientIds = await getFileNotificationRecipients(
+    entityType,
+    entityId,
+    actor.id
+  );
+  for (const userId of recipientIds) {
+    await createNotification({
+      userId,
+      type: "FILE_UPLOADED",
+      message: `${actor.firstName} uploaded "${record.fileName}"`,
+      link: context.paths[0],
+    });
+  }
 
   context.paths.forEach((path) => revalidatePath(path));
   return actionSuccess({ id: record.id });

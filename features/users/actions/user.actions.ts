@@ -61,7 +61,9 @@ export async function createUser(
   await logActivity({
     actorId: actor.id,
     action: "user.created",
-    metadata: { userId: user.id, email: user.email },
+    companyId: actor.companyId,
+    userId: user.id,
+    metadata: { email: user.email },
   });
 
   revalidatePath("/users");
@@ -100,7 +102,8 @@ export async function updateUser(
   await logActivity({
     actorId: actor.id,
     action: "user.updated",
-    metadata: { userId: user.id },
+    companyId: actor.companyId,
+    userId: user.id,
   });
 
   revalidatePath("/users");
@@ -132,7 +135,12 @@ async function transitionUserStatus(
 
   await prisma.user.update({ where: { id }, data: { status } });
 
-  await logActivity({ actorId: actor.id, action, metadata: { userId: id } });
+  await logActivity({
+    actorId: actor.id,
+    action,
+    companyId: actor.companyId,
+    userId: id,
+  });
 
   revalidatePath("/users");
   return actionSuccess();
@@ -170,7 +178,8 @@ export async function archiveUser(id: string): Promise<ActionResult> {
   await logActivity({
     actorId: actor.id,
     action: "user.archived",
-    metadata: { userId: id },
+    companyId: actor.companyId,
+    userId: id,
   });
 
   revalidatePath("/users");
@@ -194,7 +203,8 @@ export async function restoreUser(id: string): Promise<ActionResult> {
   await logActivity({
     actorId: actor.id,
     action: "user.restored",
-    metadata: { userId: id },
+    companyId: actor.companyId,
+    userId: id,
   });
 
   revalidatePath("/users");

@@ -1,36 +1,309 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 🏢 Company Management Platform
 
-## Getting Started
+A modern full-stack Company Management Platform built with **Next.js**, **TypeScript**, **Prisma**, and **PostgreSQL**.
 
-First, run the development server:
+The platform is designed for organizations that need centralized management of companies, employees, clients, projects, tasks, files, and role-based permissions.
+
+---
+
+# 🚀 Features
+
+## Company Management
+- Create companies
+- Edit company information
+- Archive & restore companies
+- Company dashboard
+
+## User Management
+- Employee accounts
+- User profiles
+- Role management
+- Active/Archived users
+
+## Client Management
+- Client CRUD
+- Client profile
+- Company association
+- Contact information
+
+## Project Management
+- Create projects
+- Project status
+- Client association
+- Project dashboard
+
+## Task Management
+- Task CRUD
+- Task Status
+- Priority
+- Due Dates
+- Task Assignment
+- Subtasks
+- Comments
+- Activity Timeline
+
+## File Management
+Supports uploads for:
+
+- Companies
+- Users
+- Clients
+- Projects
+- Tasks
+
+Features include:
+
+- Upload
+- Preview
+- Download
+- Delete
+- File ownership validation
+- Permission-based access
+
+---
+
+# 🔐 Role-Based Access Control (RBAC)
+
+Current roles include:
+
+| Role | Permissions |
+|------|-------------|
+| Super Admin | Full system access |
+| Admin | Company management |
+| Manager | Team & Project management |
+| Employee | Assigned work only |
+
+Permissions are enforced both on the frontend and backend.
+
+---
+
+# 🛠 Tech Stack
+
+### Frontend
+
+- Next.js
+- React
+- TypeScript
+- Tailwind CSS
+- shadcn/ui
+
+### Backend
+
+- Next.js API Routes
+- Prisma ORM
+- PostgreSQL
+
+### Authentication
+
+- NextAuth
+
+### Storage
+
+- Local File Storage
+- Prisma File Metadata
+
+---
+
+# 📂 Project Structure
+
+```
+app/
+components/
+features/
+hooks/
+lib/
+prisma/
+public/
+storage/
+store/
+types/
+```
+
+---
+
+# 📦 Installation
+
+Clone the repository
+
+```bash
+git clone https://github.com/sungahidjasper-cpu/company-tool.git
+```
+
+Go to the project
+
+```bash
+cd company-tool
+```
+
+Install dependencies
+
+```bash
+npm install
+```
+
+Configure environment variables
+
+```bash
+cp .env.example .env
+```
+
+Run Prisma
+
+```bash
+npx prisma generate
+npx prisma migrate dev
+```
+
+Start development server
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+# 🔧 Environment Variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Example:
 
-## Learn More
+```env
+DATABASE_URL=
+NEXTAUTH_SECRET=
+NEXTAUTH_URL=
+```
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# 🗄 Database
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Database is managed using **Prisma ORM**.
 
-## Deploy on Vercel
+Main entities include:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- Company
+- User
+- Client
+- Project
+- Task
+- Comment
+- Activity
+- File
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+---
+
+# 🧪 Testing
+
+Completed testing includes:
+
+- CRUD Operations
+- RBAC Validation
+- File Upload
+- File Preview
+- File Download
+- File Delete
+- Ownership Validation
+- Permission Validation
+- End-to-End Smoke Testing
+
+---
+
+# 📸 Screenshots
+
+Screenshots will be added as development progresses.
+
+- Dashboard
+- Company Management
+- Project Management
+- Task Board
+- File Upload
+- User Management
+
+---
+
+# 🗺 Development Progress
+
+## ✅ Phase 1
+
+- Authentication
+- Initial Project Setup
+
+## ✅ Phase 2
+
+- Company
+- Users
+- Clients
+
+## ✅ Phase 3
+
+- Projects
+
+## ✅ Phase 4
+
+- Tasks
+- Comments
+- Activity Timeline
+
+## ✅ Phase 5
+
+- File Management
+- RBAC
+- Upload System
+- Preview
+- Download
+- Delete
+
+## 🚧 Phase 6
+
+Planned features:
+
+- Dashboard Analytics
+- Notifications
+- Email Integration
+- Advanced Reporting
+- Search Improvements
+- Production Deployment
+
+---
+
+# 🔒 Security
+
+Implemented security features include:
+
+- Authentication
+- Authorization
+- RBAC
+- Ownership Validation
+- Route Protection
+- Server-side Permission Checks
+
+---
+
+# 📈 Future Improvements
+
+- AWS S3 Storage
+- Email Notifications
+- Audit Logs
+- API Documentation
+- Docker Support
+- CI/CD Pipeline
+- Unit Testing
+- Integration Testing
+- Dark Mode Improvements
+
+---
+
+# 👨‍💻 Author
+
+**Jasper Sungahid**
+
+GitHub:
+https://github.com/sungahidjasper-cpu
+
+Portfolio:
+https://sungahidportfolio.my.canva.site/
+
+---
+
+# 📄 License
+
+This project is for educational and portfolio purposes.

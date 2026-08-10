@@ -42,6 +42,17 @@ export async function listTasksForProject(
   return { tasks, totalCount, page, pageSize };
 }
 
+/** Company-wide task status breakdown — shared by the dashboard and Reports' PROJECT_SUMMARY. */
+export async function getTaskStatusCounts(companyId: string) {
+  const rows = await prisma.task.groupBy({
+    by: ["status"],
+    where: { project: { companyId }, deletedAt: null },
+    _count: true,
+  });
+
+  return rows.map((row) => ({ status: row.status, count: row._count }));
+}
+
 export function getTaskById(id: string) {
   return prisma.task.findUnique({
     where: { id },

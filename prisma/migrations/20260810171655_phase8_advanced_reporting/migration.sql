@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "ReportType" ADD VALUE 'SALES_PIPELINE';

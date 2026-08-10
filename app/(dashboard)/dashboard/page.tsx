@@ -23,6 +23,7 @@ import DashboardHeader from "@/components/dashboard/DashboardHeader";
 import PageContainer from "@/components/dashboard/PageContainer";
 import QuickActions from "@/components/dashboard/QuickActions";
 import StatsCard from "@/components/dashboard/StatsCard";
+import StatusBadge from "@/components/dashboard/StatusBadge";
 import {
   Card,
   CardContent,
@@ -272,6 +273,27 @@ export default async function DashboardPage() {
                 <span className="text-slate-500">
                   {formatEnumLabel(recentUser.role)}
                 </span>
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Recent reports</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {summary.recentReports.length === 0 && (
+              <p className="text-sm text-slate-500">No reports yet.</p>
+            )}
+            {summary.recentReports.map((report) => (
+              <Link
+                key={report.id}
+                href={`/reports/${report.id}`}
+                className="flex items-center justify-between text-sm hover:underline"
+              >
+                <span className="truncate">{report.title}</span>
+                <StatusBadge status={report.status} />
               </Link>
             ))}
           </CardContent>

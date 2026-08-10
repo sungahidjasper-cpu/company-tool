@@ -23,6 +23,9 @@ const STATUS_VARIANTS: Record<string, BadgeVariant> = {
   NEGOTIATION: "secondary",
   WON: "default",
   LOST: "destructive",
+  PENDING: "secondary",
+  GENERATING: "secondary",
+  FAILED: "destructive",
 };
 
 type StatusBadgeProps = {

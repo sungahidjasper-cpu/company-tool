@@ -52,7 +52,8 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
     results.leads.length +
     results.projects.length +
     results.tasks.length +
-    results.files.length;
+    results.files.length +
+    results.reports.length;
 
   return (
     <PageContainer>
@@ -64,14 +65,14 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
       <SearchInput
         action="/search"
         defaultValue={q}
-        placeholder="Search companies, clients, leads, projects, tasks, users, files..."
+        placeholder="Search companies, clients, leads, projects, tasks, users, files, reports..."
       />
 
       {q.trim().length < 2 ? (
         <EmptyState
           icon={Search}
           title="Type at least 2 characters"
-          description="Search across companies, clients, leads, projects, tasks, users, and files."
+          description="Search across companies, clients, leads, projects, tasks, users, files, and reports."
         />
       ) : totalResults === 0 ? (
         <EmptyState
@@ -165,6 +166,18 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
               >
                 {file.fileName}
               </a>
+            ))}
+          </ResultSection>
+
+          <ResultSection title="Reports" isEmpty={results.reports.length === 0}>
+            {results.reports.map((report) => (
+              <Link
+                key={report.id}
+                href={`/reports/${report.id}`}
+                className="text-sm hover:underline"
+              >
+                {report.title}
+              </Link>
             ))}
           </ResultSection>
         </div>

@@ -10,6 +10,13 @@ export function listProjectOptions(companyId: string) {
   });
 }
 
+/** Shared by the dashboard and Reports' PROJECT_SUMMARY. */
+export function getCompletedProjectsCount(companyId: string) {
+  return prisma.project.count({
+    where: { companyId, deletedAt: null, status: "COMPLETED" },
+  });
+}
+
 export async function listProjects(
   companyId: string,
   searchParams: ListSearchParams

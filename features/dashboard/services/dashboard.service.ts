@@ -2,25 +2,12 @@ import { unstable_cache } from "next/cache";
 
 import { prisma } from "@/lib/prisma";
 import { getLeadFunnelStats } from "@/features/leads/services/lead.service";
+import { getCompletedProjectsCount } from "@/features/projects/services/project.service";
+import { getRecentReportsList } from "@/features/reports/services/report.service";
+import { getTaskStatusCounts } from "@/features/tasks/services/task.service";
 
 type MonthlyCount = { month: Date; count: bigint };
 type DailyCount = { day: Date; count: bigint };
-
-async function getTaskStatusCounts(companyId: string) {
-  const rows = await prisma.task.groupBy({
-    by: ["status"],
-    where: { project: { companyId }, deletedAt: null },
-    _count: true,
-  });
-
-  return rows.map((row) => ({ status: row.status, count: row._count }));
-}
-
-function getCompletedProjectsCount(companyId: string) {
-  return prisma.project.count({
-    where: { companyId, deletedAt: null, status: "COMPLETED" },
-  });
-}
 
 function getTotalFileUploads(companyId: string) {
   return prisma.file.count({
@@ -161,6 +148,7 @@ const getCachedDashboardData = unstable_cache(
       recentComments,
       recentUsers,
       leadFunnel,
+      recentReports,
     ] = await Promise.all([
       isSuperAdmin
         ? prisma.company.count({ where: { deletedAt: null } })
@@ -203,6 +191,7 @@ const getCachedDashboardData = unstable_cache(
       getRecentCommentsList(companyId),
       getRecentUsersList(companyId),
       getLeadFunnelStats(companyId),
+      getRecentReportsList(companyId),
     ]);
 
     return {
@@ -222,6 +211,7 @@ const getCachedDashboardData = unstable_cache(
       recentUploads,
       recentComments,
       recentUsers,
+      recentReports,
       ...leadFunnel,
     };
   },

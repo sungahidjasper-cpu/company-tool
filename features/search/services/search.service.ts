@@ -103,6 +103,18 @@ function searchLeads(q: string, actor: SearchActor) {
   });
 }
 
+function searchReports(q: string, actor: SearchActor) {
+  return prisma.report.findMany({
+    where: {
+      companyId: actor.companyId,
+      deletedAt: null,
+      title: { contains: q, mode: "insensitive" },
+    },
+    select: { id: true, title: true },
+    take: RESULT_LIMIT,
+  });
+}
+
 function searchFiles(q: string, actor: SearchActor) {
   return prisma.file.findMany({
     where: {
@@ -139,20 +151,23 @@ export async function globalSearch(query: string, actor: SearchActor) {
       projects: [],
       tasks: [],
       files: [],
+      reports: [],
       canSeeCompanies: isSuperAdmin(actor.role),
       canSeeUsers: Permissions.manageUsers(actor.role),
     };
   }
 
-  const [companies, users, clients, leads, projects, tasks, files] = await Promise.all([
-    searchCompanies(q, actor),
-    searchUsers(q, actor),
-    searchClients(q, actor),
-    searchLeads(q, actor),
-    searchProjects(q, actor),
-    searchTasks(q, actor),
-    searchFiles(q, actor),
-  ]);
+  const [companies, users, clients, leads, projects, tasks, files, reports] =
+    await Promise.all([
+      searchCompanies(q, actor),
+      searchUsers(q, actor),
+      searchClients(q, actor),
+      searchLeads(q, actor),
+      searchProjects(q, actor),
+      searchTasks(q, actor),
+      searchFiles(q, actor),
+      searchReports(q, actor),
+    ]);
 
   return {
     query: q,
@@ -163,6 +178,7 @@ export async function globalSearch(query: string, actor: SearchActor) {
     projects,
     tasks,
     files,
+    reports,
     canSeeCompanies: isSuperAdmin(actor.role),
     canSeeUsers: Permissions.manageUsers(actor.role),
   };

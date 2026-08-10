@@ -16,6 +16,13 @@ const STATUS_VARIANTS: Record<string, BadgeVariant> = {
   COMPLETED: "default",
   CANCELLED: "destructive",
   ARCHIVED: "outline",
+  NEW: "secondary",
+  CONTACTED: "outline",
+  QUALIFIED: "default",
+  PROPOSAL_SENT: "default",
+  NEGOTIATION: "secondary",
+  WON: "default",
+  LOST: "destructive",
 };
 
 type StatusBadgeProps = {

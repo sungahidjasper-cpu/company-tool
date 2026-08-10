@@ -21,6 +21,8 @@ export function buildEntityWhere(entityType: FileEntityType, entityId: string) {
       return { projectId: entityId };
     case "task":
       return { taskId: entityId };
+    case "lead":
+      return { leadId: entityId };
     case "user":
       return { userId: entityId };
   }
@@ -36,6 +38,8 @@ export function canManageEntityFiles(entityType: FileEntityType, role: UserRole)
       return Permissions.manageProjects(role);
     case "task":
       return Permissions.manageProjects(role);
+    case "lead":
+      return Permissions.manageLeads(role);
     case "user":
       return Permissions.manageUsers(role);
   }
@@ -93,6 +97,15 @@ export async function resolveEntityContext(
         isAssignee: task.assigneeId === actorId,
       };
     }
+    case "lead": {
+      const lead = await prisma.lead.findUnique({ where: { id: entityId } });
+      if (!lead) return null;
+      return {
+        companyId: lead.companyId,
+        paths: [`/leads/${lead.id}`],
+        isAssignee: lead.assignedUserId === actorId,
+      };
+    }
     case "user": {
       const targetUser = await prisma.user.findUnique({ where: { id: entityId } });
       if (!targetUser) return null;
@@ -114,6 +127,8 @@ export function buildActivityRefs(entityType: FileEntityType, entityId: string) 
       return { projectId: entityId };
     case "task":
       return { taskId: entityId };
+    case "lead":
+      return { leadId: entityId };
     case "company":
     case "user":
       return {};
@@ -125,6 +140,7 @@ type FileTargets = {
   clientId: string | null;
   projectId: string | null;
   taskId: string | null;
+  leadId: string | null;
   userId: string | null;
 };
 
@@ -134,6 +150,7 @@ export function resolveEntityTypeFromFile(file: FileTargets): FileEntityType | n
   if (file.clientId) return "client";
   if (file.projectId) return "project";
   if (file.taskId) return "task";
+  if (file.leadId) return "lead";
   if (file.userId) return "user";
   return null;
 }
@@ -148,6 +165,8 @@ export function getEntityIdFromFile(file: FileTargets, entityType: FileEntityTyp
       return file.projectId as string;
     case "task":
       return file.taskId as string;
+    case "lead":
+      return file.leadId as string;
     case "user":
       return file.userId as string;
   }
@@ -187,6 +206,12 @@ export async function getFileNotificationRecipients(
       const task = await prisma.task.findUnique({ where: { id: entityId } });
       return task?.assigneeId && task.assigneeId !== excludeUserId
         ? [task.assigneeId]
+        : [];
+    }
+    case "lead": {
+      const lead = await prisma.lead.findUnique({ where: { id: entityId } });
+      return lead?.assignedUserId && lead.assignedUserId !== excludeUserId
+        ? [lead.assignedUserId]
         : [];
     }
     case "user":

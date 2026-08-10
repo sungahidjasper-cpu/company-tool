@@ -87,6 +87,22 @@ function searchTasks(q: string, actor: SearchActor) {
   });
 }
 
+function searchLeads(q: string, actor: SearchActor) {
+  return prisma.lead.findMany({
+    where: {
+      companyId: actor.companyId,
+      deletedAt: null,
+      OR: [
+        { name: { contains: q, mode: "insensitive" } },
+        { companyName: { contains: q, mode: "insensitive" } },
+        { email: { contains: q, mode: "insensitive" } },
+      ],
+    },
+    select: { id: true, name: true, companyName: true },
+    take: RESULT_LIMIT,
+  });
+}
+
 function searchFiles(q: string, actor: SearchActor) {
   return prisma.file.findMany({
     where: {
@@ -119,6 +135,7 @@ export async function globalSearch(query: string, actor: SearchActor) {
       companies: [],
       users: [],
       clients: [],
+      leads: [],
       projects: [],
       tasks: [],
       files: [],
@@ -127,10 +144,11 @@ export async function globalSearch(query: string, actor: SearchActor) {
     };
   }
 
-  const [companies, users, clients, projects, tasks, files] = await Promise.all([
+  const [companies, users, clients, leads, projects, tasks, files] = await Promise.all([
     searchCompanies(q, actor),
     searchUsers(q, actor),
     searchClients(q, actor),
+    searchLeads(q, actor),
     searchProjects(q, actor),
     searchTasks(q, actor),
     searchFiles(q, actor),
@@ -141,6 +159,7 @@ export async function globalSearch(query: string, actor: SearchActor) {
     companies,
     users,
     clients,
+    leads,
     projects,
     tasks,
     files,

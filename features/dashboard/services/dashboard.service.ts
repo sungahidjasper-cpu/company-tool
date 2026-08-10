@@ -1,6 +1,7 @@
 import { unstable_cache } from "next/cache";
 
 import { prisma } from "@/lib/prisma";
+import { getLeadFunnelStats } from "@/features/leads/services/lead.service";
 
 type MonthlyCount = { month: Date; count: bigint };
 type DailyCount = { day: Date; count: bigint };
@@ -159,6 +160,7 @@ const getCachedDashboardData = unstable_cache(
       recentUploads,
       recentComments,
       recentUsers,
+      leadFunnel,
     ] = await Promise.all([
       isSuperAdmin
         ? prisma.company.count({ where: { deletedAt: null } })
@@ -200,6 +202,7 @@ const getCachedDashboardData = unstable_cache(
       getRecentUploadsList(companyId),
       getRecentCommentsList(companyId),
       getRecentUsersList(companyId),
+      getLeadFunnelStats(companyId),
     ]);
 
     return {
@@ -219,6 +222,7 @@ const getCachedDashboardData = unstable_cache(
       recentUploads,
       recentComments,
       recentUsers,
+      ...leadFunnel,
     };
   },
   ["dashboard-summary"],

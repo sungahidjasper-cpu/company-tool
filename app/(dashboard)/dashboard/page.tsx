@@ -1,11 +1,17 @@
 import Link from "next/link";
 import {
+  BadgeCheck,
   Building2,
   CheckSquare,
+  DollarSign,
   FileText,
   FolderKanban,
+  Percent,
+  Target,
+  Trophy,
   UserCog,
   Users,
+  XCircle,
 } from "lucide-react";
 
 import ActivityTimeline from "@/components/dashboard/ActivityTimeline";
@@ -70,6 +76,28 @@ export default async function DashboardPage() {
           title="File Uploads"
           value={summary.totalFileUploads}
           icon={FileText}
+        />
+      </DashboardGrid>
+
+      <h2 className="text-lg font-semibold">CRM Pipeline</h2>
+      <DashboardGrid>
+        <StatsCard title="New Leads" value={summary.newLeads} icon={Target} />
+        <StatsCard
+          title="Qualified Leads"
+          value={summary.qualifiedLeads}
+          icon={BadgeCheck}
+        />
+        <StatsCard title="Won Deals" value={summary.wonDeals} icon={Trophy} />
+        <StatsCard title="Lost Deals" value={summary.lostDeals} icon={XCircle} />
+        <StatsCard
+          title="Conversion Rate"
+          value={`${summary.conversionRate}%`}
+          icon={Percent}
+        />
+        <StatsCard
+          title="Pipeline Value"
+          value={`$${summary.pipelineValue.toLocaleString()}`}
+          icon={DollarSign}
         />
       </DashboardGrid>
 

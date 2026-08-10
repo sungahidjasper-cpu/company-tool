@@ -49,6 +49,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
     results.companies.length +
     results.users.length +
     results.clients.length +
+    results.leads.length +
     results.projects.length +
     results.tasks.length +
     results.files.length;
@@ -63,14 +64,14 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
       <SearchInput
         action="/search"
         defaultValue={q}
-        placeholder="Search companies, clients, projects, tasks, users, files..."
+        placeholder="Search companies, clients, leads, projects, tasks, users, files..."
       />
 
       {q.trim().length < 2 ? (
         <EmptyState
           icon={Search}
           title="Type at least 2 characters"
-          description="Search across companies, clients, projects, tasks, users, and files."
+          description="Search across companies, clients, leads, projects, tasks, users, and files."
         />
       ) : totalResults === 0 ? (
         <EmptyState
@@ -112,6 +113,19 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 className="text-sm hover:underline"
               >
                 {client.name}
+              </Link>
+            ))}
+          </ResultSection>
+
+          <ResultSection title="Leads" isEmpty={results.leads.length === 0}>
+            {results.leads.map((lead) => (
+              <Link
+                key={lead.id}
+                href={`/leads/${lead.id}`}
+                className="text-sm hover:underline"
+              >
+                {lead.name}
+                {lead.companyName ? ` · ${lead.companyName}` : ""}
               </Link>
             ))}
           </ResultSection>

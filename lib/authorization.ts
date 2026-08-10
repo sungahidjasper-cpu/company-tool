@@ -41,6 +41,7 @@ export const Permissions = {
   manageUsers: (role: UserRole) => hasMinimumRole(role, "ADMIN"),
   manageClients: (role: UserRole) => hasMinimumRole(role, "MANAGER"),
   manageProjects: (role: UserRole) => hasMinimumRole(role, "MANAGER"),
+  manageLeads: (role: UserRole) => hasMinimumRole(role, "MANAGER"),
 };
 
 export function hasCompanyAccess(user: SessionUser, companyId: string) {

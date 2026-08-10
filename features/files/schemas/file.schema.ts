@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const FILE_ENTITY_TYPES = ["company", "client", "project", "task", "user"] as const;
+export const FILE_ENTITY_TYPES = ["company", "client", "project", "task", "lead", "user"] as const;
 export type FileEntityType = (typeof FILE_ENTITY_TYPES)[number];
 
 export const fileEntityTypeSchema = z.enum(FILE_ENTITY_TYPES);

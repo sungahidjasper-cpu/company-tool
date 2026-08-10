@@ -64,7 +64,7 @@ export async function uploadFile(
 
   const canManage =
     canManageEntityFiles(entityType, actor.role) ||
-    (entityType === "task" && context.isAssignee);
+    ((entityType === "task" || entityType === "lead") && context.isAssignee);
   if (!canManage) {
     return actionError("You do not have permission to upload files here.");
   }
@@ -134,7 +134,7 @@ export async function deleteFile(id: string): Promise<ActionResult> {
 
   const canManage =
     canManageEntityFiles(entityType, actor.role) ||
-    (entityType === "task" && context.isAssignee) ||
+    ((entityType === "task" || entityType === "lead") && context.isAssignee) ||
     file.uploadedById === actor.id;
   if (!canManage) {
     return actionError("You do not have permission to delete this file.");

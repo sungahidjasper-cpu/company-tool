@@ -10,6 +10,7 @@ type LogActivityInput = {
   contactId?: string;
   projectId?: string;
   taskId?: string;
+  leadId?: string;
   metadata?: Prisma.InputJsonValue;
 };
 
@@ -48,6 +49,10 @@ async function resolveCompanyId(input: LogActivityInput): Promise<string | null>
     });
     return contact?.client.companyId ?? null;
   }
+  if (input.leadId) {
+    const lead = await prisma.lead.findUnique({ where: { id: input.leadId } });
+    return lead?.companyId ?? null;
+  }
 
   return null;
 }
@@ -71,6 +76,7 @@ export async function logActivity(input: LogActivityInput) {
       contactId: input.contactId,
       projectId: input.projectId,
       taskId: input.taskId,
+      leadId: input.leadId,
       metadata: input.metadata,
     },
   });

@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import SearchInput from "@/components/dashboard/SearchInput";
 import LogoutButton from "@/features/auth/components/LogoutButton";
 import NotificationBell from "@/features/notifications/components/NotificationBell";
@@ -12,6 +14,8 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
@@ -64,9 +68,18 @@ export default async function AppHeader() {
 
           <DropdownMenu>
             <DropdownMenuTrigger className="flex items-center gap-3 rounded-lg px-2 py-1 outline-none hover:bg-white/10">
-              <div className="w-10 h-10 rounded-full bg-amber-500 flex items-center justify-center font-bold">
-                {user.firstName[0]}
-              </div>
+              {user.avatar ? (
+                // eslint-disable-next-line @next/next/no-img-element -- user-supplied external avatar URL, not a static asset
+                <img
+                  src={user.avatar}
+                  alt=""
+                  className="w-10 h-10 rounded-full object-cover"
+                />
+              ) : (
+                <div className="w-10 h-10 rounded-full bg-amber-500 flex items-center justify-center font-bold">
+                  {user.firstName[0]}
+                </div>
+              )}
 
               <div className="hidden text-left md:block">
                 <p className="font-semibold">
@@ -80,7 +93,18 @@ export default async function AppHeader() {
             </DropdownMenuTrigger>
 
             <DropdownMenuContent align="end">
-              <DropdownMenuLabel>{user.email}</DropdownMenuLabel>
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>{user.email}</DropdownMenuLabel>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem render={<Link href="/profile" />}>
+                Profile
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                render={<Link href="/profile/change-password" />}
+              >
+                Change Password
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <LogoutButton />
             </DropdownMenuContent>

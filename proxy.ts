@@ -4,12 +4,18 @@ import type { NextRequest } from "next/server";
 
 const PROTECTED_PREFIXES = [
   "/dashboard",
-  "/crm",
+  "/companies",
+  "/users",
+  "/clients",
+  "/leads",
+  "/pipeline",
   "/projects",
   "/seo",
   "/ai",
   "/reports",
   "/settings",
+  "/profile",
+  "/search",
 ];
 
 export async function proxy(request: NextRequest) {
@@ -33,7 +39,15 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 
-  return NextResponse.next();
+  const response = NextResponse.next();
+  if (isProtectedRoute) {
+    // Next already sends "no-cache, must-revalidate" automatically for
+    // these (they all read cookies via requireUser()); no-store is the
+    // stronger, standard signal specifically against back-button replay
+    // of authenticated content after logout.
+    response.headers.set("Cache-Control", "no-store, must-revalidate");
+  }
+  return response;
 }
 
 export const config = {

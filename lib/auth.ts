@@ -60,6 +60,7 @@ export const authOptions: NextAuthOptions = {
           lastName: user.lastName,
           role: user.role,
           companyId: user.companyId,
+          avatar: user.avatar,
         };
       },
     }),

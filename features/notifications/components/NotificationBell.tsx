@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -87,7 +88,9 @@ export default function NotificationBell({
 
       <DropdownMenuContent align="end" className="w-80">
         <div className="flex items-center justify-between gap-2 px-1.5 py-1">
-          <DropdownMenuLabel className="p-0">Notifications</DropdownMenuLabel>
+          <DropdownMenuGroup>
+            <DropdownMenuLabel className="p-0">Notifications</DropdownMenuLabel>
+          </DropdownMenuGroup>
           <Button
             type="button"
             variant="ghost"

@@ -6,11 +6,14 @@ import { signOut } from "next-auth/react";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 
 export default function LogoutButton() {
+  const handleClick = () => {
+    if (window.confirm("Log out of Cloud Compass OS?")) {
+      signOut({ callbackUrl: "/login" });
+    }
+  };
+
   return (
-    <DropdownMenuItem
-      onClick={() => signOut({ callbackUrl: "/login" })}
-      variant="destructive"
-    >
+    <DropdownMenuItem onClick={handleClick} variant="destructive">
       <LogOut size={16} />
       Log out
     </DropdownMenuItem>

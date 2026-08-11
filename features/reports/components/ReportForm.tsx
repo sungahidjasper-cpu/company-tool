@@ -27,9 +27,14 @@ type EntityOption = { id: string; name: string };
 type ReportFormProps = {
   clientOptions: EntityOption[];
   projectOptions: EntityOption[];
+  seoProjectOptions: EntityOption[];
 };
 
-export default function ReportForm({ clientOptions, projectOptions }: ReportFormProps) {
+export default function ReportForm({
+  clientOptions,
+  projectOptions,
+  seoProjectOptions,
+}: ReportFormProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -124,6 +129,22 @@ export default function ReportForm({ clientOptions, projectOptions }: ReportForm
           <select id="scopeId" className={selectClassName} {...register("scopeId")}>
             <option value="">Company-wide</option>
             {projectOptions.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {scopeKind === "seoProject" && (
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="scopeId" className="text-sm font-medium">
+            SEO Project (optional — leave blank for company-wide)
+          </label>
+          <select id="scopeId" className={selectClassName} {...register("scopeId")}>
+            <option value="">Company-wide</option>
+            {seoProjectOptions.map((option) => (
               <option key={option.id} value={option.id}>
                 {option.name}
               </option>

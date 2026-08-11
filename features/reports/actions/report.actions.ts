@@ -21,7 +21,8 @@ import {
   generateReportSchema,
   getScopeKind,
 } from "@/features/reports/schemas/report.schema";
-import { REPORT_COMPUTE, toCsv } from "@/features/reports/services/report.service";
+import { REPORT_COMPUTE } from "@/features/reports/services/report.service";
+import { toCsv } from "@/lib/csv";
 
 function slugify(title: string) {
   return title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "report";

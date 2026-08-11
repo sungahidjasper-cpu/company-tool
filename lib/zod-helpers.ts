@@ -27,3 +27,14 @@ export const optionalEmail = () =>
     .optional()
     .or(z.literal(""))
     .transform((value) => (value ? value : undefined));
+
+/** Same blank-to-undefined normalization as optionalString, plus a numeric check. */
+export const optionalNumericString = () =>
+  z
+    .string()
+    .optional()
+    .or(z.literal(""))
+    .transform((value) => (value ? value : undefined))
+    .refine((value) => value === undefined || !Number.isNaN(Number(value)), {
+      message: "Enter a valid number",
+    });

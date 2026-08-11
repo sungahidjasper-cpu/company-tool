@@ -11,6 +11,8 @@ type LogActivityInput = {
   projectId?: string;
   taskId?: string;
   leadId?: string;
+  seoProjectId?: string;
+  contentId?: string;
   metadata?: Prisma.InputJsonValue;
 };
 
@@ -52,6 +54,17 @@ async function resolveCompanyId(input: LogActivityInput): Promise<string | null>
   if (input.leadId) {
     const lead = await prisma.lead.findUnique({ where: { id: input.leadId } });
     return lead?.companyId ?? null;
+  }
+  if (input.seoProjectId) {
+    const seoProject = await prisma.sEOProject.findUnique({ where: { id: input.seoProjectId } });
+    return seoProject?.companyId ?? null;
+  }
+  if (input.contentId) {
+    const content = await prisma.content.findUnique({
+      where: { id: input.contentId },
+      include: { seoProject: { select: { companyId: true } } },
+    });
+    return content?.seoProject.companyId ?? null;
   }
 
   return null;

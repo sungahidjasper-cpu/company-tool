@@ -23,6 +23,10 @@ export function buildEntityWhere(entityType: FileEntityType, entityId: string) {
       return { taskId: entityId };
     case "lead":
       return { leadId: entityId };
+    case "seoProject":
+      return { seoProjectId: entityId };
+    case "content":
+      return { contentId: entityId };
     case "user":
       return { userId: entityId };
   }
@@ -40,6 +44,9 @@ export function canManageEntityFiles(entityType: FileEntityType, role: UserRole)
       return Permissions.manageProjects(role);
     case "lead":
       return Permissions.manageLeads(role);
+    case "seoProject":
+    case "content":
+      return Permissions.manageSeoProjects(role);
     case "user":
       return Permissions.manageUsers(role);
   }
@@ -106,6 +113,27 @@ export async function resolveEntityContext(
         isAssignee: lead.assignedUserId === actorId,
       };
     }
+    case "seoProject": {
+      const seoProject = await prisma.sEOProject.findUnique({ where: { id: entityId } });
+      if (!seoProject) return null;
+      return {
+        companyId: seoProject.companyId,
+        paths: [`/seo/${seoProject.id}`],
+        isAssignee: seoProject.ownerId === actorId,
+      };
+    }
+    case "content": {
+      const content = await prisma.content.findUnique({
+        where: { id: entityId },
+        include: { seoProject: { select: { id: true, companyId: true } } },
+      });
+      if (!content) return null;
+      return {
+        companyId: content.seoProject.companyId,
+        paths: [`/seo/${content.seoProject.id}/content/${content.id}`],
+        isAssignee: content.authorId === actorId,
+      };
+    }
     case "user": {
       const targetUser = await prisma.user.findUnique({ where: { id: entityId } });
       if (!targetUser) return null;
@@ -129,6 +157,10 @@ export function buildActivityRefs(entityType: FileEntityType, entityId: string) 
       return { taskId: entityId };
     case "lead":
       return { leadId: entityId };
+    case "seoProject":
+      return { seoProjectId: entityId };
+    case "content":
+      return { contentId: entityId };
     case "company":
     case "user":
       return {};
@@ -141,6 +173,8 @@ type FileTargets = {
   projectId: string | null;
   taskId: string | null;
   leadId: string | null;
+  seoProjectId: string | null;
+  contentId: string | null;
   userId: string | null;
 };
 
@@ -151,6 +185,8 @@ export function resolveEntityTypeFromFile(file: FileTargets): FileEntityType | n
   if (file.projectId) return "project";
   if (file.taskId) return "task";
   if (file.leadId) return "lead";
+  if (file.seoProjectId) return "seoProject";
+  if (file.contentId) return "content";
   if (file.userId) return "user";
   return null;
 }
@@ -167,6 +203,10 @@ export function getEntityIdFromFile(file: FileTargets, entityType: FileEntityTyp
       return file.taskId as string;
     case "lead":
       return file.leadId as string;
+    case "seoProject":
+      return file.seoProjectId as string;
+    case "content":
+      return file.contentId as string;
     case "user":
       return file.userId as string;
   }
@@ -212,6 +252,18 @@ export async function getFileNotificationRecipients(
       const lead = await prisma.lead.findUnique({ where: { id: entityId } });
       return lead?.assignedUserId && lead.assignedUserId !== excludeUserId
         ? [lead.assignedUserId]
+        : [];
+    }
+    case "seoProject": {
+      const seoProject = await prisma.sEOProject.findUnique({ where: { id: entityId } });
+      return seoProject?.ownerId && seoProject.ownerId !== excludeUserId
+        ? [seoProject.ownerId]
+        : [];
+    }
+    case "content": {
+      const content = await prisma.content.findUnique({ where: { id: entityId } });
+      return content?.authorId && content.authorId !== excludeUserId
+        ? [content.authorId]
         : [];
     }
     case "user":

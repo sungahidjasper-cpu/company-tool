@@ -6,7 +6,9 @@ import {
   DollarSign,
   FileText,
   FolderKanban,
+  ListChecks,
   Percent,
+  Search,
   Target,
   Trophy,
   UserCog,
@@ -101,6 +103,30 @@ export default async function DashboardPage() {
           icon={DollarSign}
         />
       </DashboardGrid>
+
+      <h2 className="text-lg font-semibold">SEO Workspace</h2>
+      <DashboardGrid>
+        <StatsCard
+          title="Active SEO Projects"
+          value={summary.activeSeoProjects}
+          icon={Search}
+        />
+        <StatsCard title="Total Keywords" value={summary.totalKeywords} icon={ListChecks} />
+        <StatsCard
+          title="Content Published"
+          value={summary.contentPublished}
+          icon={FileText}
+        />
+      </DashboardGrid>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Keyword ranking distribution</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <TasksByStatusChart data={summary.keywordRankDistribution} />
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Card>
@@ -294,6 +320,27 @@ export default async function DashboardPage() {
               >
                 <span className="truncate">{report.title}</span>
                 <StatusBadge status={report.status} />
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Recent SEO projects</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {summary.recentSeoProjects.length === 0 && (
+              <p className="text-sm text-slate-500">No SEO projects yet.</p>
+            )}
+            {summary.recentSeoProjects.map((seoProject) => (
+              <Link
+                key={seoProject.id}
+                href={`/seo/${seoProject.id}`}
+                className="flex items-center justify-between text-sm hover:underline"
+              >
+                <span className="truncate">{seoProject.name}</span>
+                <StatusBadge status={seoProject.status} />
               </Link>
             ))}
           </CardContent>

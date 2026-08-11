@@ -53,7 +53,10 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
     results.projects.length +
     results.tasks.length +
     results.files.length +
-    results.reports.length;
+    results.reports.length +
+    results.seoProjects.length +
+    results.keywords.length +
+    results.content.length;
 
   return (
     <PageContainer>
@@ -65,14 +68,14 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
       <SearchInput
         action="/search"
         defaultValue={q}
-        placeholder="Search companies, clients, leads, projects, tasks, users, files, reports..."
+        placeholder="Search companies, clients, leads, projects, tasks, users, files, reports, SEO..."
       />
 
       {q.trim().length < 2 ? (
         <EmptyState
           icon={Search}
           title="Type at least 2 characters"
-          description="Search across companies, clients, leads, projects, tasks, users, files, and reports."
+          description="Search across companies, clients, leads, projects, tasks, users, files, reports, SEO projects, keywords, and content."
         />
       ) : totalResults === 0 ? (
         <EmptyState
@@ -177,6 +180,43 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 className="text-sm hover:underline"
               >
                 {report.title}
+              </Link>
+            ))}
+          </ResultSection>
+
+          <ResultSection title="SEO Projects" isEmpty={results.seoProjects.length === 0}>
+            {results.seoProjects.map((seoProject) => (
+              <Link
+                key={seoProject.id}
+                href={`/seo/${seoProject.id}`}
+                className="text-sm hover:underline"
+              >
+                {seoProject.name}
+                {seoProject.domain ? ` · ${seoProject.domain}` : ""}
+              </Link>
+            ))}
+          </ResultSection>
+
+          <ResultSection title="Keywords" isEmpty={results.keywords.length === 0}>
+            {results.keywords.map((keyword) => (
+              <Link
+                key={keyword.id}
+                href={`/seo/${keyword.seoProjectId}/keywords/${keyword.id}`}
+                className="text-sm hover:underline"
+              >
+                {keyword.term}
+              </Link>
+            ))}
+          </ResultSection>
+
+          <ResultSection title="Content" isEmpty={results.content.length === 0}>
+            {results.content.map((item) => (
+              <Link
+                key={item.id}
+                href={`/seo/${item.seoProjectId}/content/${item.id}`}
+                className="text-sm hover:underline"
+              >
+                {item.title}
               </Link>
             ))}
           </ResultSection>

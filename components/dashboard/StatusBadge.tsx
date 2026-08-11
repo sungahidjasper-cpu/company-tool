@@ -26,6 +26,15 @@ const STATUS_VARIANTS: Record<string, BadgeVariant> = {
   PENDING: "secondary",
   GENERATING: "secondary",
   FAILED: "destructive",
+  PAUSED: "outline",
+  DRAFT: "secondary",
+  IN_REVIEW: "outline",
+  APPROVED: "default",
+  PUBLISHED: "default",
+  NOT_STARTED: "secondary",
+  RANKING: "default",
+  ACHIEVED: "default",
+  ABANDONED: "destructive",
 };
 
 type StatusBadgeProps = {

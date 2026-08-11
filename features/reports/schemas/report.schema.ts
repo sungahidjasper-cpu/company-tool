@@ -11,15 +11,13 @@ import { optionalString } from "@/lib/zod-helpers";
  * re-declaring their own list. Adding a future report type means adding
  * one entry here (+ its compute function) rather than editing switches
  * scattered across the form/action/pages.
- *
- * SEO_PERFORMANCE is intentionally omitted — the SEO Workspace has no
- * real data anywhere yet, so there's nothing to report on.
  */
 export const REPORT_TYPE_OPTIONS = [
   { value: "PROJECT_SUMMARY", label: "Project Summary", scopeKind: "project" },
   { value: "CLIENT_SUMMARY", label: "Client Summary", scopeKind: "client" },
   { value: "FINANCIAL", label: "Budget Rollup", scopeKind: "client" },
   { value: "SALES_PIPELINE", label: "Sales Pipeline", scopeKind: "none" },
+  { value: "SEO_PERFORMANCE", label: "SEO Performance", scopeKind: "seoProject" },
   { value: "CUSTOM", label: "Custom", scopeKind: "custom" },
 ] as const;
 

@@ -115,6 +115,45 @@ function searchReports(q: string, actor: SearchActor) {
   });
 }
 
+function searchSeoProjects(q: string, actor: SearchActor) {
+  return prisma.sEOProject.findMany({
+    where: {
+      companyId: actor.companyId,
+      deletedAt: null,
+      OR: [
+        { name: { contains: q, mode: "insensitive" } },
+        { domain: { contains: q, mode: "insensitive" } },
+      ],
+    },
+    select: { id: true, name: true, domain: true },
+    take: RESULT_LIMIT,
+  });
+}
+
+function searchKeywords(q: string, actor: SearchActor) {
+  return prisma.keyword.findMany({
+    where: {
+      seoProject: { companyId: actor.companyId },
+      deletedAt: null,
+      term: { contains: q, mode: "insensitive" },
+    },
+    select: { id: true, term: true, seoProjectId: true },
+    take: RESULT_LIMIT,
+  });
+}
+
+function searchContent(q: string, actor: SearchActor) {
+  return prisma.content.findMany({
+    where: {
+      seoProject: { companyId: actor.companyId },
+      deletedAt: null,
+      title: { contains: q, mode: "insensitive" },
+    },
+    select: { id: true, title: true, seoProjectId: true },
+    take: RESULT_LIMIT,
+  });
+}
+
 function searchFiles(q: string, actor: SearchActor) {
   return prisma.file.findMany({
     where: {
@@ -152,22 +191,39 @@ export async function globalSearch(query: string, actor: SearchActor) {
       tasks: [],
       files: [],
       reports: [],
+      seoProjects: [],
+      keywords: [],
+      content: [],
       canSeeCompanies: isSuperAdmin(actor.role),
       canSeeUsers: Permissions.manageUsers(actor.role),
     };
   }
 
-  const [companies, users, clients, leads, projects, tasks, files, reports] =
-    await Promise.all([
-      searchCompanies(q, actor),
-      searchUsers(q, actor),
-      searchClients(q, actor),
-      searchLeads(q, actor),
-      searchProjects(q, actor),
-      searchTasks(q, actor),
-      searchFiles(q, actor),
-      searchReports(q, actor),
-    ]);
+  const [
+    companies,
+    users,
+    clients,
+    leads,
+    projects,
+    tasks,
+    files,
+    reports,
+    seoProjects,
+    keywords,
+    content,
+  ] = await Promise.all([
+    searchCompanies(q, actor),
+    searchUsers(q, actor),
+    searchClients(q, actor),
+    searchLeads(q, actor),
+    searchProjects(q, actor),
+    searchTasks(q, actor),
+    searchFiles(q, actor),
+    searchReports(q, actor),
+    searchSeoProjects(q, actor),
+    searchKeywords(q, actor),
+    searchContent(q, actor),
+  ]);
 
   return {
     query: q,
@@ -179,6 +235,9 @@ export async function globalSearch(query: string, actor: SearchActor) {
     tasks,
     files,
     reports,
+    seoProjects,
+    keywords,
+    content,
     canSeeCompanies: isSuperAdmin(actor.role),
     canSeeUsers: Permissions.manageUsers(actor.role),
   };

@@ -5,6 +5,7 @@ import {
   getLeadsByStage,
 } from "@/features/leads/services/lead.service";
 import { getCompletedProjectsCount } from "@/features/projects/services/project.service";
+import { getSeoPerformanceData } from "@/features/seo/services/seo-project.service";
 import type { SupportedReportType } from "@/features/reports/schemas/report.schema";
 import { getTaskStatusCounts } from "@/features/tasks/services/task.service";
 
@@ -16,21 +17,6 @@ export type ReportData = {
   columns: string[];
   rows: (string | number)[][];
 };
-
-export function escapeCsvField(value: string | number) {
-  const stringValue = String(value);
-  if (/[",\n]/.test(stringValue)) {
-    return `"${stringValue.replace(/"/g, '""')}"`;
-  }
-  return stringValue;
-}
-
-export function toCsv(columns: string[], rows: (string | number)[][]) {
-  const lines = [columns, ...rows].map((line) =>
-    line.map(escapeCsvField).join(",")
-  );
-  return lines.join("\n");
-}
 
 function toPlainNumber(value: unknown): number {
   return value === null || value === undefined ? 0 : Number(value);
@@ -229,6 +215,7 @@ export const REPORT_COMPUTE: Partial<
   CLIENT_SUMMARY: getClientSummaryData,
   FINANCIAL: getBudgetRollupData,
   SALES_PIPELINE: (companyId) => getSalesPipelineData(companyId),
+  SEO_PERFORMANCE: getSeoPerformanceData,
 };
 
 export async function listReports(

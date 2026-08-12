@@ -16,6 +16,7 @@ import ReportDataTable from "@/features/reports/components/ReportDataTable";
 import ReportSummaryCards from "@/features/reports/components/ReportSummaryCards";
 import type { ReportData } from "@/features/reports/services/report.service";
 import { getReportById } from "@/features/reports/services/report.service";
+import SeoRecommendationsTab from "@/features/seo/components/SeoRecommendationsTab";
 import { requireUser } from "@/lib/auth";
 import { assertCompanyAccess, Permissions } from "@/lib/authorization";
 import { cn, formatEnumLabel } from "@/lib/utils";
@@ -127,6 +128,28 @@ export default async function ReportDetailPage({ params }: ReportDetailPageProps
               <ReportDataTable columns={data.columns} rows={data.rows} />
             </CardContent>
           </Card>
+
+          {data.executiveSummary && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Executive Summary</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-slate-600">{data.executiveSummary}</p>
+              </CardContent>
+            </Card>
+          )}
+
+          {data.recommendations && data.recommendations.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Recommendations</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <SeoRecommendationsTab recommendations={data.recommendations} />
+              </CardContent>
+            </Card>
+          )}
         </>
       )}
 

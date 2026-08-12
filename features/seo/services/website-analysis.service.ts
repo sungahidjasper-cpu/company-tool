@@ -16,8 +16,10 @@ import {
   markWebsiteAnalysisJobSucceeded,
   updateWebsiteAnalysisJobProgress,
 } from "@/lib/jobs/job-table";
-import type { Recommendation } from "@/features/seo/schemas/seo-audit.schema";
+import { parseWebsiteAnalysisResult, type Recommendation } from "@/features/seo/schemas/seo-audit.schema";
 import { websiteAnalysisExtractionSchema, type WebsiteAnalysisExtraction } from "@/features/seo/schemas/website-analysis.schema";
+import type { ReportData } from "@/features/reports/services/report.service";
+import { formatEnumLabel } from "@/lib/utils";
 import { generateSeoAudit, PROMPT_VERSION } from "@/features/seo/services/seo-audit.service";
 import {
   computeInternalLinkingScore,
@@ -430,4 +432,77 @@ export function listWebsiteAnalysisHistory(
       createdAt: true,
     },
   });
+}
+
+const SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const;
+
+/**
+ * Phase 13 — Reports' SEO_AUDIT compute function. Sources entirely from the
+ * SEO project's most recent SUCCEEDED WebsiteAnalysisJob (crawl + issues +
+ * whatever AI enrichment that run had) — no new AI calls, no new crawling.
+ * A deterministic-only run (AI never succeeded) still produces a complete,
+ * honest report: scores render as "Unavailable" and executiveSummary is
+ * simply omitted, but issues/severity breakdown/recommendations (which
+ * always include the deterministic-findings-derived entries — see
+ * seo-audit.schema.ts) are unaffected.
+ */
+export async function getSeoAuditReportData(companyId: string, seoProjectId?: string): Promise<ReportData> {
+  if (!seoProjectId) {
+    throw new Error("Select an SEO project to generate an SEO Audit Report.");
+  }
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: seoProjectId } });
+  if (!seoProject || seoProject.companyId !== companyId) {
+    throw new Error("SEO project not found.");
+  }
+
+  const job = await prisma.websiteAnalysisJob.findFirst({
+    where: { seoProjectId, companyId, status: "SUCCEEDED" },
+    orderBy: { createdAt: "desc" },
+    include: { issues: true },
+  });
+  if (!job) {
+    throw new Error(`No completed Website Analysis found for "${seoProject.name}" yet — run an analysis for this project first.`);
+  }
+
+  const result = parseWebsiteAnalysisResult(job);
+  const audit = result?.audit ?? null;
+
+  const severityCounts = new Map<string, number>();
+  for (const issue of job.issues) {
+    severityCounts.set(issue.severity, (severityCounts.get(issue.severity) ?? 0) + 1);
+  }
+
+  const scoreOrUnavailable = (score: number | undefined) => (score !== undefined ? `${score}/100` : "Unavailable");
+
+  const summaryCards = [
+    { label: "Domain", value: job.domain },
+    { label: "Overall Score", value: scoreOrUnavailable(audit?.overallScore) },
+    { label: "Technical SEO", value: scoreOrUnavailable(audit?.categoryScores.technicalSeo.score) },
+    { label: "On-Page SEO", value: scoreOrUnavailable(audit?.categoryScores.onPageSeo.score) },
+    { label: "Total Issues", value: String(job.issues.length) },
+    { label: "Critical Issues", value: String(severityCounts.get("CRITICAL") ?? 0) },
+  ];
+
+  const chart = SEVERITY_ORDER.map((severity) => ({
+    status: formatEnumLabel(severity),
+    count: severityCounts.get(severity) ?? 0,
+  }));
+
+  const columns = ["Issue Type", "Severity", "URL", "Status"];
+  const rows = job.issues.map((issue) => [
+    formatEnumLabel(issue.issueType),
+    formatEnumLabel(issue.severity),
+    issue.url ?? "(site-wide)",
+    formatEnumLabel(issue.status),
+  ]);
+
+  return {
+    summaryCards,
+    chart,
+    columns,
+    rows,
+    executiveSummary: audit?.executiveSummary?.overallHealthNarrative ?? null,
+    recommendations: audit?.recommendations ?? [],
+  };
 }

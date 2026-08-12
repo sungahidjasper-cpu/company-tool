@@ -153,6 +153,24 @@ export default function ReportForm({
         </div>
       )}
 
+      {scopeKind === "seoProjectRequired" && (
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="scopeId" className="text-sm font-medium">
+            SEO Project
+          </label>
+          <select id="scopeId" className={selectClassName} {...register("scopeId")}>
+            <option value="" disabled>
+              Select an SEO project…
+            </option>
+            {seoProjectOptions.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       {scopeKind === "custom" && (
         <>
           <div className="flex flex-col gap-1.5">

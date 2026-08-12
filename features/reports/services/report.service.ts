@@ -5,7 +5,9 @@ import {
   getLeadsByStage,
 } from "@/features/leads/services/lead.service";
 import { getCompletedProjectsCount } from "@/features/projects/services/project.service";
+import type { Recommendation } from "@/features/seo/schemas/seo-audit.schema";
 import { getSeoPerformanceData } from "@/features/seo/services/seo-project.service";
+import { getSeoAuditReportData } from "@/features/seo/services/website-analysis.service";
 import type { SupportedReportType } from "@/features/reports/schemas/report.schema";
 import { getTaskStatusCounts } from "@/features/tasks/services/task.service";
 
@@ -16,6 +18,9 @@ export type ReportData = {
   chart?: ReportChartRow[];
   columns: string[];
   rows: (string | number)[][];
+  /** Phase 13 (SEO_AUDIT only) — every other report type leaves these unset; the detail page only renders them when present. */
+  executiveSummary?: string | null;
+  recommendations?: Recommendation[];
 };
 
 function toPlainNumber(value: unknown): number {
@@ -216,6 +221,7 @@ export const REPORT_COMPUTE: Partial<
   FINANCIAL: getBudgetRollupData,
   SALES_PIPELINE: (companyId) => getSalesPipelineData(companyId),
   SEO_PERFORMANCE: getSeoPerformanceData,
+  SEO_AUDIT: getSeoAuditReportData,
 };
 
 export async function listReports(

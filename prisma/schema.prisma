@@ -132,6 +132,10 @@ enum ReportType {
   FINANCIAL
   SALES_PIPELINE
   CUSTOM
+  /// Phase 13 — a complete SEO audit for one SEO Project, sourced entirely
+  /// from that project's most recent SUCCEEDED WebsiteAnalysisJob (no new
+  /// AI calls, no new crawling).
+  SEO_AUDIT
 }
 
 enum ReportStatus {

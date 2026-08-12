@@ -18,6 +18,10 @@ export const REPORT_TYPE_OPTIONS = [
   { value: "FINANCIAL", label: "Budget Rollup", scopeKind: "client" },
   { value: "SALES_PIPELINE", label: "Sales Pipeline", scopeKind: "none" },
   { value: "SEO_PERFORMANCE", label: "SEO Performance", scopeKind: "seoProject" },
+  // Distinct scopeKind from SEO_PERFORMANCE's optional "seoProject": an
+  // audit is inherently per-website, so it never offers a "Company-wide"
+  // option — the form renders a required picker for this scopeKind instead.
+  { value: "SEO_AUDIT", label: "SEO Audit Report", scopeKind: "seoProjectRequired" },
   { value: "CUSTOM", label: "Custom", scopeKind: "custom" },
 ] as const;
 

@@ -106,6 +106,10 @@ export async function generateReport(
     return actionSuccess({ id: report.id });
   }
 
+  if (scopeKind === "seoProjectRequired" && !scopeId) {
+    return actionError("Select an SEO project to generate an SEO Audit Report.");
+  }
+
   const compute = REPORT_COMPUTE[type];
   if (!compute) {
     return actionError("This report type is not yet available.");
@@ -161,7 +165,7 @@ export async function generateReport(
         generatedAt: new Date(),
         ...(scopeKind === "project" && scopeId ? { projectId: scopeId } : {}),
         ...(scopeKind === "client" && scopeId ? { clientId: scopeId } : {}),
-        ...(scopeKind === "seoProject" && scopeId ? { seoProjectId: scopeId } : {}),
+        ...((scopeKind === "seoProject" || scopeKind === "seoProjectRequired") && scopeId ? { seoProjectId: scopeId } : {}),
       },
     });
 

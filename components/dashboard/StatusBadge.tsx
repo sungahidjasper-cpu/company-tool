@@ -35,6 +35,8 @@ const STATUS_VARIANTS: Record<string, BadgeVariant> = {
   RANKING: "default",
   ACHIEVED: "default",
   ABANDONED: "destructive",
+  RUNNING: "outline",
+  SUCCEEDED: "default",
 };
 
 type StatusBadgeProps = {

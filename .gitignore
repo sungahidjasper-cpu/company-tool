@@ -45,3 +45,7 @@ next-env.d.ts
 # local file storage (Phase 5) — uploaded content, not source
 /storage/uploads/*
 !/storage/uploads/.gitkeep
+
+# local dev DB backups (contain real data) — never committed
+/backups/*
+!/backups/.gitkeep

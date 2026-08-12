@@ -13,7 +13,6 @@ import {
   KEYWORD_STATUSES,
   keywordSchema,
   type KeywordFormInput,
-  type KeywordInput,
 } from "@/features/seo/schemas/keyword.schema";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

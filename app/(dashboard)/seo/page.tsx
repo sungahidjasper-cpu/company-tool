@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, Sparkles } from "lucide-react";
 
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
 import EmptyState from "@/components/dashboard/EmptyState";
@@ -50,9 +50,17 @@ export default async function SeoPage({ searchParams }: SeoPageProps) {
         description="Track keywords, content, and search performance."
         actions={
           canManage ? (
-            <Link href="/seo/new" className={cn(buttonVariants())}>
-              <Plus size={16} /> New SEO project
-            </Link>
+            <div className="flex gap-2">
+              <Link
+                href="/seo/website-analysis"
+                className={cn(buttonVariants({ variant: "outline" }))}
+              >
+                <Sparkles size={16} /> Website Analysis
+              </Link>
+              <Link href="/seo/new" className={cn(buttonVariants())}>
+                <Plus size={16} /> New SEO project
+              </Link>
+            </div>
           ) : undefined
         }
       />

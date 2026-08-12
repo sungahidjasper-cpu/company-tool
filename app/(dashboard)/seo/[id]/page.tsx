@@ -26,6 +26,7 @@ import {
   restoreSeoProject,
 } from "@/features/seo/actions/seo-project.actions";
 import { getSeoProjectById } from "@/features/seo/services/seo-project.service";
+import { listWebsiteAnalysisHistory } from "@/features/seo/services/website-analysis.service";
 import { listFilesFor } from "@/features/files/services/file.service";
 import { requireUser } from "@/lib/auth";
 import { assertCompanyAccess, Permissions } from "@/lib/authorization";
@@ -50,7 +51,10 @@ export default async function SeoProjectDetailPage({
 
   const canManage = Permissions.manageSeoProjects(user.role);
   const canAct = canManage || seoProject.ownerId === user.id;
-  const files = await listFilesFor("seoProject", seoProject.id);
+  const [files, analysisHistory] = await Promise.all([
+    listFilesFor("seoProject", seoProject.id),
+    listWebsiteAnalysisHistory(user.companyId, { seoProjectId: seoProject.id }),
+  ]);
 
   return (
     <PageContainer>
@@ -215,6 +219,35 @@ export default async function SeoProjectDetailPage({
             className="mt-2 text-sm font-medium hover:underline"
           >
             View all content →
+          </Link>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Website analyses</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          {analysisHistory.length === 0 && (
+            <p className="text-sm text-slate-500">No analyses run for this project yet.</p>
+          )}
+          {analysisHistory.slice(0, 3).map((entry) => (
+            <Link
+              key={entry.id}
+              href={`/seo/website-analysis?jobId=${entry.id}`}
+              className="flex items-center justify-between text-sm hover:underline"
+            >
+              <span>{entry.domain}</span>
+              <span className="text-slate-500">
+                {entry.overallScore !== null ? `${entry.overallScore}/100` : formatEnumLabel(entry.status)}
+              </span>
+            </Link>
+          ))}
+          <Link
+            href={`/seo/${seoProject.id}/analysis-history`}
+            className="mt-2 text-sm font-medium hover:underline"
+          >
+            View analysis history →
           </Link>
         </CardContent>
       </Card>

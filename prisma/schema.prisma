@@ -103,6 +103,28 @@ enum KeywordStatus {
   ABANDONED
 }
 
+enum WebsiteAnalysisStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+/// Classifies why the AI stage of a WebsiteAnalysisJob failed, so the UI can
+/// show a clear message + recommended action instead of a raw provider
+/// error. Null for crawl-stage failures (those already have a clear,
+/// hand-written message) and for SUCCEEDED/PENDING/RUNNING jobs.
+enum WebsiteAnalysisErrorType {
+  AUTHENTICATION_ERROR
+  INSUFFICIENT_CREDITS
+  RATE_LIMIT
+  TIMEOUT
+  SERVICE_UNAVAILABLE
+  INVALID_REQUEST
+  NOT_CONFIGURED
+  UNKNOWN
+}
+
 enum ReportType {
   PROJECT_SUMMARY
   CLIENT_SUMMARY
@@ -138,17 +160,18 @@ model Company {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  users           User[]
-  roles           Role[]
-  clients         Client[]
-  leads           Lead[]
-  projects        Project[]
-  tags            Tag[]
-  seoProjects     SEOProject[]
-  reports         Report[]
-  aiConversations AIConversation[]
-  files           File[]
-  activities      Activity[]
+  users               User[]
+  roles               Role[]
+  clients             Client[]
+  leads               Lead[]
+  projects            Project[]
+  tags                Tag[]
+  seoProjects         SEOProject[]
+  reports             Report[]
+  aiConversations     AIConversation[]
+  files               File[]
+  activities          Activity[]
+  websiteAnalysisJobs WebsiteAnalysisJob[]
 
   @@index([deletedAt])
 }
@@ -254,15 +277,16 @@ model Client {
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   owner   User?   @relation("ClientOwner", fields: [ownerId], references: [id], onDelete: SetNull)
 
-  contacts    Contact[]
-  projects    Project[]
-  leads       Lead[]
-  seoProjects SEOProject[]
-  notes       Note[]
-  activities  Activity[]
-  files       File[]
-  reports     Report[]
-  tags        Tag[]
+  contacts            Contact[]
+  projects            Project[]
+  leads               Lead[]
+  seoProjects         SEOProject[]
+  websiteAnalysisJobs WebsiteAnalysisJob[]
+  notes               Note[]
+  activities          Activity[]
+  files               File[]
+  reports             Report[]
+  tags                Tag[]
 
   @@index([companyId, status])
   @@index([deletedAt])
@@ -637,14 +661,15 @@ model SEOProject {
   client  Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
   owner   User?   @relation("SeoProjectOwner", fields: [ownerId], references: [id], onDelete: SetNull)
 
-  keywordClusters KeywordCluster[]
-  keywords        Keyword[]
-  content         Content[]
-  notes           Note[]
-  activities      Activity[]
-  files           File[]
-  reports         Report[]
-  tags            Tag[]
+  keywordClusters     KeywordCluster[]
+  keywords            Keyword[]
+  content             Content[]
+  notes               Note[]
+  activities          Activity[]
+  files               File[]
+  reports             Report[]
+  tags                Tag[]
+  websiteAnalysisJobs WebsiteAnalysisJob[]
 
   @@index([companyId, status])
   @@index([clientId])
@@ -718,6 +743,45 @@ model Content {
 
   @@index([seoProjectId, status])
   @@index([deletedAt])
+}
+
+/// Backs the automated website-analysis crawl (Phase 10.5a). Nullable
+/// seoProjectId because analysis can run before the SEOProject formally
+/// exists (the future wizard analyzes a domain before creating the project).
+/// resultJson stores the crawl + LLM extraction output as JSON rather than a
+/// normalized model, following the same precedent AIConversation.context set.
+model WebsiteAnalysisJob {
+  id              String                    @id @default(uuid(7)) @db.Uuid
+  seoProjectId    String?                   @db.Uuid
+  /// Direct client link, independent of seoProjectId (same "shared
+  /// attachment" pattern as Report.clientId) — lets analyses be filtered/
+  /// grouped by client even when no SEOProject has been created yet.
+  clientId        String?                   @db.Uuid
+  companyId       String                    @db.Uuid
+  domain          String
+  status          WebsiteAnalysisStatus     @default(PENDING)
+  progress        Int?
+  overallScore    Int?
+  resultJson      Json?
+  /// Raw crawl output, persisted as soon as crawling succeeds — independent
+  /// of whether the later AI stage succeeds. Lets a failed AI stage be
+  /// retried without re-crawling (crawling takes 30-120s+).
+  crawlResultJson Json?
+  errorMessage    String?
+  /// Set only when the AI stage failed after a successful crawl; null for
+  /// crawl-stage failures and non-failed jobs.
+  errorType       WebsiteAnalysisErrorType?
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  seoProject SEOProject? @relation(fields: [seoProjectId], references: [id], onDelete: SetNull)
+  client     Client?     @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([seoProjectId])
+  @@index([clientId])
+  @@index([status])
 }
 
 // ---------------------------------------------------------------------------

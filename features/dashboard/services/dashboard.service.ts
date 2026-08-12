@@ -95,6 +95,7 @@ function getRecentUploadsList(companyId: string) {
 function getRecentCommentsList(companyId: string) {
   return prisma.note.findMany({
     where: {
+      deletedAt: null,
       OR: [
         { client: { companyId } },
         { project: { companyId } },

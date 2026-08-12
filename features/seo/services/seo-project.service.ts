@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { parseListParams, type ListSearchParams } from "@/lib/pagination";
+import { isUuid } from "@/lib/utils";
 import type { ReportData } from "@/features/reports/services/report.service";
 
 export async function listSeoProjects(
@@ -44,6 +45,8 @@ export async function listSeoProjects(
 }
 
 export async function getSeoProjectById(id: string) {
+  if (!isUuid(id)) return null;
+
   return prisma.sEOProject.findUnique({
     where: { id },
     include: {

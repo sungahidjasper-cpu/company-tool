@@ -1,3 +1,6 @@
+import { Sparkles } from "lucide-react";
+
+import EmptyState from "@/components/dashboard/EmptyState";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { SeoAuditResultData } from "@/features/seo/schemas/seo-audit.schema";
@@ -22,6 +25,16 @@ function KeywordBadgeList({ items }: { items: string[] }) {
 }
 
 export default function SeoKeywordsTab({ keywordIntelligence }: SeoKeywordsTabProps) {
+  if (!keywordIntelligence) {
+    return (
+      <EmptyState
+        icon={Sparkles}
+        title="AI keyword intelligence unavailable"
+        description="This run's keyword/content-cluster generation didn't complete — deterministic crawl results in the other tabs are unaffected."
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col gap-5">
       <Card>

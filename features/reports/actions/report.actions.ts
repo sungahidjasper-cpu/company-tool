@@ -161,6 +161,7 @@ export async function generateReport(
         generatedAt: new Date(),
         ...(scopeKind === "project" && scopeId ? { projectId: scopeId } : {}),
         ...(scopeKind === "client" && scopeId ? { clientId: scopeId } : {}),
+        ...(scopeKind === "seoProject" && scopeId ? { seoProjectId: scopeId } : {}),
       },
     });
 

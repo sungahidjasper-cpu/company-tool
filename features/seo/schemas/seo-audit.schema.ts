@@ -142,14 +142,26 @@ export type SeoRecommendationsOutput = zv4.infer<typeof seoRecommendationsSchema
 export type SeoContentIntelligenceOutput = zv4.infer<typeof seoContentIntelligenceSchema>;
 export type ExecutiveSummaryOutput = zv4.infer<typeof executiveSummarySchema>;
 
-export type SeoAuditOutput = SeoScoresOutput &
-  SeoRecommendationsOutput &
-  SeoContentIntelligenceOutput & {
-    executiveSummary: ExecutiveSummaryOutput;
-  };
-
 export type Recommendation = SeoRecommendationsOutput["recommendations"][number];
 export type ScoreWithReasoning = { score: number; reasoning: string };
+
+/**
+ * Phase 11C — each of the 4 AI calls generateSeoAudit() makes fails
+ * independently (Promise.allSettled, not Promise.all): a rejected
+ * contentIntelligence call no longer discards scores/recommendations that
+ * did succeed. A null section here means that specific AI task failed for
+ * this run — never a fabricated zero/empty result standing in for "unknown"
+ * (that would misrepresent "AI unavailable" as a real bad score). Sections
+ * are still null-checked and merged with deterministic data in
+ * website-analysis.service.ts before persisting SeoAuditResultData below.
+ */
+export type SeoAuditOutput = {
+  scores: SeoScoresOutput | null;
+  recommendations: Recommendation[] | null;
+  contentIntelligence: SeoContentIntelligenceOutput | null;
+  /** Null whenever scores or recommendations is null — summarizing missing data would be worse than not summarizing at all. */
+  executiveSummary: ExecutiveSummaryOutput | null;
+};
 
 /**
  * The full combined result stored on WebsiteAnalysisJob.resultJson: the
@@ -169,27 +181,36 @@ export type WebsiteAnalysisResult = {
   audit: SeoAuditResultData | null;
 };
 
+/**
+ * Phase 11C — the 5 fields below are null exactly when the corresponding AI
+ * task (scores or contentIntelligence) failed for this run; every other
+ * field is deterministic or (for `recommendations`) always has at least the
+ * deterministic-findings-derived entries even if the AI recommendations
+ * task failed. UI tabs (SeoScoresTab, SeoOverviewTab, SeoKeywordsTab,
+ * SeoContentGapsTab, SeoStructuredDataTab) render an "unavailable for this
+ * run" state for a null section rather than crashing on it.
+ */
 export type SeoAuditResultData = {
   overallScore: number;
   categoryScores: {
     technicalSeo: ScoreWithReasoning;
     onPageSeo: ScoreWithReasoning;
-    contentQuality: ScoreWithReasoning;
+    contentQuality: ScoreWithReasoning | null;
     structuredData: ScoreWithReasoning;
     internalLinking: ScoreWithReasoning;
-    eeat: SeoAuditOutput["eeat"];
-    localSeo: SeoAuditOutput["localSeo"];
-    geoReadiness: SeoAuditOutput["geoReadiness"];
-    aeoReadiness: SeoAuditOutput["aeoReadiness"];
+    eeat: SeoScoresOutput["eeat"] | null;
+    localSeo: SeoScoresOutput["localSeo"] | null;
+    geoReadiness: SeoScoresOutput["geoReadiness"] | null;
+    aeoReadiness: SeoScoresOutput["aeoReadiness"] | null;
   };
   recommendations: Recommendation[];
-  keywordIntelligence: SeoAuditOutput["keywordIntelligence"];
-  contentGaps: SeoAuditOutput["contentGaps"];
-  structuredDataRecommendations: SeoAuditOutput["structuredDataRecommendations"];
+  keywordIntelligence: SeoContentIntelligenceOutput["keywordIntelligence"] | null;
+  contentGaps: SeoContentIntelligenceOutput["contentGaps"] | null;
+  structuredDataRecommendations: SeoContentIntelligenceOutput["structuredDataRecommendations"] | null;
   detectedSchemaTypes: string[];
-  internalLinkingSuggestions: SeoAuditOutput["internalLinkingSuggestions"];
+  internalLinkingSuggestions: SeoContentIntelligenceOutput["internalLinkingSuggestions"] | null;
   orphanPages: string[];
-  executiveSummary: SeoAuditOutput["executiveSummary"];
+  executiveSummary: ExecutiveSummaryOutput | null;
 };
 
 function asStringArray(value: unknown): string[] {

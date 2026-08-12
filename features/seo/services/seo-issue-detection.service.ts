@@ -141,6 +141,34 @@ function detectCanonicalIssues(crawl: CrawlResult): IssueInput[] {
     }));
 }
 
+/** Phase 11C — social preview tags (OpenGraph/Twitter Card) are deterministic to check: either the required tags are present or they aren't, no AI judgment needed. */
+function detectSocialTagIssues(crawl: CrawlResult): IssueInput[] {
+  const issues: IssueInput[] = [];
+
+  for (const page of crawl.pages) {
+    if (!page.ogTags.title || !page.ogTags.description || !page.ogTags.image) {
+      issues.push({
+        issueType: "MISSING_OG_TAGS",
+        severity: "LOW",
+        url: page.url,
+        explanation: "This page is missing one or more of og:title, og:description, or og:image.",
+        recommendedFix: "Add complete OpenGraph tags so this page previews correctly when shared on social platforms.",
+      });
+    }
+    if (!page.twitterTags.card) {
+      issues.push({
+        issueType: "MISSING_TWITTER_CARD",
+        severity: "LOW",
+        url: page.url,
+        explanation: "This page has no twitter:card tag.",
+        recommendedFix: 'Add a twitter:card meta tag (e.g. "summary_large_image") so this page previews correctly when shared on X/Twitter.',
+      });
+    }
+  }
+
+  return issues;
+}
+
 function detectSitemapAndRobotsIssues(crawl: CrawlResult): IssueInput[] {
   const issues: IssueInput[] = [];
 
@@ -296,6 +324,7 @@ export async function detectWebsiteAnalysisIssues(
     ...detectH1Issues(crawl),
     ...detectAltTextIssues(crawl),
     ...detectCanonicalIssues(crawl),
+    ...detectSocialTagIssues(crawl),
     ...detectSitemapAndRobotsIssues(crawl),
     ...detectStructuredDataIssues(crawl, context.detectedSchemaTypes),
     ...detectInternalLinkingIssues(context.orphanPages),

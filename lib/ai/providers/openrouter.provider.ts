@@ -2,41 +2,42 @@ import OpenAI, { APIConnectionError, APIConnectionTimeoutError, APIError, RateLi
 
 import { LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
 import { getCachedHealth } from "@/lib/ai/providers/health-cache";
-import { estimateOpenAiCostUsd } from "@/lib/ai/providers/pricing";
+import { estimateOpenRouterCostUsd } from "@/lib/ai/providers/pricing";
 import { withRetry } from "@/lib/ai/providers/retry";
 import type { GeneratedOutput, GenerateRawResult, LlmProvider, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
 
+/**
+ * OpenRouter is an OpenAI-compatible aggregator (same chat/completions
+ * shape, different base URL) that routes to whichever model OPENROUTER_MODEL
+ * names — it's the last fallback in the default order (see registry.ts),
+ * a paid catch-all for when every direct provider is unavailable.
+ */
 const MAX_PARSE_ATTEMPTS = 3;
-/** GPT-4o family's documented context window — update if OPENAI_MODEL moves to a different family. */
+/** Varies by whichever model OPENROUTER_MODEL routes to — this is a conservative rough default, not a per-model lookup. */
 const MAX_CONTEXT_TOKENS = 128_000;
 
-const globalForOpenAi = globalThis as unknown as { openai?: OpenAI };
+const globalForOpenRouter = globalThis as unknown as { openrouter?: OpenAI };
 
 function getClient(): OpenAI {
-  if (!globalForOpenAi.openai) {
-    globalForOpenAi.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  if (!globalForOpenRouter.openrouter) {
+    globalForOpenRouter.openrouter = new OpenAI({
+      apiKey: process.env.OPENROUTER_API_KEY,
+      baseURL: "https://openrouter.ai/api/v1",
+    });
   }
-  return globalForOpenAi.openai;
+  return globalForOpenRouter.openrouter;
 }
 
-/** RateLimitError (429) covers both true rate limiting and quota exhaustion — disambiguate via error.code. */
-const QUOTA_CODES = new Set(["insufficient_quota"]);
-
-/**
- * Belt-and-suspenders message check, same reasoning as anthropic.provider.ts:
- * live verification found Anthropic's documented error-type taxonomy didn't
- * match its actual response for an out-of-credits account (came back as
- * invalid_request_error, not billing_error) — so a credit-related 400/422
- * here is treated as INSUFFICIENT_CREDITS rather than trusted to always be
- * a genuine malformed-request error.
- */
+/** Same reasoning as openai.provider.ts / anthropic.provider.ts: a credit-related 4xx isn't always reported via a dedicated status/code, so message text is checked too. */
 const CREDIT_MESSAGE_PATTERN = /credit balance|insufficient credit|out of credit|billing/i;
+/** OpenRouter proxies the OpenAI SDK's own RateLimitError shape, including its `code: "insufficient_quota"` convention — checked first, same as openai.provider.ts, before falling back to message text. */
+const QUOTA_CODES = new Set(["insufficient_quota"]);
 
 export function classifyError(error: unknown): LlmProviderError {
   if (error instanceof LlmProviderError) return error;
 
   if (error instanceof APIConnectionTimeoutError) {
-    return new LlmProviderError(error.message, "TIMEOUT", "openai", { cause: error });
+    return new LlmProviderError(error.message, "TIMEOUT", "openrouter", { cause: error });
   }
   if (error instanceof RateLimitError) {
     const code = error.code ?? "";
@@ -44,10 +45,10 @@ export function classifyError(error: unknown): LlmProviderError {
       QUOTA_CODES.has(code) || code.includes("spend_limit") || CREDIT_MESSAGE_PATTERN.test(error.message)
         ? "INSUFFICIENT_CREDITS"
         : "RATE_LIMIT";
-    return new LlmProviderError(error.message, type, "openai", { cause: error });
+    return new LlmProviderError(error.message, type, "openrouter", { cause: error });
   }
   if (error instanceof APIConnectionError) {
-    return new LlmProviderError(error.message, "SERVICE_UNAVAILABLE", "openai", { cause: error });
+    return new LlmProviderError(error.message, "SERVICE_UNAVAILABLE", "openrouter", { cause: error });
   }
   if (error instanceof APIError) {
     const status = error.status;
@@ -56,17 +57,17 @@ export function classifyError(error: unknown): LlmProviderError {
     else if (status === 400 || status === 422) type = "INVALID_REQUEST";
     else if (status !== undefined && status >= 500) type = "SERVICE_UNAVAILABLE";
     if (type === "INVALID_REQUEST" && CREDIT_MESSAGE_PATTERN.test(error.message)) type = "INSUFFICIENT_CREDITS";
-    return new LlmProviderError(error.message, type, "openai", { cause: error });
+    return new LlmProviderError(error.message, type, "openrouter", { cause: error });
   }
 
   const message = error instanceof Error ? error.message : String(error);
   const type = CREDIT_MESSAGE_PATTERN.test(message) ? "INSUFFICIENT_CREDITS" : "UNKNOWN";
-  return new LlmProviderError(message, type, "openai", { cause: error });
+  return new LlmProviderError(message, type, "openrouter", { cause: error });
 }
 
 async function attemptGenerate(request: StructuredOutputRequest): Promise<GeneratedOutput> {
   const client = getClient();
-  const model = process.env.OPENAI_MODEL!;
+  const model = process.env.OPENROUTER_MODEL!;
 
   const response = await client.chat.completions.create({
     model,
@@ -83,14 +84,14 @@ async function attemptGenerate(request: StructuredOutputRequest): Promise<Genera
 
   const content = response.choices[0]?.message?.content;
   if (!content) {
-    throw new LlmProviderError("AI response contained no content.", "UNKNOWN", "openai");
+    throw new LlmProviderError("AI response contained no content.", "UNKNOWN", "openrouter");
   }
 
   let data: unknown;
   try {
     data = JSON.parse(content);
   } catch (error) {
-    throw new LlmProviderError("AI response could not be parsed as JSON.", "UNKNOWN", "openai", { cause: error });
+    throw new LlmProviderError("AI response could not be parsed as JSON.", "UNKNOWN", "openrouter", { cause: error });
   }
 
   return {
@@ -103,11 +104,11 @@ async function attemptGenerate(request: StructuredOutputRequest): Promise<Genera
   };
 }
 
-export const openaiProvider: LlmProvider = {
-  name: "openai",
+export const openrouterProvider: LlmProvider = {
+  name: "openrouter",
 
   isConfigured() {
-    return Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL);
+    return Boolean(process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_MODEL);
   },
 
   async generateRaw(request: StructuredOutputRequest): Promise<GenerateRawResult> {
@@ -120,7 +121,7 @@ export const openaiProvider: LlmProvider = {
         },
         {
           maxAttempts: MAX_PARSE_ATTEMPTS,
-          label: "openai",
+          label: "openrouter",
           isRetryable: (error) =>
             error instanceof LlmProviderError && error.type === "UNKNOWN" && /could not be parsed as JSON/i.test(error.message),
         }
@@ -132,7 +133,7 @@ export const openaiProvider: LlmProvider = {
   },
 
   async healthCheck() {
-    return this.isConfigured() ? getCachedHealth("openai") : "DISABLED";
+    return this.isConfigured() ? getCachedHealth("openrouter") : "DISABLED";
   },
 
   supportsJson() {
@@ -144,6 +145,6 @@ export const openaiProvider: LlmProvider = {
   },
 
   cost(usage: TokenUsage) {
-    return estimateOpenAiCostUsd(process.env.OPENAI_MODEL, usage);
+    return estimateOpenRouterCostUsd(usage);
   },
 };

@@ -27,10 +27,10 @@ export default function SeoScoresTab({
         <CardContent className="grid grid-cols-1 gap-5 md:grid-cols-2">
           <CategoryScoreBar label="Technical SEO" score={technicalSeo.score} reasoning={technicalSeo.reasoning} />
           <CategoryScoreBar label="On-Page SEO" score={onPageSeo.score} reasoning={onPageSeo.reasoning} />
-          <CategoryScoreBar label="Content Quality" score={contentQuality.score} reasoning={contentQuality.reasoning} />
+          <CategoryScoreBar label="Content Quality" score={contentQuality?.score ?? null} reasoning={contentQuality?.reasoning} />
           <CategoryScoreBar label="Structured Data" score={structuredData.score} reasoning={structuredData.reasoning} />
           <CategoryScoreBar label="Internal Linking" score={internalLinking.score} reasoning={internalLinking.reasoning} />
-          {localSeo.applicable && localSeo.score !== null && (
+          {localSeo?.applicable && localSeo.score !== null && (
             <CategoryScoreBar label="Local SEO" score={localSeo.score} reasoning={localSeo.reasoning} />
           )}
         </CardContent>
@@ -41,12 +41,14 @@ export default function SeoScoresTab({
           <CardTitle className="text-base">EEAT</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
-          <CategoryScoreBar label="Overall EEAT" score={eeat.score} reasoning={eeat.reasoning} />
-          <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-            {eeat.factors.map((factor) => (
-              <CategoryScoreBar key={factor.name} label={factor.name} score={factor.score} reasoning={factor.reasoning} />
-            ))}
-          </div>
+          <CategoryScoreBar label="Overall EEAT" score={eeat?.score ?? null} reasoning={eeat?.reasoning} />
+          {eeat && (
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+              {eeat.factors.map((factor) => (
+                <CategoryScoreBar key={factor.name} label={factor.name} score={factor.score} reasoning={factor.reasoning} />
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -55,12 +57,14 @@ export default function SeoScoresTab({
           <CardTitle className="text-base">GEO readiness (AI search engines)</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
-          <CategoryScoreBar label="Overall GEO" score={geoReadiness.score} reasoning={geoReadiness.reasoning} />
-          <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-            {geoReadiness.factors.map((factor) => (
-              <CategoryScoreBar key={factor.name} label={factor.name} score={factor.score} reasoning={factor.reasoning} />
-            ))}
-          </div>
+          <CategoryScoreBar label="Overall GEO" score={geoReadiness?.score ?? null} reasoning={geoReadiness?.reasoning} />
+          {geoReadiness && (
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+              {geoReadiness.factors.map((factor) => (
+                <CategoryScoreBar key={factor.name} label={factor.name} score={factor.score} reasoning={factor.reasoning} />
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -69,16 +73,18 @@ export default function SeoScoresTab({
           <CardTitle className="text-base">AEO readiness (answer engines)</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
-          <CategoryScoreBar label="Overall AEO" score={aeoReadiness.score} reasoning={aeoReadiness.reasoning} />
-          <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-            {aeoReadiness.factors.map((factor) => (
-              <CategoryScoreBar key={factor.name} label={factor.name} score={factor.score} reasoning={factor.reasoning} />
-            ))}
-          </div>
+          <CategoryScoreBar label="Overall AEO" score={aeoReadiness?.score ?? null} reasoning={aeoReadiness?.reasoning} />
+          {aeoReadiness && (
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+              {aeoReadiness.factors.map((factor) => (
+                <CategoryScoreBar key={factor.name} label={factor.name} score={factor.score} reasoning={factor.reasoning} />
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      {(internalLinkingSuggestions.length > 0 || orphanPages.length > 0) && (
+      {((internalLinkingSuggestions?.length ?? 0) > 0 || orphanPages.length > 0) && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Internal linking suggestions</CardTitle>
@@ -89,7 +95,10 @@ export default function SeoScoresTab({
                 Orphan pages (not linked from any other page in this crawl sample): {orphanPages.join(", ")}
               </p>
             )}
-            {internalLinkingSuggestions.map((suggestion) => (
+            {internalLinkingSuggestions === null && (
+              <p className="text-sm text-slate-500">AI internal-linking suggestions are unavailable for this run.</p>
+            )}
+            {internalLinkingSuggestions?.map((suggestion) => (
               <div key={suggestion.title} className="rounded-lg border border-slate-200 p-3">
                 <div className="mb-1 flex items-center gap-2">
                   <Badge variant="outline">{formatEnumLabel(suggestion.type)}</Badge>

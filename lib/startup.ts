@@ -46,12 +46,12 @@ export async function runStartupChecks(): Promise<void> {
     logger.error("Missing required environment variables", { missing: missingEnvVars });
   }
 
-  const providers = describeProviderConfiguration();
-  const enabled = providers.filter((p) => p.configured).map((p) => p.name);
-  const disabled = providers.filter((p) => !p.configured);
+  const providers = await describeProviderConfiguration();
+  const enabled = providers.filter((p) => p.configured && p.health === "HEALTHY").map((p) => p.name);
+  const skipped = providers.filter((p) => !p.configured || p.health !== "HEALTHY");
   logger.info("Startup: AI provider configuration", {
     enabled,
-    disabled: disabled.map((p) => ({ name: p.name, reason: p.reason })),
+    skipped: skipped.map((p) => ({ name: p.name, reason: p.reason })),
   });
 
   const ollama = await checkOllamaReachability();

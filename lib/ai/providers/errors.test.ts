@@ -1,10 +1,18 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIError } from "@anthropic-ai/sdk";
 import { ApiError } from "@google/genai";
+import {
+  APIConnectionError as OpenAiAPIConnectionError,
+  APIConnectionTimeoutError as OpenAiAPIConnectionTimeoutError,
+  APIError as OpenAiAPIError,
+  RateLimitError as OpenAiRateLimitError,
+} from "openai";
 import { describe, expect, it } from "vitest";
 
 import { describeLlmError, isFallbackWorthy, LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
 import { classifyError } from "@/lib/ai/providers/anthropic.provider";
 import { classifyApiError } from "@/lib/ai/providers/gemini.provider";
+import { classifyError as classifyOpenAiError } from "@/lib/ai/providers/openai.provider";
+import { classifyError as classifyOpenRouterError } from "@/lib/ai/providers/openrouter.provider";
 
 describe("isFallbackWorthy", () => {
   it("treats availability-class errors as fallback-worthy", () => {
@@ -157,5 +165,62 @@ describe("gemini.provider classifyApiError", () => {
 
   it("classifies 503 as SERVICE_UNAVAILABLE", () => {
     expect(classifyApiError(new ApiError({ status: 503, message: "overloaded" })).type).toBe("SERVICE_UNAVAILABLE");
+  });
+});
+
+/**
+ * Phase 11C — OpenRouter reuses the `openai` SDK pointed at a different
+ * base URL, so it raises the exact same error classes as the OpenAI
+ * provider; both are tested against the same constructor shapes here.
+ */
+describe.each([
+  ["openai.provider", classifyOpenAiError],
+  ["openrouter.provider", classifyOpenRouterError],
+])("%s classifyError", (_name, classify) => {
+  it("classifies a quota-coded 429 as INSUFFICIENT_CREDITS", () => {
+    const error = new OpenAiRateLimitError(
+      429,
+      { message: "You exceeded your current quota", type: "insufficient_quota", code: "insufficient_quota" },
+      undefined,
+      new Headers()
+    );
+    expect(classify(error).type).toBe("INSUFFICIENT_CREDITS");
+  });
+
+  it("classifies a plain 429 (no quota code/wording) as RATE_LIMIT", () => {
+    const error = new OpenAiRateLimitError(429, { message: "Rate limit reached", type: "requests", code: null }, undefined, new Headers());
+    expect(classify(error).type).toBe("RATE_LIMIT");
+  });
+
+  it("classifies 401 as AUTHENTICATION_ERROR", () => {
+    const error = new OpenAiAPIError(401, { message: "Invalid API key", type: "invalid_request_error" }, undefined, undefined);
+    expect(classify(error).type).toBe("AUTHENTICATION_ERROR");
+  });
+
+  it("classifies a genuine 400 (no credit wording) as INVALID_REQUEST", () => {
+    const error = new OpenAiAPIError(400, { message: "model: field required", type: "invalid_request_error" }, undefined, undefined);
+    expect(classify(error).type).toBe("INVALID_REQUEST");
+  });
+
+  it("classifies a credit-balance-worded 400 as INSUFFICIENT_CREDITS via message text, not just status", () => {
+    const error = new OpenAiAPIError(400, { message: "Your credit balance is too low", type: "invalid_request_error" }, undefined, undefined);
+    expect(classify(error).type).toBe("INSUFFICIENT_CREDITS");
+  });
+
+  it("classifies a 5xx as SERVICE_UNAVAILABLE", () => {
+    const error = new OpenAiAPIError(503, { message: "The server had an error", type: "server_error" }, undefined, undefined);
+    expect(classify(error).type).toBe("SERVICE_UNAVAILABLE");
+  });
+
+  it("classifies APIConnectionTimeoutError as TIMEOUT, checked before the base APIConnectionError", () => {
+    expect(classify(new OpenAiAPIConnectionTimeoutError()).type).toBe("TIMEOUT");
+  });
+
+  it("classifies a plain APIConnectionError (not a timeout) as SERVICE_UNAVAILABLE", () => {
+    expect(classify(new OpenAiAPIConnectionError({ message: "connection failed" })).type).toBe("SERVICE_UNAVAILABLE");
+  });
+
+  it("falls back to UNKNOWN for a completely unrecognized error shape", () => {
+    expect(classify(new Error("something else entirely")).type).toBe("UNKNOWN");
   });
 });

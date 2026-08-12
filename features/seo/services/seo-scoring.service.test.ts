@@ -20,6 +20,9 @@ function page(overrides: Partial<CrawledPage> = {}): CrawledPage {
     h1Text: null,
     imageUrls: [],
     jsonLdBlocks: [],
+    ogTags: {},
+    twitterTags: {},
+    loadTimeMs: 100,
     ...overrides,
   };
 }
@@ -80,6 +83,32 @@ describe("computeTechnicalSeoScore", () => {
       })
     );
     expect(result.score.score).toBeGreaterThanOrEqual(0);
+  });
+
+  // Phase 11C, Objective 7 — page load time is a deterministic crawl-fetch
+  // timing signal (website-crawler.service.ts's loadTimeMs), not an AI
+  // judgment call.
+  it("flags slow-loading pages (over 3s) without needing AI", () => {
+    const result = computeTechnicalSeoScore(crawl({ pages: [page({ loadTimeMs: 4500 })] }));
+    expect(result.findings).toContainEqual(expect.objectContaining({ title: "Slow-loading pages", priority: "MEDIUM" }));
+  });
+
+  it("does not flag a page loaded well under the slow-page threshold", () => {
+    const result = computeTechnicalSeoScore(crawl({ pages: [page({ loadTimeMs: 200 })] }));
+    expect(result.findings).not.toContainEqual(expect.objectContaining({ title: "Slow-loading pages" }));
+  });
+
+  // Phase 11C, Objective 7 — informational only, no score penalty: a large
+  // sitemap relative to the sampled pages means the analysis covered a
+  // subset, not that the site itself is broken.
+  it("notes a partial crawl sample without penalizing the score", () => {
+    const full = computeTechnicalSeoScore(crawl({ sitemapUrls: ["https://example.com/"] }));
+    const partial = computeTechnicalSeoScore(
+      crawl({ sitemapUrls: ["https://example.com/", "https://example.com/a", "https://example.com/b"] })
+    );
+    expect(partial.findings).toContainEqual(expect.objectContaining({ title: "Analysis based on a partial crawl sample", priority: "LOW" }));
+    expect(full.findings).not.toContainEqual(expect.objectContaining({ title: "Analysis based on a partial crawl sample" }));
+    expect(partial.score.score).toBe(full.score.score);
   });
 });
 

@@ -67,6 +67,9 @@ function average(values: number[]): number {
   return values.length === 0 ? 0 : values.reduce((sum, v) => sum + v, 0) / values.length;
 }
 
+/** Phase 11C, Objective 7 — page speed is a deterministic HTML-fetch-timing signal (website-crawler.service.ts's loadTimeMs), not something that needs an AI judgment call. */
+const SLOW_PAGE_THRESHOLD_MS = 3000;
+
 export function computeTechnicalSeoScore(crawl: CrawlResult): {
   score: CategoryScore;
   findings: DeterministicFinding[];
@@ -115,6 +118,29 @@ export function computeTechnicalSeoScore(crawl: CrawlResult): {
       category: "TECHNICAL_SEO",
     });
     score -= 20;
+  }
+
+  const slowPages = crawl.pages.filter((page) => page.loadTimeMs > SLOW_PAGE_THRESHOLD_MS);
+  if (slowPages.length > 0) {
+    findings.push({
+      title: "Slow-loading pages",
+      description: `${slowPages.length} of ${crawl.pages.length} crawled page(s) took over ${SLOW_PAGE_THRESHOLD_MS / 1000}s to load (e.g. ${slowPages[0].url} at ${slowPages[0].loadTimeMs}ms), which can hurt both rankings and user experience.`,
+      priority: "MEDIUM",
+      category: "TECHNICAL_SEO",
+    });
+    score -= Math.min(15, slowPages.length * 5);
+  }
+
+  // Informational only — no score penalty. A large sitemap relative to what
+  // was actually sampled just means this run's findings/scores are based on
+  // a subset, not that the site itself has a problem.
+  if (crawl.sitemapUrls.length > crawl.pages.length) {
+    findings.push({
+      title: "Analysis based on a partial crawl sample",
+      description: `The sitemap lists ${crawl.sitemapUrls.length} URLs, but only ${crawl.pages.length} were sampled for this analysis — findings above reflect that sample, not the entire site.`,
+      priority: "LOW",
+      category: "TECHNICAL_SEO",
+    });
   }
 
   return {

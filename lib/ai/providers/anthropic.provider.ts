@@ -3,8 +3,13 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 
 import { AI_MODEL, getAnthropicClient } from "@/lib/ai/client";
 import { LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
+import { getCachedHealth } from "@/lib/ai/providers/health-cache";
+import { estimateAnthropicCostUsd } from "@/lib/ai/providers/pricing";
 import { withRetry } from "@/lib/ai/providers/retry";
-import type { LlmProvider, StructuredOutputRequest } from "@/lib/ai/providers/types";
+import type { GeneratedOutput, GenerateRawResult, LlmProvider, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
+
+/** Claude Opus 5's documented context window — update if AI_MODEL changes. */
+const MAX_CONTEXT_TOKENS = 1_000_000;
 
 const MAX_PARSE_ATTEMPTS = 3;
 
@@ -53,7 +58,7 @@ export function classifyError(error: unknown): LlmProviderError {
   return new LlmProviderError(message, type, "anthropic", { cause: error });
 }
 
-async function attemptGenerate(request: StructuredOutputRequest): Promise<unknown> {
+async function attemptGenerate(request: StructuredOutputRequest): Promise<GeneratedOutput> {
   const client = getAnthropicClient();
 
   const message = await client.messages.parse({
@@ -71,7 +76,14 @@ async function attemptGenerate(request: StructuredOutputRequest): Promise<unknow
     throw new LlmProviderError("AI response could not be parsed against the expected schema.", "UNKNOWN", "anthropic");
   }
 
-  return message.parsed_output;
+  return {
+    data: message.parsed_output,
+    usage: {
+      promptTokens: message.usage?.input_tokens ?? null,
+      completionTokens: message.usage?.output_tokens ?? null,
+    },
+    model: AI_MODEL,
+  };
 }
 
 export const anthropicProvider: LlmProvider = {
@@ -81,18 +93,42 @@ export const anthropicProvider: LlmProvider = {
     return Boolean(process.env.ANTHROPIC_API_KEY);
   },
 
-  async generateRaw(request: StructuredOutputRequest): Promise<unknown> {
+  async generateRaw(request: StructuredOutputRequest): Promise<GenerateRawResult> {
+    let attempts = 0;
     try {
-      return await withRetry(() => attemptGenerate(request), {
-        maxAttempts: MAX_PARSE_ATTEMPTS,
-        label: "anthropic",
-        isRetryable: (error) =>
-          error instanceof LlmProviderError &&
-          error.type === "UNKNOWN" &&
-          /could not be parsed against the expected schema/i.test(error.message),
-      });
+      const result = await withRetry(
+        () => {
+          attempts++;
+          return attemptGenerate(request);
+        },
+        {
+          maxAttempts: MAX_PARSE_ATTEMPTS,
+          label: "anthropic",
+          isRetryable: (error) =>
+            error instanceof LlmProviderError &&
+            error.type === "UNKNOWN" &&
+            /could not be parsed against the expected schema/i.test(error.message),
+        }
+      );
+      return { ...result, retried: attempts > 1 };
     } catch (error) {
       throw classifyError(error);
     }
+  },
+
+  async healthCheck() {
+    return this.isConfigured() ? getCachedHealth("anthropic") : "DISABLED";
+  },
+
+  supportsJson() {
+    return true;
+  },
+
+  maxContext() {
+    return MAX_CONTEXT_TOKENS;
+  },
+
+  cost(usage: TokenUsage) {
+    return estimateAnthropicCostUsd(AI_MODEL, usage);
   },
 };

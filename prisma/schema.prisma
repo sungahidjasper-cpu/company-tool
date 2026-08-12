@@ -771,6 +771,11 @@ model WebsiteAnalysisJob {
   /// Set only when the AI stage failed after a successful crawl; null for
   /// crawl-stage failures and non-failed jobs.
   errorType       WebsiteAnalysisErrorType?
+  /// Phase 11C — SHA-256 of the canonicalized crawlResultJson, computed once
+  /// crawling succeeds. Lets a later analysis of the same domain skip
+  /// AI regeneration when both this hash and the prompt version match a
+  /// prior SUCCEEDED job exactly (see seo-audit.service.ts PROMPT_VERSION).
+  crawlHash       String?
   createdAt       DateTime                  @default(now())
   updatedAt       DateTime                  @updatedAt
 
@@ -778,12 +783,14 @@ model WebsiteAnalysisJob {
   client     Client?     @relation(fields: [clientId], references: [id], onDelete: SetNull)
   company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
-  issues WebsiteAnalysisIssue[]
+  issues      WebsiteAnalysisIssue[]
+  aiUsageLogs AiUsageLog[]
 
   @@index([companyId])
   @@index([seoProjectId])
   @@index([clientId])
   @@index([status])
+  @@index([domain, crawlHash])
 }
 
 /// Phase 11B — itemized, per-URL technical findings, replacing/extending the
@@ -804,6 +811,9 @@ enum WebsiteAnalysisIssueType {
   ROBOTS_ISSUE
   STRUCTURED_DATA_ISSUE
   INTERNAL_LINKING_OPPORTUNITY
+  /// Phase 11C
+  MISSING_OG_TAGS
+  MISSING_TWITTER_CARD
 }
 
 enum WebsiteAnalysisIssueStatus {
@@ -843,6 +853,51 @@ model WebsiteAnalysisIssue {
   @@index([websiteAnalysisJobId])
   @@index([issueType])
   @@index([status])
+}
+
+/// Phase 11C — the 5 independent AI calls the website-analysis pipeline
+/// makes (extraction, then the 3-way audit split, then the executive
+/// summary that depends on 2 of those). Matches the task boundaries already
+/// established in seo-audit.service.ts / website-analysis.service.ts, not a
+/// new decomposition.
+enum AiTaskType {
+  EXTRACTION
+  SCORES
+  RECOMMENDATIONS
+  CONTENT_INTELLIGENCE
+  EXECUTIVE_SUMMARY
+}
+
+/// Phase 11C — one row per provider attempt (success or failure), for cost/
+/// usage analytics and provider health/retry visibility. Deliberately a real
+/// table, not JSON on WebsiteAnalysisJob, since it's queried in aggregate
+/// across jobs/providers/time, not read alongside any single job.
+/// websiteAnalysisJobId is optional (SetNull) so this analytics history
+/// outlives any one job's lifecycle. errorType reuses the existing
+/// WebsiteAnalysisErrorType enum rather than duplicating the same 8 values.
+model AiUsageLog {
+  id                   String                    @id @default(uuid(7)) @db.Uuid
+  websiteAnalysisJobId String?                   @db.Uuid
+  provider             String
+  taskType             AiTaskType
+  promptVersion        Int
+  model                String?
+  temperature          Float?
+  promptTokens         Int?
+  completionTokens     Int?
+  estimatedCostUsd     Decimal?                  @db.Decimal(10, 6)
+  succeeded            Boolean
+  errorType            WebsiteAnalysisErrorType?
+  latencyMs            Int
+  retried              Boolean                   @default(false)
+  createdAt            DateTime                  @default(now())
+
+  websiteAnalysisJob WebsiteAnalysisJob? @relation(fields: [websiteAnalysisJobId], references: [id], onDelete: SetNull)
+
+  @@index([websiteAnalysisJobId])
+  @@index([provider])
+  @@index([taskType])
+  @@index([createdAt])
 }
 
 // ---------------------------------------------------------------------------

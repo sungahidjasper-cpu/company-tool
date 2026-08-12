@@ -24,6 +24,13 @@ export type CrawledPage = {
   imageUrls: string[];
   /** Raw parsed JSON-LD objects (not just their @type names) — used for structured-data required-field validation. */
   jsonLdBlocks: unknown[];
+  /** Phase 11C additions — additive only, none of the fields above changed shape. */
+  /** Keyed by the tag's property name without the "og:" prefix (e.g. "title", "image"). Empty object means no og: tags at all. */
+  ogTags: Record<string, string>;
+  /** Keyed without the "twitter:" prefix. Empty object means no twitter: tags at all. */
+  twitterTags: Record<string, string>;
+  /** Time to fetch this page's HTML (not including parsing) — feeds computeTechnicalSeoScore's slow-page finding. */
+  loadTimeMs: number;
 };
 
 export type CrawlResult = {
@@ -107,7 +114,7 @@ function resolveUrl(href: string, base: string): string | null {
   }
 }
 
-function extractPageContent(html: string, url: string): CrawledPage {
+function extractPageContent(html: string, url: string, loadTimeMs: number): CrawledPage {
   const $ = cheerio.load(html);
   const title = $("title").first().text().trim() || null;
   const metaDescription = $('meta[name="description"]').attr("content")?.trim() || null;
@@ -133,6 +140,20 @@ function extractPageContent(html: string, url: string): CrawledPage {
     } catch {
       // Malformed JSON-LD — skip rather than fail the whole page.
     }
+  });
+
+  const ogTags: Record<string, string> = {};
+  $('meta[property^="og:"]').each((_, el) => {
+    const property = $(el).attr("property")?.slice("og:".length);
+    const content = $(el).attr("content")?.trim();
+    if (property && content) ogTags[property] = content;
+  });
+
+  const twitterTags: Record<string, string> = {};
+  $('meta[name^="twitter:"]').each((_, el) => {
+    const name = $(el).attr("name")?.slice("twitter:".length);
+    const content = $(el).attr("content")?.trim();
+    if (name && content) twitterTags[name] = content;
   });
 
   const images = $("img");
@@ -171,6 +192,9 @@ function extractPageContent(html: string, url: string): CrawledPage {
     h1Text,
     imageUrls,
     jsonLdBlocks,
+    ogTags,
+    twitterTags,
+    loadTimeMs,
   };
 }
 
@@ -302,10 +326,12 @@ export async function crawlWebsite(domainInput: string): Promise<CrawlResult> {
   for (const url of candidates) {
     if (robots?.isDisallowed(url, USER_AGENT)) continue;
 
+    const fetchStartedAt = Date.now();
     const html = await fetchText(url);
+    const loadTimeMs = Date.now() - fetchStartedAt;
     if (!html) continue;
 
-    const page = extractPageContent(html, url);
+    const page = extractPageContent(html, url, loadTimeMs);
     if (page.bodyText.length < MIN_BODY_TEXT_LENGTH) {
       warnings.push(`${url}: extracted almost no text (likely JS-rendered) — skipped.`);
       continue;

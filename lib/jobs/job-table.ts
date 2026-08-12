@@ -98,11 +98,36 @@ export function markWebsiteAnalysisJobSucceeded(
   });
 }
 
-/** Persisted as soon as crawling succeeds — independent of whether the AI stage that follows succeeds, so a failed AI stage can be retried without re-crawling. */
-export function markWebsiteAnalysisJobCrawled(id: string, crawlResultJson: Prisma.InputJsonValue) {
+/** Persisted as soon as crawling succeeds — independent of whether the AI stage that follows succeeds, so a failed AI stage can be retried without re-crawling. crawlHash feeds the Phase 11C AI-result cache lookup below. */
+export function markWebsiteAnalysisJobCrawled(id: string, crawlResultJson: Prisma.InputJsonValue, crawlHash: string) {
   return prisma.websiteAnalysisJob.update({
     where: { id },
-    data: { crawlResultJson },
+    data: { crawlResultJson, crawlHash },
+  });
+}
+
+/**
+ * Phase 11C — an exact-match AI-result cache: reused only when a prior
+ * SUCCEEDED job for this exact domain+company has the identical crawl
+ * content (crawlHash) AND its AI output was generated at the current
+ * PROMPT_VERSION (checked via the SCORES task's AiUsageLog row — scores is
+ * required for every genuinely-succeeded audit, so its presence at the
+ * current version is a reliable proxy for "this whole prior audit is still
+ * valid to reuse"). A prior job whose AI failed entirely, or was generated
+ * under an older prompt version, is never matched — regeneration is always
+ * the safe fallback, caching is purely a cost optimization on top of it.
+ */
+export function findCachedAiResult(companyId: string, domain: string, crawlHash: string, promptVersion: number) {
+  return prisma.websiteAnalysisJob.findFirst({
+    where: {
+      companyId,
+      domain,
+      crawlHash,
+      status: "SUCCEEDED",
+      aiUsageLogs: { some: { taskType: "SCORES", succeeded: true, promptVersion } },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, resultJson: true, overallScore: true },
   });
 }
 

@@ -32,7 +32,9 @@ export default function SeoStructuredDataTab({
         </CardContent>
       </Card>
 
-      {structuredDataRecommendations.length === 0 ? (
+      {structuredDataRecommendations === null ? (
+        <p className="text-sm text-slate-500">AI structured-data recommendations are unavailable for this run.</p>
+      ) : structuredDataRecommendations.length === 0 ? (
         <p className="text-sm text-slate-500">No additional structured data recommended.</p>
       ) : (
         structuredDataRecommendations.map((recommendation) => (

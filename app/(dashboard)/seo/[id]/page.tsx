@@ -243,12 +243,14 @@ export default async function SeoProjectDetailPage({
               </span>
             </Link>
           ))}
-          <Link
-            href={`/seo/${seoProject.id}/analysis-history`}
-            className="mt-2 text-sm font-medium hover:underline"
-          >
-            View analysis history →
-          </Link>
+          <div className="mt-2 flex items-center justify-between text-sm">
+            <Link href={`/seo/${seoProject.id}/analysis-history`} className="font-medium hover:underline">
+              View analysis history →
+            </Link>
+            <Link href={`/seo/website-analysis?seoProjectId=${seoProject.id}`} className="font-medium hover:underline">
+              Analyze new website →
+            </Link>
+          </div>
         </CardContent>
       </Card>
 

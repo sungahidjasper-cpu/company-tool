@@ -1,11 +1,20 @@
 import { Ollama } from "ollama";
 
 import { LlmProviderError } from "@/lib/ai/providers/errors";
+import { getCachedHealth } from "@/lib/ai/providers/health-cache";
+import { estimateOllamaCostUsd } from "@/lib/ai/providers/pricing";
 import { withRetry } from "@/lib/ai/providers/retry";
-import type { LlmProvider, StructuredOutputRequest } from "@/lib/ai/providers/types";
+import type { GeneratedOutput, GenerateRawResult, LlmProvider, StructuredOutputRequest } from "@/lib/ai/providers/types";
 
 const MAX_PARSE_ATTEMPTS = 3;
 const REQUEST_TIMEOUT_MS = 120_000;
+/**
+ * Ollama's client.chat() doesn't report a model's context window, and
+ * OLLAMA_MODEL can be configured to anything — this is a conservative
+ * default matching many locally-served models' out-of-the-box context, not
+ * a value read from the actual running model.
+ */
+const MAX_CONTEXT_TOKENS = 8_192;
 
 const globalForOllama = globalThis as unknown as { ollama?: Ollama };
 
@@ -86,12 +95,13 @@ function raceTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-async function attemptGenerate(request: StructuredOutputRequest): Promise<unknown> {
+async function attemptGenerate(request: StructuredOutputRequest): Promise<GeneratedOutput> {
   const client = getClient();
+  const model = process.env.OLLAMA_MODEL!;
 
   const response = await raceTimeout(
     client.chat({
-      model: process.env.OLLAMA_MODEL!,
+      model,
       messages: [
         ...(request.system ? [{ role: "system", content: request.system }] : []),
         { role: "user", content: request.prompt },
@@ -108,11 +118,22 @@ async function attemptGenerate(request: StructuredOutputRequest): Promise<unknow
     throw new LlmProviderError("AI response contained no content.", "UNKNOWN", "ollama");
   }
 
+  let data: unknown;
   try {
-    return JSON.parse(content);
+    data = JSON.parse(content);
   } catch (error) {
     throw new LlmProviderError("AI response could not be parsed as JSON.", "UNKNOWN", "ollama", { cause: error });
   }
+
+  return {
+    data,
+    // ollama-js reports these directly on the response, not nested under `usage`.
+    usage: {
+      promptTokens: response.prompt_eval_count ?? null,
+      completionTokens: response.eval_count ?? null,
+    },
+    model,
+  };
 }
 
 export const ollamaProvider: LlmProvider = {
@@ -122,16 +143,40 @@ export const ollamaProvider: LlmProvider = {
     return Boolean(process.env.OLLAMA_HOST && process.env.OLLAMA_MODEL);
   },
 
-  async generateRaw(request: StructuredOutputRequest): Promise<unknown> {
+  async generateRaw(request: StructuredOutputRequest): Promise<GenerateRawResult> {
+    let attempts = 0;
     try {
-      return await withRetry(() => attemptGenerate(request), {
-        maxAttempts: MAX_PARSE_ATTEMPTS,
-        label: "ollama",
-        isRetryable: (error) =>
-          error instanceof LlmProviderError && error.type === "UNKNOWN" && /could not be parsed as JSON/i.test(error.message),
-      });
+      const result = await withRetry(
+        () => {
+          attempts++;
+          return attemptGenerate(request);
+        },
+        {
+          maxAttempts: MAX_PARSE_ATTEMPTS,
+          label: "ollama",
+          isRetryable: (error) =>
+            error instanceof LlmProviderError && error.type === "UNKNOWN" && /could not be parsed as JSON/i.test(error.message),
+        }
+      );
+      return { ...result, retried: attempts > 1 };
     } catch (error) {
       throw classifyError(error);
     }
+  },
+
+  async healthCheck() {
+    return this.isConfigured() ? getCachedHealth("ollama") : "DISABLED";
+  },
+
+  supportsJson() {
+    return true;
+  },
+
+  maxContext() {
+    return MAX_CONTEXT_TOKENS;
+  },
+
+  cost() {
+    return estimateOllamaCostUsd();
   },
 };

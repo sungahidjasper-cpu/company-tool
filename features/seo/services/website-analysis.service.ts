@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { Prisma, WebsiteAnalysisJob } from "@/lib/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { generateStructuredOutput } from "@/lib/ai/structured-output";
@@ -5,6 +7,7 @@ import { describeLlmError, LlmProviderError } from "@/lib/ai/providers/errors";
 import { logger } from "@/lib/logger";
 import {
   createWebsiteAnalysisJob,
+  findCachedAiResult,
   getWebsiteAnalysisJob,
   markWebsiteAnalysisJobCrawled,
   markWebsiteAnalysisJobFailed,
@@ -15,7 +18,7 @@ import {
 } from "@/lib/jobs/job-table";
 import type { Recommendation } from "@/features/seo/schemas/seo-audit.schema";
 import { websiteAnalysisExtractionSchema, type WebsiteAnalysisExtraction } from "@/features/seo/schemas/website-analysis.schema";
-import { generateSeoAudit } from "@/features/seo/services/seo-audit.service";
+import { generateSeoAudit, PROMPT_VERSION } from "@/features/seo/services/seo-audit.service";
 import {
   computeInternalLinkingScore,
   computeOnPageSeoScore,
@@ -66,6 +69,17 @@ type ScoredCrawl = {
   internalLinking: ReturnType<typeof computeInternalLinkingScore>;
 };
 
+/**
+ * Phase 11C — a stable content fingerprint for the Objective 10 AI-result
+ * cache: if a later analysis of the same domain produces a crawl that
+ * hashes identically, its AI output can be reused instead of regenerated.
+ * Not cryptographically sensitive — SHA-256 is used only for its low
+ * collision rate on structured data, not for any security property.
+ */
+function hashCrawlResult(crawl: CrawlResult): string {
+  return createHash("sha256").update(JSON.stringify(crawl)).digest("hex");
+}
+
 function scoreCrawl(crawl: CrawlResult): ScoredCrawl {
   return {
     crawl,
@@ -82,7 +96,7 @@ function scoreCrawl(crawl: CrawlResult): ScoredCrawl {
  * that follows it succeeds. Returns null (job already marked FAILED) when
  * there's nothing to hand off to the AI phase.
  */
-async function runCrawlPhase(job: { id: string; domain: string }): Promise<ScoredCrawl | null> {
+async function runCrawlPhase(job: { id: string; domain: string }): Promise<{ scored: ScoredCrawl; crawlHash: string } | null> {
   logger.info("Website analysis: crawl phase started", { jobId: job.id, domain: job.domain });
   await updateWebsiteAnalysisJobProgress(job.id, 10);
   const crawl = await crawlWebsite(job.domain);
@@ -95,7 +109,13 @@ async function runCrawlPhase(job: { id: string; domain: string }): Promise<Score
   }
 
   const scored = scoreCrawl(crawl);
-  await markWebsiteAnalysisJobCrawled(job.id, crawl as unknown as Prisma.InputJsonValue);
+  // Computed once here and threaded through to runAiPhase (rather than
+  // recomputed later from a DB read-back) so it can never drift from what's
+  // actually stored on the row — a jsonb round-trip isn't guaranteed to
+  // preserve key order byte-for-byte, which a fresh recompute would be
+  // sensitive to.
+  const crawlHash = hashCrawlResult(crawl);
+  await markWebsiteAnalysisJobCrawled(job.id, crawl as unknown as Prisma.InputJsonValue, crawlHash);
 
   const issues = await detectWebsiteAnalysisIssues(crawl, {
     detectedSchemaTypes: scored.structuredData.detectedSchemaTypes,
@@ -111,7 +131,7 @@ async function runCrawlPhase(job: { id: string; domain: string }): Promise<Score
   await updateWebsiteAnalysisJobProgress(job.id, 55);
   logger.info("Website analysis: crawl phase succeeded", { jobId: job.id, domain: job.domain, pageCount: crawl.pages.length });
 
-  return scored;
+  return { scored, crawlHash };
 }
 
 type AiFailure = { errorType: NonNullable<WebsiteAnalysisJob["errorType"]>; errorMessage: string };
@@ -125,18 +145,28 @@ function classifyAiFailure(error: unknown): AiFailure {
  * AI (extraction + audit) is an OPTIONAL enrichment layer on top of the
  * crawl + deterministic issue detection that already succeeded in
  * runCrawlPhase — it is never required to produce a viewable result. If
- * either AI call fails (quota, auth, rate limit, timeout, provider outage —
- * anything LlmProviderError-shaped), that failure is recorded as a
+ * either AI call fails entirely (quota, auth, rate limit, timeout, provider
+ * outage — anything LlmProviderError-shaped), that failure is recorded as a
  * non-blocking advisory (reusing errorType/errorMessage) and the job still
  * finishes SUCCEEDED with whatever deterministic data exists (crawl,
- * issues, and business info if extraction did complete). The job is only
- * ever marked FAILED here for a genuine application/database error while
- * finalizing — never solely because AI enrichment didn't complete. Used
- * both for a fresh run (right after runCrawlPhase) and for
- * retryWebsiteAnalysis (starting from a previously persisted crawl,
- * skipping crawlWebsite entirely).
+ * issues, and business info if extraction did complete). A PARTIAL audit
+ * failure (Phase 11C — some but not all of the 3 independent audit tasks
+ * failed, see seo-audit.service.ts) does NOT set this job-level advisory —
+ * the job succeeds with a full, non-null audit object whose specific
+ * missing sections are null; the UI shows an "unavailable for this run"
+ * state on just those sections, not a global banner, since the sections
+ * that did succeed are genuinely complete and shouldn't be shadowed by one.
+ * The job is only ever marked FAILED here for a genuine application/
+ * database error while finalizing — never solely because AI enrichment
+ * didn't complete. Used both for a fresh run (right after runCrawlPhase)
+ * and for retryWebsiteAnalysis (starting from a previously persisted
+ * crawl, skipping crawlWebsite entirely).
  */
-async function runAiPhase(job: { id: string }, { crawl, technical, onPage, structuredData, internalLinking }: ScoredCrawl) {
+async function runAiPhase(
+  job: { id: string; domain: string; companyId: string },
+  crawlHash: string,
+  { crawl, technical, onPage, structuredData, internalLinking }: ScoredCrawl
+) {
   logger.info("Website analysis: AI phase started", { jobId: job.id });
 
   const deterministicFindings: DeterministicFinding[] = [
@@ -146,6 +176,22 @@ async function runAiPhase(job: { id: string }, { crawl, technical, onPage, struc
     ...internalLinking.findings,
   ];
 
+  // Phase 11C, Objective 10: an identical prior crawl + the current prompt
+  // version means the last AI output is still valid — reuse it and skip
+  // every AI provider call for this run entirely (the ">90% fewer AI
+  // calls" cost-optimization goal, realized directly for repeat analyses
+  // of an unchanged site).
+  const cached = await findCachedAiResult(job.companyId, job.domain, crawlHash, PROMPT_VERSION);
+  if (cached && cached.resultJson) {
+    logger.info("Website analysis: reusing a prior job's AI output — crawl content and prompt version match exactly", {
+      jobId: job.id,
+      reusedFromJobId: cached.id,
+    });
+    await updateWebsiteAnalysisJobProgress(job.id, 99);
+    await markWebsiteAnalysisJobSucceeded(job.id, cached.resultJson, cached.overallScore ?? undefined);
+    return;
+  }
+
   let extraction: WebsiteAnalysisExtraction | null = null;
   let aiFailure: AiFailure | null = null;
 
@@ -154,6 +200,9 @@ async function runAiPhase(job: { id: string }, { crawl, technical, onPage, struc
       system:
         "You analyze small-to-medium business websites and extract structured business information from sampled page content. Be concise and only state what the content supports.",
       prompt: buildExtractionPrompt(crawl.pages),
+      taskType: "EXTRACTION",
+      promptVersion: PROMPT_VERSION,
+      websiteAnalysisJobId: job.id,
     });
     await updateWebsiteAnalysisJobProgress(job.id, 70);
   } catch (error) {
@@ -169,6 +218,7 @@ async function runAiPhase(job: { id: string }, { crawl, technical, onPage, struc
   if (extraction) {
     try {
       audit = await generateSeoAudit({
+        websiteAnalysisJobId: job.id,
         crawl,
         extraction,
         deterministicFindings,
@@ -193,20 +243,21 @@ async function runAiPhase(job: { id: string }, { crawl, technical, onPage, struc
     let auditJson: Prisma.InputJsonValue | null = null;
 
     if (audit) {
-      const recommendations = [...deterministicFindings.map(findingToRecommendation), ...audit.recommendations].sort(
+      const aiRecommendations = audit.recommendations ?? [];
+      const recommendations = [...deterministicFindings.map(findingToRecommendation), ...aiRecommendations].sort(
         (a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]
       );
 
       const categoryScoresForOverall: Partial<Record<SeoCategory, number | null>> = {
         TECHNICAL_SEO: technical.score.score,
         ON_PAGE_SEO: onPage.score.score,
-        CONTENT_QUALITY: audit.contentQuality.score,
+        CONTENT_QUALITY: audit.scores?.contentQuality.score ?? null,
         STRUCTURED_DATA: structuredData.score.score,
         INTERNAL_LINKING: internalLinking.score.score,
-        EEAT: audit.eeat.score,
-        LOCAL_SEO: audit.localSeo.applicable ? audit.localSeo.score : null,
-        GEO_READINESS: audit.geoReadiness.score,
-        AEO_READINESS: audit.aeoReadiness.score,
+        EEAT: audit.scores?.eeat.score ?? null,
+        LOCAL_SEO: audit.scores?.localSeo.applicable ? audit.scores.localSeo.score : null,
+        GEO_READINESS: audit.scores?.geoReadiness.score ?? null,
+        AEO_READINESS: audit.scores?.aeoReadiness.score ?? null,
       };
       overallScore = computeOverallScore(categoryScoresForOverall);
 
@@ -215,22 +266,22 @@ async function runAiPhase(job: { id: string }, { crawl, technical, onPage, struc
         categoryScores: {
           technicalSeo: technical.score,
           onPageSeo: onPage.score,
-          contentQuality: audit.contentQuality,
+          contentQuality: audit.scores?.contentQuality ?? null,
           structuredData: structuredData.score,
           internalLinking: internalLinking.score,
-          eeat: audit.eeat,
-          localSeo: audit.localSeo,
-          geoReadiness: audit.geoReadiness,
-          aeoReadiness: audit.aeoReadiness,
+          eeat: audit.scores?.eeat ?? null,
+          localSeo: audit.scores?.localSeo ?? null,
+          geoReadiness: audit.scores?.geoReadiness ?? null,
+          aeoReadiness: audit.scores?.aeoReadiness ?? null,
         },
         recommendations,
-        keywordIntelligence: audit.keywordIntelligence,
-        contentGaps: audit.contentGaps,
-        structuredDataRecommendations: audit.structuredDataRecommendations,
+        keywordIntelligence: audit.contentIntelligence?.keywordIntelligence ?? null,
+        contentGaps: audit.contentIntelligence?.contentGaps ?? null,
+        structuredDataRecommendations: audit.contentIntelligence?.structuredDataRecommendations ?? null,
         detectedSchemaTypes: structuredData.detectedSchemaTypes,
-        internalLinkingSuggestions: audit.internalLinkingSuggestions,
+        internalLinkingSuggestions: audit.contentIntelligence?.internalLinkingSuggestions ?? null,
         orphanPages: internalLinking.orphanPages,
-        executiveSummary: audit.executiveSummary,
+        executiveSummary: audit.executiveSummary ?? null,
       } satisfies Prisma.InputJsonValue;
     }
 
@@ -270,10 +321,10 @@ async function runAiPhase(job: { id: string }, { crawl, technical, onPage, struc
   }
 }
 
-async function runClaimedJob(job: { id: string; domain: string }) {
-  const scored = await runCrawlPhase(job);
-  if (!scored) return;
-  await runAiPhase(job, scored);
+async function runClaimedJob(job: { id: string; domain: string; companyId: string }) {
+  const result = await runCrawlPhase(job);
+  if (!result) return;
+  await runAiPhase(job, result.crawlHash, result.scored);
 }
 
 async function runWebsiteAnalysisJob(jobId: string) {
@@ -330,9 +381,15 @@ export async function retryWebsiteAnalysis(job: WebsiteAnalysisJob) {
   logger.info("Website analysis: retrying AI phase without re-crawling", { jobId: job.id });
   const crawl = job.crawlResultJson as unknown as CrawlResult;
   const scored = scoreCrawl(crawl);
+  // job.crawlHash is only null for rows crawled before the Phase 11C
+  // migration — recomputing here is the safe fallback for those, not the
+  // normal path (the normal path reuses the value already stored on the
+  // row rather than a DB-read-back recompute, which a jsonb round-trip
+  // isn't guaranteed to reproduce byte-for-byte).
+  const crawlHash = job.crawlHash ?? hashCrawlResult(crawl);
 
   const running = await markWebsiteAnalysisJobRetryingAiPhase(job.id);
-  void runAiPhase(running, scored);
+  void runAiPhase(running, crawlHash, scored);
 }
 
 /**

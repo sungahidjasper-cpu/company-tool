@@ -6,6 +6,9 @@ type SeoContentGapsTabProps = {
 };
 
 export default function SeoContentGapsTab({ contentGaps }: SeoContentGapsTabProps) {
+  if (contentGaps === null) {
+    return <p className="text-sm text-slate-500">AI content-gap analysis is unavailable for this run.</p>;
+  }
   if (contentGaps.length === 0) {
     return <p className="text-sm text-slate-500">No content gaps identified.</p>;
   }

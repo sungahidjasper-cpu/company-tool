@@ -1,4 +1,5 @@
 import { generateStructuredOutput } from "@/lib/ai/structured-output";
+import { logger } from "@/lib/logger";
 import {
   executiveSummarySchema,
   seoContentIntelligenceSchema,
@@ -6,13 +7,24 @@ import {
   seoScoresSchema,
   type Recommendation,
   type SeoAuditOutput,
+  type SeoContentIntelligenceOutput,
   type SeoScoresOutput,
 } from "@/features/seo/schemas/seo-audit.schema";
 import type { WebsiteAnalysisExtraction } from "@/features/seo/schemas/website-analysis.schema";
 import type { DeterministicFinding } from "@/features/seo/services/seo-scoring.service";
 import type { CrawlResult } from "@/features/seo/services/website-crawler.service";
 
+/**
+ * Bumped whenever any prompt template below changes — also the exact-match
+ * key website-analysis.service.ts uses to decide whether a prior job's AI
+ * output can be reused instead of regenerated (see its crawlHash cache
+ * lookup). A stale prior result is never reused across a version bump.
+ */
+export const PROMPT_VERSION = 1;
+
 export type AuditContext = {
+  /** Provenance for AiUsageLog rows — the job this audit call is for. */
+  websiteAnalysisJobId: string;
   crawl: CrawlResult;
   extraction: WebsiteAnalysisExtraction;
   deterministicFindings: DeterministicFinding[];
@@ -56,7 +68,7 @@ Crawled page content (homepage plus a sample of other pages):
 ${pageSummaries}`;
 }
 
-async function generateScores(sharedContext: string): Promise<SeoScoresOutput> {
+async function generateScores(sharedContext: string, jobId: string): Promise<SeoScoresOutput> {
   const prompt = `${sharedContext}
 
 Using ONLY the information above:
@@ -66,10 +78,17 @@ Using ONLY the information above:
 4. Score GEO Readiness — an overall score plus reasoning, plus a "factors" array with exactly these 7 entries (by name): Entity Clarity, Structured Data Coverage, Topic Clustering, Semantic Consistency, Authoritativeness, Source Transparency, Internal Entity Relationships.
 5. Score AEO Readiness — an overall score plus reasoning, plus a "factors" array with exactly these 7 entries (by name): FAQ Content, Question & Answer Formatting, Featured Snippet Opportunities, Definitions, Tables, Lists, Direct Answers.`;
 
-  return generateStructuredOutput(seoScoresSchema, { system: AUDIT_SYSTEM_PROMPT, prompt, maxTokens: 6000 });
+  return generateStructuredOutput(seoScoresSchema, {
+    system: AUDIT_SYSTEM_PROMPT,
+    prompt,
+    maxTokens: 6000,
+    taskType: "SCORES",
+    promptVersion: PROMPT_VERSION,
+    websiteAnalysisJobId: jobId,
+  });
 }
 
-async function generateRecommendations(sharedContext: string): Promise<Recommendation[]> {
+async function generateRecommendations(sharedContext: string, jobId: string): Promise<Recommendation[]> {
   const prompt = `${sharedContext}
 
 Using ONLY the information above, produce a prioritized list of recommendations covering technical, on-page, content, structured data, internal linking, EEAT, GEO, and AEO — each with a title, description, why it matters, estimated impact, difficulty, priority, and category. Do not just restate the deterministic findings above verbatim; add judgment-based recommendations they don't cover.`;
@@ -78,11 +97,14 @@ Using ONLY the information above, produce a prioritized list of recommendations 
     system: AUDIT_SYSTEM_PROMPT,
     prompt,
     maxTokens: 6000,
+    taskType: "RECOMMENDATIONS",
+    promptVersion: PROMPT_VERSION,
+    websiteAnalysisJobId: jobId,
   });
   return result.recommendations;
 }
 
-async function generateContentIntelligence(sharedContext: string) {
+async function generateContentIntelligence(sharedContext: string, jobId: string): Promise<SeoContentIntelligenceOutput> {
   const prompt = `${sharedContext}
 
 Using ONLY the information above:
@@ -95,13 +117,17 @@ Using ONLY the information above:
     system: AUDIT_SYSTEM_PROMPT,
     prompt,
     maxTokens: 8000,
+    taskType: "CONTENT_INTELLIGENCE",
+    promptVersion: PROMPT_VERSION,
+    websiteAnalysisJobId: jobId,
   });
 }
 
 async function generateExecutiveSummary(
   extraction: WebsiteAnalysisExtraction,
   scores: SeoScoresOutput,
-  recommendations: Recommendation[]
+  recommendations: Recommendation[],
+  jobId: string
 ) {
   const topRecommendations = recommendations.slice(0, 8).map((r) => `- [${r.priority}] ${r.title}`).join("\n");
 
@@ -123,19 +149,65 @@ Write an executive summary: a short narrative on overall health, 3-5 strengths, 
     system: AUDIT_SYSTEM_PROMPT,
     prompt,
     maxTokens: 2000,
+    taskType: "EXECUTIVE_SUMMARY",
+    promptVersion: PROMPT_VERSION,
+    websiteAnalysisJobId: jobId,
   });
 }
 
+/**
+ * Phase 11C — the 3 tasks below fail independently (Promise.allSettled):
+ * a rejected contentIntelligence call, say, no longer discards scores and
+ * recommendations that already succeeded. Each rejection is logged with its
+ * task name so a partial-AI run is diagnosable from logs alone. The
+ * executive summary is generated only when BOTH scores and recommendations
+ * succeeded — it summarizes them, so summarizing missing data would be
+ * actively misleading rather than merely incomplete.
+ */
 export async function generateSeoAudit(ctx: AuditContext): Promise<SeoAuditOutput> {
   const sharedContext = buildSharedContext(ctx);
 
-  const [scores, recommendations, contentIntelligence] = await Promise.all([
-    generateScores(sharedContext),
-    generateRecommendations(sharedContext),
-    generateContentIntelligence(sharedContext),
+  const [scoresResult, recommendationsResult, contentIntelligenceResult] = await Promise.allSettled([
+    generateScores(sharedContext, ctx.websiteAnalysisJobId),
+    generateRecommendations(sharedContext, ctx.websiteAnalysisJobId),
+    generateContentIntelligence(sharedContext, ctx.websiteAnalysisJobId),
   ]);
 
-  const executiveSummary = await generateExecutiveSummary(ctx.extraction, scores, recommendations);
+  const logTaskFailure = (task: string, result: PromiseSettledResult<unknown>) => {
+    if (result.status === "rejected") {
+      logger.warn("Website analysis: an independent audit task failed — other audit sections are unaffected", {
+        jobId: ctx.websiteAnalysisJobId,
+        task,
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+    }
+  };
+  logTaskFailure("SCORES", scoresResult);
+  logTaskFailure("RECOMMENDATIONS", recommendationsResult);
+  logTaskFailure("CONTENT_INTELLIGENCE", contentIntelligenceResult);
 
-  return { ...scores, recommendations, ...contentIntelligence, executiveSummary };
+  // All 3 failing means there's nothing usable at all — functionally the
+  // same "AI audit unavailable" case runAiPhase already handles for a
+  // failed extraction call, so it's surfaced the same way: rethrow (the
+  // scores task's reason, being first/most central) so the caller's
+  // existing catch block classifies it into the same job-level advisory
+  // banner already verified in Phase 11B, rather than a job "succeeding"
+  // with every single audit section empty.
+  if (scoresResult.status === "rejected" && recommendationsResult.status === "rejected" && contentIntelligenceResult.status === "rejected") {
+    throw scoresResult.reason;
+  }
+
+  const scores = scoresResult.status === "fulfilled" ? scoresResult.value : null;
+  const recommendations = recommendationsResult.status === "fulfilled" ? recommendationsResult.value : null;
+  const contentIntelligence = contentIntelligenceResult.status === "fulfilled" ? contentIntelligenceResult.value : null;
+
+  const executiveSummary =
+    scores && recommendations
+      ? await generateExecutiveSummary(ctx.extraction, scores, recommendations, ctx.websiteAnalysisJobId).catch((error) => {
+          logTaskFailure("EXECUTIVE_SUMMARY", { status: "rejected", reason: error });
+          return null;
+        })
+      : null;
+
+  return { scores, recommendations, contentIntelligence, executiveSummary };
 }

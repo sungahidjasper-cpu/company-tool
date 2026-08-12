@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Copy, Globe, History, RotateCcw } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Copy, Globe, History, Loader2, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 
 import EmptyState from "@/components/dashboard/EmptyState";
@@ -29,6 +29,13 @@ import SeoRecommendationsTab from "@/features/seo/components/SeoRecommendationsT
 import SeoScoresTab from "@/features/seo/components/SeoScoresTab";
 import SeoStructuredDataTab from "@/features/seo/components/SeoStructuredDataTab";
 import { parseWebsiteAnalysisResult } from "@/features/seo/schemas/seo-audit.schema";
+import {
+  computeInternalLinkingScore,
+  computeOnPageSeoScore,
+  computeStructuredDataScore,
+  computeTechnicalSeoScore,
+} from "@/features/seo/services/seo-scoring.service";
+import type { CrawlResult } from "@/features/seo/services/website-crawler.service";
 import type { WebsiteAnalysisIssue, WebsiteAnalysisJob } from "@/lib/generated/prisma/client";
 
 const POLL_INTERVAL_MS = 3000;
@@ -73,9 +80,23 @@ type WebsiteAnalysisWorkspaceProps = {
   clientOptions: ClientOption[];
   /** Pre-loads a specific past analysis on mount — used when arriving from the Analysis History page ("reopen"). */
   initialJob?: WebsiteAnalysisJob | null;
+  /**
+   * Phase 12A — set when this workspace was opened from an SEO Project (via
+   * `/seo/website-analysis?seoProjectId=...`), so a newly-started analysis
+   * gets linked to that project. Absent for the standalone entry point,
+   * which stays fully supported — this never becomes a required field.
+   */
+  seoProjectId?: string | null;
+  seoProjectName?: string | null;
 };
 
-export default function WebsiteAnalysisWorkspace({ initialHistory, clientOptions, initialJob }: WebsiteAnalysisWorkspaceProps) {
+export default function WebsiteAnalysisWorkspace({
+  initialHistory,
+  clientOptions,
+  initialJob,
+  seoProjectId,
+  seoProjectName,
+}: WebsiteAnalysisWorkspaceProps) {
   const [domain, setDomain] = useState("");
   const [clientId, setClientId] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -98,11 +119,19 @@ export default function WebsiteAnalysisWorkspace({ initialHistory, clientOptions
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once on mount to pick up initialJob, matches this component's existing pattern of not re-running polling setup on prop changes
   }, []);
 
-  // Issues are crawl-derived (persisted independently of the AI phase) — fetch them whenever the active job changes to a SUCCEEDED one, so the Issues tab has data as soon as it can render.
+  // Issues are crawl-derived and persisted as soon as the crawl phase
+  // finishes — independently of, and well before, the AI phase completes.
+  // Fetch them as soon as crawlResultJson exists (Phase 11C: this can be
+  // while status is still RUNNING, not only once SUCCEEDED), so the Issues
+  // tab has data as soon as it can render. Depends on the boolean rather
+  // than the object itself so a poll tick that doesn't change that boolean
+  // doesn't trigger a redundant re-fetch every 3 seconds.
+  const activeJobId = activeJob?.id;
+  const hasCrawlData = Boolean(activeJob?.crawlResultJson);
   useEffect(() => {
     let cancelled = false;
 
-    if (activeJob?.status !== "SUCCEEDED") {
+    if (!activeJobId || !hasCrawlData) {
       // Deferred (not called synchronously in the effect body) to avoid triggering a cascading render mid-effect.
       Promise.resolve().then(() => {
         if (!cancelled) setIssues([]);
@@ -112,13 +141,13 @@ export default function WebsiteAnalysisWorkspace({ initialHistory, clientOptions
       };
     }
 
-    listIssuesForJobAction(activeJob.id).then((result) => {
+    listIssuesForJobAction(activeJobId).then((result) => {
       if (!cancelled && result.success) setIssues(result.data);
     });
     return () => {
       cancelled = true;
     };
-  }, [activeJob?.id, activeJob?.status]);
+  }, [activeJobId, hasCrawlData]);
 
   function recordInHistory(job: WebsiteAnalysisJob) {
     setHistory((prev) =>
@@ -152,7 +181,11 @@ export default function WebsiteAnalysisWorkspace({ initialHistory, clientOptions
     setFormError(null);
     setIsSubmitting(true);
 
-    const result = await startWebsiteAnalysisAction({ domain, clientId: clientId || undefined });
+    const result = await startWebsiteAnalysisAction({
+      domain,
+      clientId: clientId || undefined,
+      seoProjectId: seoProjectId || undefined,
+    });
     setIsSubmitting(false);
 
     if (!result.success) {
@@ -213,11 +246,39 @@ export default function WebsiteAnalysisWorkspace({ initialHistory, clientOptions
   const result = parseWebsiteAnalysisResult(activeJob);
   const isRunning = activeJob?.status === "PENDING" || activeJob?.status === "RUNNING";
 
+  /**
+   * Phase 11C, Objectives 9 & 13 — the crawl + deterministic issue detection
+   * finish well before the AI phase does (see website-analysis.service.ts's
+   * runCrawlPhase vs. runAiPhase), so the user doesn't have to wait for AI
+   * just to see real crawl data. These 4 category scores are pure functions
+   * of the crawl (seo-scoring.service.ts, already used server-side) — safe
+   * to also run client-side once crawlResultJson is available, before the
+   * job reaches SUCCEEDED.
+   */
+  const partialCrawl = useMemo(
+    () => (isRunning && activeJob?.crawlResultJson ? (activeJob.crawlResultJson as unknown as CrawlResult) : null),
+    [isRunning, activeJob?.crawlResultJson]
+  );
+  const partialScores = useMemo(() => {
+    if (!partialCrawl) return null;
+    return {
+      technical: computeTechnicalSeoScore(partialCrawl),
+      onPage: computeOnPageSeoScore(partialCrawl),
+      structuredData: computeStructuredDataScore(partialCrawl),
+      internalLinking: computeInternalLinkingScore(partialCrawl),
+    };
+  }, [partialCrawl]);
+
   return (
     <div className="flex flex-col gap-6">
       <Card>
         <CardHeader>
           <CardTitle>Analyze a website</CardTitle>
+          {seoProjectId && (
+            <p className="text-sm text-slate-500">
+              This analysis will be linked to the SEO project{seoProjectName ? ` "${seoProjectName}"` : ""}.
+            </p>
+          )}
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="flex flex-col gap-3">
@@ -292,6 +353,49 @@ export default function WebsiteAnalysisWorkspace({ initialHistory, clientOptions
                   <span>{activeJob.progress ?? 0}%</span>
                 </div>
                 <Progress value={activeJob.progress ?? 0} />
+              </div>
+            )}
+
+            {partialCrawl && partialScores && (
+              <div className="flex flex-col gap-5">
+                <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+                  <Loader2 size={16} className="shrink-0 animate-spin text-slate-400" />
+                  Deterministic crawl and issue results are ready below. AI-generated scores, recommendations, and
+                  the executive summary are still generating.
+                </div>
+                <Tabs defaultValue="scores">
+                  <TabsList>
+                    <TabsTab value="scores">SEO Scores</TabsTab>
+                    <TabsTab value="issues">Issues{issues.length > 0 ? ` (${issues.length})` : ""}</TabsTab>
+                    <TabsTab value="crawled-pages">Crawled Pages</TabsTab>
+                  </TabsList>
+                  <TabsPanel value="scores">
+                    <SeoScoresTab
+                      categoryScores={{
+                        technicalSeo: partialScores.technical.score,
+                        onPageSeo: partialScores.onPage.score,
+                        contentQuality: null,
+                        structuredData: partialScores.structuredData.score,
+                        internalLinking: partialScores.internalLinking.score,
+                        eeat: null,
+                        localSeo: null,
+                        geoReadiness: null,
+                        aeoReadiness: null,
+                      }}
+                      internalLinkingSuggestions={null}
+                      orphanPages={partialScores.internalLinking.orphanPages}
+                    />
+                  </TabsPanel>
+                  <TabsPanel value="issues">
+                    <SeoIssuesTab jobId={activeJob.id} issues={issues} />
+                  </TabsPanel>
+                  <TabsPanel value="crawled-pages">
+                    <SeoCrawledPagesTab
+                      crawledPages={partialCrawl.pages.map((page) => ({ url: page.url, title: page.title }))}
+                      sitemapUrlCount={partialCrawl.sitemapUrls.length}
+                    />
+                  </TabsPanel>
+                </Tabs>
               </div>
             )}
 

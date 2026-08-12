@@ -1,12 +1,16 @@
 import { ApiError, GoogleGenAI } from "@google/genai";
 
 import { LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
+import { getCachedHealth } from "@/lib/ai/providers/health-cache";
+import { estimateGeminiCostUsd } from "@/lib/ai/providers/pricing";
 import { withRetry } from "@/lib/ai/providers/retry";
-import type { LlmProvider, StructuredOutputRequest } from "@/lib/ai/providers/types";
+import type { GeneratedOutput, GenerateRawResult, LlmProvider, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
 
 const MAX_PARSE_ATTEMPTS = 3;
 /** Gemini's Node SDK has no reliably-respected request timeout — enforced ourselves. */
 const REQUEST_TIMEOUT_MS = 120_000;
+/** Gemini 2.5 Flash's documented context window — update if GEMINI_MODEL moves to a different family. */
+const MAX_CONTEXT_TOKENS = 1_000_000;
 
 const globalForGemini = globalThis as unknown as { gemini?: GoogleGenAI };
 
@@ -63,14 +67,15 @@ function classifyError(error: unknown): LlmProviderError {
   return new LlmProviderError(message, "UNKNOWN", "gemini", { cause: error });
 }
 
-async function attemptGenerate(request: StructuredOutputRequest): Promise<unknown> {
+async function attemptGenerate(request: StructuredOutputRequest): Promise<GeneratedOutput> {
   const client = getClient();
+  const model = process.env.GEMINI_MODEL!;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
     const response = await client.models.generateContent({
-      model: process.env.GEMINI_MODEL!,
+      model,
       contents: request.prompt,
       config: {
         systemInstruction: request.system,
@@ -89,11 +94,21 @@ async function attemptGenerate(request: StructuredOutputRequest): Promise<unknow
       throw new LlmProviderError("AI response contained no content.", "UNKNOWN", "gemini");
     }
 
+    let data: unknown;
     try {
-      return JSON.parse(text);
+      data = JSON.parse(text);
     } catch (error) {
       throw new LlmProviderError("AI response could not be parsed as JSON.", "UNKNOWN", "gemini", { cause: error });
     }
+
+    return {
+      data,
+      usage: {
+        promptTokens: response.usageMetadata?.promptTokenCount ?? null,
+        completionTokens: response.usageMetadata?.candidatesTokenCount ?? null,
+      },
+      model,
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -106,16 +121,40 @@ export const geminiProvider: LlmProvider = {
     return Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_MODEL);
   },
 
-  async generateRaw(request: StructuredOutputRequest): Promise<unknown> {
+  async generateRaw(request: StructuredOutputRequest): Promise<GenerateRawResult> {
+    let attempts = 0;
     try {
-      return await withRetry(() => attemptGenerate(request), {
-        maxAttempts: MAX_PARSE_ATTEMPTS,
-        label: "gemini",
-        isRetryable: (error) =>
-          error instanceof LlmProviderError && error.type === "UNKNOWN" && /could not be parsed as JSON/i.test(error.message),
-      });
+      const result = await withRetry(
+        () => {
+          attempts++;
+          return attemptGenerate(request);
+        },
+        {
+          maxAttempts: MAX_PARSE_ATTEMPTS,
+          label: "gemini",
+          isRetryable: (error) =>
+            error instanceof LlmProviderError && error.type === "UNKNOWN" && /could not be parsed as JSON/i.test(error.message),
+        }
+      );
+      return { ...result, retried: attempts > 1 };
     } catch (error) {
       throw classifyError(error);
     }
+  },
+
+  async healthCheck() {
+    return this.isConfigured() ? getCachedHealth("gemini") : "DISABLED";
+  },
+
+  supportsJson() {
+    return true;
+  },
+
+  maxContext() {
+    return MAX_CONTEXT_TOKENS;
+  },
+
+  cost(usage: TokenUsage) {
+    return estimateGeminiCostUsd(process.env.GEMINI_MODEL, usage);
   },
 };

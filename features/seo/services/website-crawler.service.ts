@@ -17,6 +17,13 @@ export type CrawledPage = {
   h1Count: number;
   /** Same-origin absolute URLs linked from this page — used for orphan-page detection. */
   internalLinks: string[];
+  /** Phase 11B additions — additive only, none of the fields above changed shape. */
+  /** Text of the first <h1> (null if none) — used for cross-page duplicate-H1 detection. */
+  h1Text: string | null;
+  /** Resolved absolute URLs of every <img> on the page — checked for oversized files by seo-issue-detection.service.ts. */
+  imageUrls: string[];
+  /** Raw parsed JSON-LD objects (not just their @type names) — used for structured-data required-field validation. */
+  jsonLdBlocks: unknown[];
 };
 
 export type CrawlResult = {
@@ -110,15 +117,19 @@ function extractPageContent(html: string, url: string): CrawledPage {
     .filter(Boolean)
     .slice(0, 20);
   const h1Count = $("h1").length;
+  const h1Text = $("h1").first().text().trim() || null;
 
   const canonicalHref = $('link[rel="canonical"]').first().attr("href");
   const canonicalUrl = canonicalHref ? resolveUrl(canonicalHref, url) : null;
   const metaRobots = $('meta[name="robots"]').attr("content")?.trim().toLowerCase() || null;
 
   const jsonLdTypes = new Set<string>();
+  const jsonLdBlocks: unknown[] = [];
   $('script[type="application/ld+json"]').each((_, el) => {
     try {
-      extractJsonLdTypes(JSON.parse($(el).text()), jsonLdTypes);
+      const parsed = JSON.parse($(el).text());
+      extractJsonLdTypes(parsed, jsonLdTypes);
+      jsonLdBlocks.push(parsed);
     } catch {
       // Malformed JSON-LD — skip rather than fail the whole page.
     }
@@ -127,6 +138,10 @@ function extractPageContent(html: string, url: string): CrawledPage {
   const images = $("img");
   const imageCount = images.length;
   const imagesWithAlt = images.filter((_, el) => Boolean($(el).attr("alt")?.trim())).length;
+  const imageUrls = images
+    .map((_, el) => resolveUrl($(el).attr("src") ?? "", url))
+    .get()
+    .filter((src): src is string => Boolean(src));
 
   const pageOrigin = new URL(url).origin;
   const internalLinks = new Set<string>();
@@ -153,6 +168,9 @@ function extractPageContent(html: string, url: string): CrawledPage {
     imagesWithAlt,
     h1Count,
     internalLinks: Array.from(internalLinks),
+    h1Text,
+    imageUrls,
+    jsonLdBlocks,
   };
 }
 
@@ -173,6 +191,87 @@ function selectSamplePages(origin: string, sitemapUrls: string[]): string[] {
 
   const picks = [homepage, ...shallow.slice(0, 9), ...deep.slice(0, 4)];
   return Array.from(new Set(picks)).slice(0, MAX_PAGES);
+}
+
+const LINK_CHECK_TIMEOUT_MS = 8_000;
+const MAX_REDIRECT_HOPS = 5;
+
+/** HEAD first (cheaper); some servers reject HEAD (405/501) — retry with GET rather than misreport those as broken. */
+async function fetchHeadOrGet(url: string): Promise<Response | null> {
+  try {
+    const headRes = await fetch(url, {
+      method: "HEAD",
+      headers: { "User-Agent": USER_AGENT },
+      redirect: "manual",
+      signal: AbortSignal.timeout(LINK_CHECK_TIMEOUT_MS),
+    });
+    if (headRes.status === 405 || headRes.status === 501) {
+      return await fetch(url, {
+        method: "GET",
+        headers: { "User-Agent": USER_AGENT },
+        redirect: "manual",
+        signal: AbortSignal.timeout(LINK_CHECK_TIMEOUT_MS),
+      });
+    }
+    return headRes;
+  } catch {
+    return null;
+  }
+}
+
+export type LinkHealthResult = {
+  url: string;
+  finalUrl: string;
+  status: number | null;
+  redirectCount: number;
+  broken: boolean;
+};
+
+/**
+ * Follows redirects manually (rather than fetch's automatic `redirect:
+ * "follow"`) specifically to count hops for redirect-chain detection —
+ * Phase 11B's issue table flags chains, not just "it redirected once".
+ */
+export async function checkLinkHealth(url: string): Promise<LinkHealthResult> {
+  let currentUrl = url;
+
+  for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
+    const res = await fetchHeadOrGet(currentUrl);
+    if (!res) {
+      return { url, finalUrl: currentUrl, status: null, redirectCount: hop, broken: true };
+    }
+
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location");
+      const next = location ? resolveUrl(location, currentUrl) : null;
+      if (!next) {
+        return { url, finalUrl: currentUrl, status: res.status, redirectCount: hop, broken: true };
+      }
+      currentUrl = next;
+      continue;
+    }
+
+    return { url, finalUrl: currentUrl, status: res.status, redirectCount: hop, broken: res.status >= 400 };
+  }
+
+  return { url, finalUrl: currentUrl, status: null, redirectCount: MAX_REDIRECT_HOPS + 1, broken: true };
+}
+
+export type ImageSizeResult = { url: string; sizeBytes: number | null; broken: boolean };
+
+export async function checkImageSize(url: string): Promise<ImageSizeResult> {
+  try {
+    const res = await fetch(url, {
+      method: "HEAD",
+      headers: { "User-Agent": USER_AGENT },
+      signal: AbortSignal.timeout(LINK_CHECK_TIMEOUT_MS),
+    });
+    if (!res.ok) return { url, sizeBytes: null, broken: true };
+    const contentLength = res.headers.get("content-length");
+    return { url, sizeBytes: contentLength ? Number(contentLength) : null, broken: false };
+  } catch {
+    return { url, sizeBytes: null, broken: true };
+  }
 }
 
 /**

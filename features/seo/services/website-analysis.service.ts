@@ -14,7 +14,7 @@ import {
   updateWebsiteAnalysisJobProgress,
 } from "@/lib/jobs/job-table";
 import type { Recommendation } from "@/features/seo/schemas/seo-audit.schema";
-import { websiteAnalysisExtractionSchema } from "@/features/seo/schemas/website-analysis.schema";
+import { websiteAnalysisExtractionSchema, type WebsiteAnalysisExtraction } from "@/features/seo/schemas/website-analysis.schema";
 import { generateSeoAudit } from "@/features/seo/services/seo-audit.service";
 import {
   computeInternalLinkingScore,
@@ -28,6 +28,7 @@ import {
   type SeoCategory,
 } from "@/features/seo/services/seo-scoring.service";
 import { crawlWebsite, type CrawledPage, type CrawlResult } from "@/features/seo/services/website-crawler.service";
+import { detectWebsiteAnalysisIssues } from "@/features/seo/services/seo-issue-detection.service";
 
 function buildExtractionPrompt(pages: CrawledPage[]): string {
   const pageSummaries = pages
@@ -95,75 +96,121 @@ async function runCrawlPhase(job: { id: string; domain: string }): Promise<Score
 
   const scored = scoreCrawl(crawl);
   await markWebsiteAnalysisJobCrawled(job.id, crawl as unknown as Prisma.InputJsonValue);
+
+  const issues = await detectWebsiteAnalysisIssues(crawl, {
+    detectedSchemaTypes: scored.structuredData.detectedSchemaTypes,
+    orphanPages: scored.internalLinking.orphanPages,
+  });
+  if (issues.length > 0) {
+    await prisma.websiteAnalysisIssue.createMany({
+      data: issues.map((issue) => ({ ...issue, websiteAnalysisJobId: job.id })),
+    });
+  }
+  logger.info("Website analysis: issue detection complete", { jobId: job.id, issueCount: issues.length });
+
   await updateWebsiteAnalysisJobProgress(job.id, 55);
   logger.info("Website analysis: crawl phase succeeded", { jobId: job.id, domain: job.domain, pageCount: crawl.pages.length });
 
   return scored;
 }
 
+type AiFailure = { errorType: NonNullable<WebsiteAnalysisJob["errorType"]>; errorMessage: string };
+
+function classifyAiFailure(error: unknown): AiFailure {
+  const errorType = error instanceof LlmProviderError ? error.type : "UNKNOWN";
+  return { errorType, errorMessage: describeLlmError(errorType).message };
+}
+
 /**
- * Extraction + SEO audit + merge, starting from an already-crawled and
- * already-scored bundle — used both for a fresh run (right after
- * runCrawlPhase) and for retryWebsiteAnalysis (starting from a previously
- * persisted crawl, skipping crawlWebsite entirely). On failure, classifies
- * the error so the UI can show a clear message instead of a raw one; the
- * crawl data already persisted by runCrawlPhase is left untouched.
+ * AI (extraction + audit) is an OPTIONAL enrichment layer on top of the
+ * crawl + deterministic issue detection that already succeeded in
+ * runCrawlPhase — it is never required to produce a viewable result. If
+ * either AI call fails (quota, auth, rate limit, timeout, provider outage —
+ * anything LlmProviderError-shaped), that failure is recorded as a
+ * non-blocking advisory (reusing errorType/errorMessage) and the job still
+ * finishes SUCCEEDED with whatever deterministic data exists (crawl,
+ * issues, and business info if extraction did complete). The job is only
+ * ever marked FAILED here for a genuine application/database error while
+ * finalizing — never solely because AI enrichment didn't complete. Used
+ * both for a fresh run (right after runCrawlPhase) and for
+ * retryWebsiteAnalysis (starting from a previously persisted crawl,
+ * skipping crawlWebsite entirely).
  */
 async function runAiPhase(job: { id: string }, { crawl, technical, onPage, structuredData, internalLinking }: ScoredCrawl) {
   logger.info("Website analysis: AI phase started", { jobId: job.id });
+
+  const deterministicFindings: DeterministicFinding[] = [
+    ...technical.findings,
+    ...onPage.findings,
+    ...structuredData.findings,
+    ...internalLinking.findings,
+  ];
+
+  let extraction: WebsiteAnalysisExtraction | null = null;
+  let aiFailure: AiFailure | null = null;
+
   try {
-    const extraction = await generateStructuredOutput(websiteAnalysisExtractionSchema, {
+    extraction = await generateStructuredOutput(websiteAnalysisExtractionSchema, {
       system:
         "You analyze small-to-medium business websites and extract structured business information from sampled page content. Be concise and only state what the content supports.",
       prompt: buildExtractionPrompt(crawl.pages),
     });
     await updateWebsiteAnalysisJobProgress(job.id, 70);
-
-    const deterministicFindings: DeterministicFinding[] = [
-      ...technical.findings,
-      ...onPage.findings,
-      ...structuredData.findings,
-      ...internalLinking.findings,
-    ];
-
-    const audit = await generateSeoAudit({
-      crawl,
-      extraction,
-      deterministicFindings,
-      detectedSchemaTypes: structuredData.detectedSchemaTypes,
-      missingSchemaTypes: structuredData.missingSchemaTypes,
-      orphanPages: internalLinking.orphanPages,
-      thinPageUrls: onPage.thinPageUrls,
+  } catch (error) {
+    aiFailure = classifyAiFailure(error);
+    logger.warn("Website analysis: AI extraction unavailable — deterministic crawl/issue results are preserved", {
+      jobId: job.id,
+      errorType: aiFailure.errorType,
+      rawError: error instanceof Error ? error.message : String(error),
     });
-    await updateWebsiteAnalysisJobProgress(job.id, 95);
+  }
 
-    const recommendations = [...deterministicFindings.map(findingToRecommendation), ...audit.recommendations].sort(
-      (a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]
-    );
+  let audit: Awaited<ReturnType<typeof generateSeoAudit>> | null = null;
+  if (extraction) {
+    try {
+      audit = await generateSeoAudit({
+        crawl,
+        extraction,
+        deterministicFindings,
+        detectedSchemaTypes: structuredData.detectedSchemaTypes,
+        missingSchemaTypes: structuredData.missingSchemaTypes,
+        orphanPages: internalLinking.orphanPages,
+        thinPageUrls: onPage.thinPageUrls,
+      });
+      await updateWebsiteAnalysisJobProgress(job.id, 95);
+    } catch (error) {
+      aiFailure = classifyAiFailure(error);
+      logger.warn("Website analysis: AI audit unavailable — deterministic crawl/issue results are preserved", {
+        jobId: job.id,
+        errorType: aiFailure.errorType,
+        rawError: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
-    const categoryScoresForOverall: Partial<Record<SeoCategory, number | null>> = {
-      TECHNICAL_SEO: technical.score.score,
-      ON_PAGE_SEO: onPage.score.score,
-      CONTENT_QUALITY: audit.contentQuality.score,
-      STRUCTURED_DATA: structuredData.score.score,
-      INTERNAL_LINKING: internalLinking.score.score,
-      EEAT: audit.eeat.score,
-      LOCAL_SEO: audit.localSeo.applicable ? audit.localSeo.score : null,
-      GEO_READINESS: audit.geoReadiness.score,
-      AEO_READINESS: audit.aeoReadiness.score,
-    };
-    const overallScore = computeOverallScore(categoryScoresForOverall);
+  try {
+    let overallScore: number | null = null;
+    let auditJson: Prisma.InputJsonValue | null = null;
 
-    const resultJson = {
-      businessCategory: extraction.businessCategory,
-      services: extraction.services,
-      locations: extraction.locations,
-      topics: extraction.topics,
-      crawledPages: crawl.pages.map((page) => ({ url: page.url, title: page.title })),
-      sitemapUrlCount: crawl.sitemapUrls.length,
-      warnings: crawl.warnings,
-      overallScore,
-      audit: {
+    if (audit) {
+      const recommendations = [...deterministicFindings.map(findingToRecommendation), ...audit.recommendations].sort(
+        (a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]
+      );
+
+      const categoryScoresForOverall: Partial<Record<SeoCategory, number | null>> = {
+        TECHNICAL_SEO: technical.score.score,
+        ON_PAGE_SEO: onPage.score.score,
+        CONTENT_QUALITY: audit.contentQuality.score,
+        STRUCTURED_DATA: structuredData.score.score,
+        INTERNAL_LINKING: internalLinking.score.score,
+        EEAT: audit.eeat.score,
+        LOCAL_SEO: audit.localSeo.applicable ? audit.localSeo.score : null,
+        GEO_READINESS: audit.geoReadiness.score,
+        AEO_READINESS: audit.aeoReadiness.score,
+      };
+      overallScore = computeOverallScore(categoryScoresForOverall);
+
+      auditJson = {
         overallScore,
         categoryScores: {
           technicalSeo: technical.score,
@@ -184,21 +231,42 @@ async function runAiPhase(job: { id: string }, { crawl, technical, onPage, struc
         internalLinkingSuggestions: audit.internalLinkingSuggestions,
         orphanPages: internalLinking.orphanPages,
         executiveSummary: audit.executiveSummary,
-      },
+      } satisfies Prisma.InputJsonValue;
+    }
+
+    const resultJson = {
+      businessCategory: extraction?.businessCategory ?? "Unknown",
+      services: extraction?.services ?? [],
+      locations: extraction?.locations ?? [],
+      topics: extraction?.topics ?? [],
+      crawledPages: crawl.pages.map((page) => ({ url: page.url, title: page.title })),
+      sitemapUrlCount: crawl.sitemapUrls.length,
+      warnings: crawl.warnings,
+      overallScore,
+      audit: auditJson,
     } satisfies Prisma.InputJsonValue;
 
     await updateWebsiteAnalysisJobProgress(job.id, 99);
-    await markWebsiteAnalysisJobSucceeded(job.id, resultJson, overallScore);
-    logger.info("Website analysis: AI phase succeeded", { jobId: job.id, overallScore });
+    await markWebsiteAnalysisJobSucceeded(job.id, resultJson, overallScore ?? undefined, aiFailure ?? undefined);
+
+    if (aiFailure) {
+      logger.warn("Website analysis: succeeded with deterministic-only results — AI enrichment unavailable", {
+        jobId: job.id,
+        errorType: aiFailure.errorType,
+      });
+    } else {
+      logger.info("Website analysis: AI phase succeeded", { jobId: job.id, overallScore });
+    }
   } catch (error) {
-    const errorType = error instanceof LlmProviderError ? error.type : "UNKNOWN";
-    const errorMessage = describeLlmError(errorType).message;
-    logger.error("Website analysis: AI phase failed", {
+    // Reaching here means something OTHER than the AI calls themselves broke
+    // (a bug in the merge logic, a database write failure, etc.) — a
+    // genuine application failure, not an AI-availability issue, so this
+    // (and only this) is what still produces a real FAILED job.
+    logger.error("Website analysis: unexpected error finalizing results", {
       jobId: job.id,
-      errorType,
       rawError: error instanceof Error ? error.message : String(error),
     });
-    await markWebsiteAnalysisJobFailed(job.id, errorMessage, errorType);
+    await markWebsiteAnalysisJobFailed(job.id, "An unexpected error occurred while finalizing the analysis.", "UNKNOWN");
   }
 }
 

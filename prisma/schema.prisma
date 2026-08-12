@@ -778,9 +778,70 @@ model WebsiteAnalysisJob {
   client     Client?     @relation(fields: [clientId], references: [id], onDelete: SetNull)
   company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
+  issues WebsiteAnalysisIssue[]
+
   @@index([companyId])
   @@index([seoProjectId])
   @@index([clientId])
+  @@index([status])
+}
+
+/// Phase 11B — itemized, per-URL technical findings, replacing/extending the
+/// old aggregate-only findings that seo-scoring.service.ts produces. A real
+/// relational model (not JSON) because `status` needs independent mutation
+/// per issue across future re-analyses, which a JSON blob can't do well.
+enum WebsiteAnalysisIssueType {
+  MISSING_TITLE
+  MISSING_META_DESCRIPTION
+  DUPLICATE_TITLE
+  DUPLICATE_H1
+  BROKEN_LINK
+  REDIRECT_CHAIN
+  LARGE_IMAGE
+  MISSING_ALT_TEXT
+  CANONICAL_ISSUE
+  SITEMAP_ISSUE
+  ROBOTS_ISSUE
+  STRUCTURED_DATA_ISSUE
+  INTERNAL_LINKING_OPPORTUNITY
+}
+
+enum WebsiteAnalysisIssueStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+  IGNORED
+}
+
+/// Deliberately NOT the global Priority enum (LOW/MEDIUM/HIGH/URGENT, used
+/// by Task/Project) — the SEO feature already has its own CRITICAL/HIGH/
+/// MEDIUM/LOW scale (seo-scoring.service.ts's `PRIORITIES`, used by
+/// DeterministicFinding/Recommendation), and this keeps severity consistent
+/// with that, not the CRM's unrelated scale.
+enum WebsiteAnalysisIssueSeverity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+model WebsiteAnalysisIssue {
+  id                   String                       @id @default(uuid(7)) @db.Uuid
+  websiteAnalysisJobId String                       @db.Uuid
+  issueType            WebsiteAnalysisIssueType
+  severity             WebsiteAnalysisIssueSeverity
+  /// Null for site-wide issues (e.g. sitemap/robots) that aren't tied to one URL.
+  url                  String?
+  explanation          String
+  recommendedFix       String
+  status               WebsiteAnalysisIssueStatus   @default(OPEN)
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+
+  websiteAnalysisJob WebsiteAnalysisJob @relation(fields: [websiteAnalysisJobId], references: [id], onDelete: Cascade)
+
+  @@index([websiteAnalysisJobId])
+  @@index([issueType])
   @@index([status])
 }
 

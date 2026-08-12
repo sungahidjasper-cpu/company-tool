@@ -17,6 +17,9 @@ function page(overrides: Partial<CrawledPage> = {}): CrawledPage {
     imagesWithAlt: 0,
     h1Count: 1,
     internalLinks: [],
+    h1Text: null,
+    imageUrls: [],
+    jsonLdBlocks: [],
     ...overrides,
   };
 }

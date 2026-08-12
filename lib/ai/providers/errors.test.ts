@@ -1,8 +1,10 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIError } from "@anthropic-ai/sdk";
+import { ApiError } from "@google/genai";
 import { describe, expect, it } from "vitest";
 
 import { describeLlmError, isFallbackWorthy, LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
 import { classifyError } from "@/lib/ai/providers/anthropic.provider";
+import { classifyApiError } from "@/lib/ai/providers/gemini.provider";
 
 describe("isFallbackWorthy", () => {
   it("treats availability-class errors as fallback-worthy", () => {
@@ -121,5 +123,39 @@ describe("anthropic.provider classifyError", () => {
 
   it("falls back to UNKNOWN for a completely unrecognized error shape", () => {
     expect(classifyError(new Error("something else entirely")).type).toBe("UNKNOWN");
+  });
+});
+
+/**
+ * Regression coverage for a real bug caught by live verification: an
+ * invalid Gemini API key comes back as HTTP 400 (INVALID_ARGUMENT, reason
+ * API_KEY_INVALID) rather than 401/403, so status-code-only classification
+ * mislabels it INVALID_REQUEST — which wrongly excludes a genuine
+ * credential problem from provider fallback (INVALID_REQUEST is
+ * deliberately non-fallback-worthy).
+ */
+describe("gemini.provider classifyApiError", () => {
+  it("classifies the real-world invalid-API-key response (400 + API_KEY_INVALID message) as AUTHENTICATION_ERROR, not INVALID_REQUEST", () => {
+    const error = new ApiError({ status: 400, message: "API key not valid. Please pass a valid API key." });
+    expect(classifyApiError(error).type).toBe("AUTHENTICATION_ERROR");
+  });
+
+  it("still classifies a genuine 400 (no auth/credit wording) as INVALID_REQUEST", () => {
+    const error = new ApiError({ status: 400, message: "Invalid value for field 'temperature'." });
+    expect(classifyApiError(error).type).toBe("INVALID_REQUEST");
+  });
+
+  it("classifies a real 401/403 as AUTHENTICATION_ERROR directly via status code", () => {
+    expect(classifyApiError(new ApiError({ status: 401, message: "unauthorized" })).type).toBe("AUTHENTICATION_ERROR");
+    expect(classifyApiError(new ApiError({ status: 403, message: "forbidden" })).type).toBe("AUTHENTICATION_ERROR");
+  });
+
+  it("classifies 429 with quota wording as INSUFFICIENT_CREDITS, otherwise RATE_LIMIT", () => {
+    expect(classifyApiError(new ApiError({ status: 429, message: "quota exceeded" })).type).toBe("INSUFFICIENT_CREDITS");
+    expect(classifyApiError(new ApiError({ status: 429, message: "too many requests" })).type).toBe("RATE_LIMIT");
+  });
+
+  it("classifies 503 as SERVICE_UNAVAILABLE", () => {
+    expect(classifyApiError(new ApiError({ status: 503, message: "overloaded" })).type).toBe("SERVICE_UNAVAILABLE");
   });
 });

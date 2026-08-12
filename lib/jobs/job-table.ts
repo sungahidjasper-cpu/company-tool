@@ -71,14 +71,30 @@ export function updateWebsiteAnalysisJobProgress(id: string, progress: number) {
   });
 }
 
+/**
+ * `aiWarning` covers the case where the crawl + deterministic issue
+ * detection succeeded but AI enrichment (extraction/audit) didn't — the job
+ * is still SUCCEEDED (deterministic results are real, viewable results,
+ * not a failure), with errorType/errorMessage repurposed as a non-blocking
+ * advisory rather than a failure reason. Reuses the existing nullable
+ * errorMessage/errorType fields — no new schema needed for this.
+ */
 export function markWebsiteAnalysisJobSucceeded(
   id: string,
   resultJson: Prisma.InputJsonValue,
-  overallScore?: number
+  overallScore?: number,
+  aiWarning?: { errorType: WebsiteAnalysisErrorType; errorMessage: string }
 ) {
   return prisma.websiteAnalysisJob.update({
     where: { id },
-    data: { status: "SUCCEEDED", progress: 100, resultJson, overallScore },
+    data: {
+      status: "SUCCEEDED",
+      progress: 100,
+      resultJson,
+      overallScore,
+      errorType: aiWarning?.errorType ?? null,
+      errorMessage: aiWarning?.errorMessage ?? null,
+    },
   });
 }
 

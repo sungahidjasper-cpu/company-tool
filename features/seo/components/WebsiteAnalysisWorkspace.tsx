@@ -19,15 +19,17 @@ import {
   retryWebsiteAnalysisAction,
   startWebsiteAnalysisAction,
 } from "@/features/seo/actions/website-analysis.actions";
+import { listIssuesForJobAction } from "@/features/seo/actions/seo-issue.actions";
 import SeoContentGapsTab from "@/features/seo/components/SeoContentGapsTab";
 import SeoCrawledPagesTab from "@/features/seo/components/SeoCrawledPagesTab";
+import SeoIssuesTab from "@/features/seo/components/SeoIssuesTab";
 import SeoKeywordsTab from "@/features/seo/components/SeoKeywordsTab";
 import SeoOverviewTab from "@/features/seo/components/SeoOverviewTab";
 import SeoRecommendationsTab from "@/features/seo/components/SeoRecommendationsTab";
 import SeoScoresTab from "@/features/seo/components/SeoScoresTab";
 import SeoStructuredDataTab from "@/features/seo/components/SeoStructuredDataTab";
 import { parseWebsiteAnalysisResult } from "@/features/seo/schemas/seo-audit.schema";
-import type { WebsiteAnalysisJob } from "@/lib/generated/prisma/client";
+import type { WebsiteAnalysisIssue, WebsiteAnalysisJob } from "@/lib/generated/prisma/client";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -83,6 +85,7 @@ export default function WebsiteAnalysisWorkspace({ initialHistory, clientOptions
   const [isLoadingHistoryItem, setIsLoadingHistoryItem] = useState<string | null>(null);
   const [isRetrying, setIsRetrying] = useState(false);
   const [isDuplicating, setIsDuplicating] = useState(false);
+  const [issues, setIssues] = useState<WebsiteAnalysisIssue[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -94,6 +97,28 @@ export default function WebsiteAnalysisWorkspace({ initialHistory, clientOptions
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once on mount to pick up initialJob, matches this component's existing pattern of not re-running polling setup on prop changes
   }, []);
+
+  // Issues are crawl-derived (persisted independently of the AI phase) — fetch them whenever the active job changes to a SUCCEEDED one, so the Issues tab has data as soon as it can render.
+  useEffect(() => {
+    let cancelled = false;
+
+    if (activeJob?.status !== "SUCCEEDED") {
+      // Deferred (not called synchronously in the effect body) to avoid triggering a cascading render mid-effect.
+      Promise.resolve().then(() => {
+        if (!cancelled) setIssues([]);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    listIssuesForJobAction(activeJob.id).then((result) => {
+      if (!cancelled && result.success) setIssues(result.data);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeJob?.id, activeJob?.status]);
 
   function recordInHistory(job: WebsiteAnalysisJob) {
     setHistory((prev) =>
@@ -341,6 +366,7 @@ export default function WebsiteAnalysisWorkspace({ initialHistory, clientOptions
                       <TabsTab value="overview">Overview</TabsTab>
                       <TabsTab value="scores">SEO Scores</TabsTab>
                       <TabsTab value="recommendations">Recommendations</TabsTab>
+                      <TabsTab value="issues">Issues{issues.length > 0 ? ` (${issues.length})` : ""}</TabsTab>
                       <TabsTab value="keywords">Keywords</TabsTab>
                       <TabsTab value="content-gaps">Content Opportunities</TabsTab>
                       <TabsTab value="structured-data">Structured Data</TabsTab>
@@ -364,6 +390,9 @@ export default function WebsiteAnalysisWorkspace({ initialHistory, clientOptions
                     <TabsPanel value="recommendations">
                       <SeoRecommendationsTab recommendations={result.audit.recommendations} />
                     </TabsPanel>
+                    <TabsPanel value="issues">
+                      <SeoIssuesTab jobId={activeJob.id} issues={issues} />
+                    </TabsPanel>
                     <TabsPanel value="keywords">
                       <SeoKeywordsTab keywordIntelligence={result.audit.keywordIntelligence} />
                     </TabsPanel>
@@ -385,10 +414,41 @@ export default function WebsiteAnalysisWorkspace({ initialHistory, clientOptions
                   </Tabs>
                 ) : (
                   <div className="flex flex-col gap-5">
-                    <p className="text-sm text-slate-500">
-                      This analysis ran before SEO scoring was added — re-run it to see scores, recommendations,
-                      and the rest of the audit.
-                    </p>
+                    {activeJob.errorType ? (
+                      <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4">
+                        <div className="flex items-start gap-2">
+                          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-700" />
+                          <div className="flex flex-col gap-1">
+                            <p className="font-medium text-amber-900">
+                              {describeLlmError(activeJob.errorType).title} — showing deterministic results only
+                            </p>
+                            <p className="text-sm text-amber-800">
+                              The crawl and technical issue detection completed successfully below. AI-generated
+                              scores, recommendations, and the executive summary aren&apos;t available for this run:{" "}
+                              {describeLlmError(activeJob.errorType).message}
+                            </p>
+                          </div>
+                        </div>
+                        {activeJob.crawlResultJson && (
+                          <Button
+                            type="button"
+                            variant="default"
+                            size="sm"
+                            className="w-fit"
+                            disabled={isRetrying}
+                            onClick={() => handleRetry(activeJob.id)}
+                          >
+                            <RotateCcw size={14} /> {isRetrying ? "Retrying..." : "Get full AI analysis"}
+                          </Button>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-slate-500">
+                        This analysis ran before SEO scoring was added — re-run it to see scores, recommendations,
+                        and the rest of the audit.
+                      </p>
+                    )}
+                    <SeoIssuesTab jobId={activeJob.id} issues={issues} />
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <Card size="sm">
                         <CardHeader>

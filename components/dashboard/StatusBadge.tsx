@@ -37,6 +37,14 @@ const STATUS_VARIANTS: Record<string, BadgeVariant> = {
   ABANDONED: "destructive",
   RUNNING: "outline",
   SUCCEEDED: "default",
+  // WebsiteAnalysisIssue status + severity (Phase 11B)
+  OPEN: "destructive",
+  ACKNOWLEDGED: "secondary",
+  RESOLVED: "default",
+  IGNORED: "outline",
+  CRITICAL: "destructive",
+  // HIGH/MEDIUM/LOW fall through to the "outline" default below — Badge has
+  // no fifth variant to distinguish them further than CRITICAL vs. the rest.
 };
 
 type StatusBadgeProps = {

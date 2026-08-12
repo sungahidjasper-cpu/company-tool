@@ -27,8 +27,17 @@ function getClient(): GoogleGenAI {
  * code alone isn't fully trusted here either.
  */
 const CREDIT_MESSAGE_PATTERN = /credit balance|insufficient credit|out of credit|quota|billing/i;
+/**
+ * Confirmed live: an invalid Gemini API key comes back as HTTP 400
+ * (INVALID_ARGUMENT, reason API_KEY_INVALID) — not 401/403 — so status
+ * code alone misclassifies it as INVALID_REQUEST, which wrongly excludes a
+ * genuine credential problem from provider fallback (INVALID_REQUEST is
+ * deliberately non-fallback-worthy; AUTHENTICATION_ERROR is). Same
+ * "don't fully trust the status code" lesson as the credits check above.
+ */
+const AUTH_MESSAGE_PATTERN = /api key not valid|api_key_invalid|invalid api key/i;
 
-function classifyApiError(error: ApiError): LlmProviderError {
+export function classifyApiError(error: ApiError): LlmProviderError {
   const status = error.status;
   let type: LlmErrorType = "UNKNOWN";
 
@@ -38,6 +47,8 @@ function classifyApiError(error: ApiError): LlmProviderError {
   else if (status === 503) type = "SERVICE_UNAVAILABLE";
 
   if (type === "INVALID_REQUEST" && CREDIT_MESSAGE_PATTERN.test(error.message)) type = "INSUFFICIENT_CREDITS";
+  else if (type === "INVALID_REQUEST" && AUTH_MESSAGE_PATTERN.test(error.message)) type = "AUTHENTICATION_ERROR";
+
   return new LlmProviderError(error.message, type, "gemini", { cause: error });
 }
 

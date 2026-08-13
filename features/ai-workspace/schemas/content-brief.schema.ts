@@ -1,0 +1,42 @@
+import { z } from "zod";
+import { z as zv4 } from "zod/v4";
+
+import { optionalString } from "@/lib/zod-helpers";
+
+export const CONTENT_BRIEF_TYPES = ["BLOG_POST", "LANDING_PAGE", "PILLAR_PAGE", "OTHER"] as const;
+export type ContentBriefType = (typeof CONTENT_BRIEF_TYPES)[number];
+
+/**
+ * The generation-form input — a plain form-validated shape (regular zod,
+ * matching content.schema.ts's convention), distinct from the AI's own
+ * output shape below (zod/v4, required by generateStructuredOutput).
+ */
+export const contentBriefInputSchema = z.object({
+  seoProjectId: z.string().min(1, "Select an SEO project"),
+  keywordId: optionalString(),
+  contentType: z.enum(CONTENT_BRIEF_TYPES),
+  notes: optionalString(),
+});
+
+export type ContentBriefInput = z.infer<typeof contentBriefInputSchema>;
+
+/**
+ * The AI's structured-output shape (zod/v4 — generateStructuredOutput
+ * requires it, same reason seo-audit.schema.ts's schemas do). Every field
+ * is display-only text/string-arrays; nothing here needs its own DB column
+ * (see Content.aiBriefDetails), so this schema is intentionally flat rather
+ * than mirroring seo-audit.schema.ts's nested factor objects.
+ */
+export const contentBriefOutputSchema = zv4.object({
+  title: zv4.string(),
+  metaTitle: zv4.string(),
+  metaDescription: zv4.string(),
+  outline: zv4.array(zv4.string()),
+  suggestedHeadings: zv4.array(zv4.string()),
+  internalLinkSuggestions: zv4.array(zv4.string()),
+  seoRecommendations: zv4.array(zv4.string()),
+  geoAeoNotes: zv4.string(),
+  suggestedSearchIntent: zv4.string(),
+});
+
+export type ContentBriefOutput = zv4.infer<typeof contentBriefOutputSchema>;

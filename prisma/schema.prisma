@@ -674,6 +674,7 @@ model SEOProject {
   reports             Report[]
   tags                Tag[]
   websiteAnalysisJobs WebsiteAnalysisJob[]
+  aiUsageLogs         AiUsageLog[]
 
   @@index([companyId, status])
   @@index([clientId])
@@ -725,16 +726,29 @@ model Keyword {
 }
 
 model Content {
-  id           String        @id @default(uuid(7)) @db.Uuid
-  seoProjectId String        @db.Uuid
-  authorId     String?       @db.Uuid
-  title        String
-  url          String?
-  status       ContentStatus @default(DRAFT)
-  publishedAt  DateTime?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  deletedAt    DateTime?
+  id              String        @id @default(uuid(7)) @db.Uuid
+  seoProjectId    String        @db.Uuid
+  authorId        String?       @db.Uuid
+  title           String
+  url             String?
+  status          ContentStatus @default(DRAFT)
+  publishedAt     DateTime?
+  /// Phase 15 — populated only for AI-generated content briefs; null for
+  /// every pre-existing/manually-authored row.
+  metaTitle       String?
+  metaDescription String?
+  /// Phase 15 — consolidated JSON for the rest of an AI-generated brief
+  /// (outline, suggested headings, internal-link suggestions, SEO
+  /// recommendations, GEO/AEO notes, content type, suggested search
+  /// intent). Display-only fields with no query/filter need yet, so one
+  /// JSON column instead of one column per field.
+  aiBriefDetails  Json?
+  /// Phase 15 — provenance flag; does not affect the existing
+  /// SEO_PERFORMANCE report, which only ever counts by `status`.
+  generatedByAi   Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  deletedAt       DateTime?
 
   seoProject SEOProject @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
   author     User?      @relation("ContentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
@@ -870,6 +884,9 @@ enum AiTaskType {
   RECOMMENDATIONS
   CONTENT_INTELLIGENCE
   EXECUTIVE_SUMMARY
+  /// Phase 15 — AI SEO Content Brief Generator. Scoped via
+  /// AiUsageLog.seoProjectId rather than websiteAnalysisJobId (see below).
+  CONTENT_BRIEF
 }
 
 /// Phase 11C — one row per provider attempt (success or failure), for cost/
@@ -882,6 +899,13 @@ enum AiTaskType {
 model AiUsageLog {
   id                   String                    @id @default(uuid(7)) @db.Uuid
   websiteAnalysisJobId String?                   @db.Uuid
+  /// Phase 15 — the company-scoping path for AI calls that aren't tied to a
+  /// WebsiteAnalysisJob (e.g. CONTENT_BRIEF). Optional/SetNull, mirroring
+  /// websiteAnalysisJobId exactly. A row should have at least one of the two
+  /// set so it remains reachable by a company-scoped query; enforced by the
+  /// calling code, not a DB constraint (same convention as the rest of this
+  /// schema).
+  seoProjectId         String?                   @db.Uuid
   provider             String
   taskType             AiTaskType
   promptVersion        Int
@@ -897,8 +921,10 @@ model AiUsageLog {
   createdAt            DateTime                  @default(now())
 
   websiteAnalysisJob WebsiteAnalysisJob? @relation(fields: [websiteAnalysisJobId], references: [id], onDelete: SetNull)
+  seoProject         SEOProject?         @relation(fields: [seoProjectId], references: [id], onDelete: SetNull)
 
   @@index([websiteAnalysisJobId])
+  @@index([seoProjectId])
   @@index([provider])
   @@index([taskType])
   @@index([createdAt])

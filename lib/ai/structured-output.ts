@@ -18,6 +18,8 @@ type GenerateStructuredOutputInput = {
   promptVersion: number;
   /** Optional provenance link to the job this call is for — omitted only when no job exists yet at call time. */
   websiteAnalysisJobId?: string;
+  /** Phase 15 — company-scoping path for calls with no WebsiteAnalysisJob (e.g. CONTENT_BRIEF). Callers should supply exactly one of websiteAnalysisJobId/seoProjectId so the resulting AiUsageLog row stays company-scopable (see ai-usage.service.ts's buildWhere). */
+  seoProjectId?: string;
 };
 
 /** Rough chars-per-token heuristic — good enough for a pre-flight "is this prompt clearly too big for this provider" filter, not exact token counting (providers don't expose a tokenizer here). */
@@ -40,6 +42,7 @@ async function logUsage(params: {
   promptVersion: number;
   model: string | null;
   websiteAnalysisJobId: string | undefined;
+  seoProjectId: string | undefined;
   usage: TokenUsage;
   estimatedCostUsd: number | null;
   succeeded: boolean;
@@ -51,6 +54,7 @@ async function logUsage(params: {
     await prisma.aiUsageLog.create({
       data: {
         websiteAnalysisJobId: params.websiteAnalysisJobId,
+        seoProjectId: params.seoProjectId,
         provider: params.provider,
         taskType: params.taskType,
         promptVersion: params.promptVersion,
@@ -180,6 +184,7 @@ export async function generateStructuredOutput<T extends z.ZodType>(
           promptVersion: input.promptVersion,
           model: result.model,
           websiteAnalysisJobId: input.websiteAnalysisJobId,
+          seoProjectId: input.seoProjectId,
           usage: result.usage,
           estimatedCostUsd,
           succeeded: true,
@@ -202,6 +207,7 @@ export async function generateStructuredOutput<T extends z.ZodType>(
         promptVersion: input.promptVersion,
         model: result.model,
         websiteAnalysisJobId: input.websiteAnalysisJobId,
+        seoProjectId: input.seoProjectId,
         usage: result.usage,
         estimatedCostUsd,
         succeeded: false,
@@ -228,6 +234,7 @@ export async function generateStructuredOutput<T extends z.ZodType>(
         promptVersion: input.promptVersion,
         model: null,
         websiteAnalysisJobId: input.websiteAnalysisJobId,
+        seoProjectId: input.seoProjectId,
         usage: { promptTokens: null, completionTokens: null },
         estimatedCostUsd: null,
         succeeded: false,

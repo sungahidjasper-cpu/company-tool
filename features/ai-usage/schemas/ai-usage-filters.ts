@@ -1,7 +1,14 @@
 export const AI_PROVIDERS = ["gemini", "openai", "anthropic", "ollama", "openrouter"] as const;
 export type AiProviderName = (typeof AI_PROVIDERS)[number];
 
-export const AI_TASK_TYPES = ["EXTRACTION", "SCORES", "RECOMMENDATIONS", "CONTENT_INTELLIGENCE", "EXECUTIVE_SUMMARY"] as const;
+export const AI_TASK_TYPES = [
+  "EXTRACTION",
+  "SCORES",
+  "RECOMMENDATIONS",
+  "CONTENT_INTELLIGENCE",
+  "EXECUTIVE_SUMMARY",
+  "CONTENT_BRIEF",
+] as const;
 export type AiTaskTypeValue = (typeof AI_TASK_TYPES)[number];
 
 export const AI_USAGE_PAGE_SIZE = 10;

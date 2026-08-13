@@ -1,12 +1,26 @@
 import { z } from "zod/v4";
 
-import { isFallbackWorthy, LlmProviderError } from "@/lib/ai/providers/errors";
+import { isFallbackWorthy, isRetryableTransient, LlmProviderError } from "@/lib/ai/providers/errors";
 import { healthToErrorType, recordProviderFailure, recordProviderSuccess } from "@/lib/ai/providers/health-cache";
 import { describeProviderConfiguration, getConfiguredProviders } from "@/lib/ai/providers/registry";
+import { computeBackoffDelayMs, withRetry } from "@/lib/ai/providers/retry";
 import type { TokenUsage } from "@/lib/ai/providers/types";
 import type { AiTaskType, WebsiteAnalysisErrorType } from "@/lib/generated/prisma/client";
 import { logger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
+
+/**
+ * Phase 17 — how many times a single provider's generateRaw() is attempted
+ * for a transient failure (RATE_LIMIT/TIMEOUT/SERVICE_UNAVAILABLE) before
+ * giving up on that provider and falling back to the next configured one.
+ * Deliberately small (1 retry, not 2+): TIMEOUT alone means the first
+ * attempt already spent the full REQUEST_TIMEOUT_MS (120s, see each
+ * provider's own AbortController), so every additional attempt can add up
+ * to another 120s of worst-case latency to one synchronous user action.
+ */
+const TRANSIENT_RETRY_MAX_ATTEMPTS = 2;
+const TRANSIENT_RETRY_BASE_DELAY_MS = 500;
+const TRANSIENT_RETRY_MAX_DELAY_MS = 4000;
 
 type GenerateStructuredOutputInput = {
   system?: string;
@@ -83,13 +97,18 @@ async function logUsage(params: {
  * `z.toJSONSchema()`), pre-filters providers whose context window is
  * clearly too small for this request, then tries each remaining configured
  * provider in priority order (see providers/registry.ts, which already
- * excludes anything currently unhealthy). A provider whose failure is
- * "unavailable right now" (auth/credits/rate-limit/timeout/service-down)
- * falls through to the next configured provider — and is marked unhealthy
- * in the shared cache so the NEXT call skips it too — while an
- * INVALID_REQUEST failure (our schema/prompt is malformed) stops
- * immediately, since every provider would fail the same way. Every attempt
- * (success or failure) writes one AiUsageLog row for cost/usage analytics.
+ * excludes anything currently unhealthy). Phase 17 — a RATE_LIMIT/TIMEOUT/
+ * SERVICE_UNAVAILABLE failure first gets one same-provider retry with a
+ * short backoff+jitter delay (see withRetry/computeBackoffDelayMs) before
+ * anything else happens; only once that's exhausted does the failure fall
+ * through to the next configured provider — and get marked unhealthy in the
+ * shared cache so the NEXT call skips it too. AUTHENTICATION_ERROR/
+ * INSUFFICIENT_CREDITS/UNKNOWN are never retried this way (won't
+ * self-resolve, or might be a real bug), and an INVALID_REQUEST failure
+ * (our schema/prompt is malformed) stops immediately, since every provider
+ * would fail the same way. Every provider-turn (success or failure, however
+ * many attempts it took) writes exactly one AiUsageLog row for cost/usage
+ * analytics.
  *
  * Callers are unaffected by taskType/promptVersion beyond supplying them —
  * this signature is otherwise identical to the pre-Phase-11C version.
@@ -153,16 +172,34 @@ export async function generateStructuredOutput<T extends z.ZodType>(
 
   for (const provider of providers) {
     const attemptStartedAt = Date.now();
+    /**
+     * Phase 17 — how many times generateRaw() was actually invoked for this
+     * provider's turn (1 = no retry needed). Declared outside the try block
+     * so the catch branch below can also see it, since a fully-exhausted
+     * retry sequence still needs to report `retried: true` for logUsage.
+     */
+    let transientAttempts = 0;
     try {
       const reason = previousProvider ? `falling back from "${previousProvider}"` : "first in configured fallback order";
       logger.info("Selected provider for this attempt", { provider: provider.name, reason, taskType: input.taskType });
-      const result = await provider.generateRaw({
-        system: input.system,
-        prompt: input.prompt,
-        maxTokens: input.maxTokens,
-        zodSchema: schema,
-        jsonSchema,
-      });
+      const result = await withRetry(
+        () => {
+          transientAttempts++;
+          return provider.generateRaw({
+            system: input.system,
+            prompt: input.prompt,
+            maxTokens: input.maxTokens,
+            zodSchema: schema,
+            jsonSchema,
+          });
+        },
+        {
+          maxAttempts: TRANSIENT_RETRY_MAX_ATTEMPTS,
+          isRetryable: (error) => error instanceof LlmProviderError && isRetryableTransient(error.type),
+          label: `${provider.name}:${input.taskType}`,
+          delayMs: (attempt) => computeBackoffDelayMs(attempt, TRANSIENT_RETRY_BASE_DELAY_MS, TRANSIENT_RETRY_MAX_DELAY_MS),
+        }
+      );
       const durationMs = Date.now() - attemptStartedAt;
       const estimatedCostUsd = provider.cost(result.usage);
 
@@ -176,7 +213,7 @@ export async function generateStructuredOutput<T extends z.ZodType>(
           promptTokens: result.usage.promptTokens,
           completionTokens: result.usage.completionTokens,
           estimatedCostUsd,
-          retried: result.retried,
+          retried: result.retried || transientAttempts > 1,
         });
         await logUsage({
           provider: provider.name,
@@ -190,7 +227,11 @@ export async function generateStructuredOutput<T extends z.ZodType>(
           succeeded: true,
           errorType: null,
           latencyMs: durationMs,
-          retried: result.retried,
+          // Phase 17 — true if EITHER the provider's own internal JSON-parse
+          // retry needed >1 try, OR this orchestrator-level transient-error
+          // retry (429/503/timeout) needed >1 attempt. Same boolean column,
+          // now covering both retry mechanisms.
+          retried: result.retried || transientAttempts > 1,
         });
         return parsed.data;
       }
@@ -213,7 +254,7 @@ export async function generateStructuredOutput<T extends z.ZodType>(
         succeeded: false,
         errorType: "UNKNOWN",
         latencyMs: durationMs,
-        retried: result.retried,
+        retried: result.retried || transientAttempts > 1,
       });
       previousProvider = provider.name;
       continue;
@@ -240,7 +281,12 @@ export async function generateStructuredOutput<T extends z.ZodType>(
         succeeded: false,
         errorType: providerError.type,
         latencyMs: durationMs,
-        retried: false,
+        // Phase 17 — true if the new transient-error retry made more than
+        // one attempt before ultimately still failing (e.g. RATE_LIMIT on
+        // both attempts). recordProviderFailure below still fires only
+        // once, after this retry sequence is fully exhausted — not once
+        // per attempt.
+        retried: transientAttempts > 1,
       });
 
       if (!isFallbackWorthy(providerError.type)) {

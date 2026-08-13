@@ -8,7 +8,7 @@ import {
 } from "openai";
 import { describe, expect, it } from "vitest";
 
-import { describeLlmError, isFallbackWorthy, LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
+import { describeLlmError, isFallbackWorthy, isRetryableTransient, LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
 import { classifyError } from "@/lib/ai/providers/anthropic.provider";
 import { classifyApiError } from "@/lib/ai/providers/gemini.provider";
 import { classifyError as classifyOpenAiError } from "@/lib/ai/providers/openai.provider";
@@ -26,6 +26,34 @@ describe("isFallbackWorthy", () => {
 
   it("never falls back on NOT_CONFIGURED — there's nothing left to try", () => {
     expect(isFallbackWorthy("NOT_CONFIGURED")).toBe(false);
+  });
+});
+
+describe("isRetryableTransient", () => {
+  it("only treats RATE_LIMIT, TIMEOUT, and SERVICE_UNAVAILABLE as retryable", () => {
+    const retryable: LlmErrorType[] = ["RATE_LIMIT", "TIMEOUT", "SERVICE_UNAVAILABLE"];
+    for (const type of retryable) expect(isRetryableTransient(type)).toBe(true);
+  });
+
+  it("never retries AUTHENTICATION_ERROR, INSUFFICIENT_CREDITS, INVALID_REQUEST, NOT_CONFIGURED, or UNKNOWN", () => {
+    const nonRetryable: LlmErrorType[] = ["AUTHENTICATION_ERROR", "INSUFFICIENT_CREDITS", "INVALID_REQUEST", "NOT_CONFIGURED", "UNKNOWN"];
+    for (const type of nonRetryable) expect(isRetryableTransient(type)).toBe(false);
+  });
+
+  it("is strictly narrower than isFallbackWorthy — everything retryable is also fallback-worthy", () => {
+    const allTypes: LlmErrorType[] = [
+      "AUTHENTICATION_ERROR",
+      "INSUFFICIENT_CREDITS",
+      "RATE_LIMIT",
+      "TIMEOUT",
+      "SERVICE_UNAVAILABLE",
+      "INVALID_REQUEST",
+      "NOT_CONFIGURED",
+      "UNKNOWN",
+    ];
+    for (const type of allTypes) {
+      if (isRetryableTransient(type)) expect(isFallbackWorthy(type)).toBe(true);
+    }
   });
 });
 

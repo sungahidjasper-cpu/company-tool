@@ -1,20 +1,49 @@
 import { z } from "zod/v4";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/ai/providers/registry", () => ({
   getConfiguredProviders: vi.fn(),
   describeProviderConfiguration: vi.fn(),
 }));
+vi.mock("@/lib/ai/providers/health-cache", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ai/providers/health-cache")>();
+  return {
+    ...actual,
+    recordProviderFailure: vi.fn(),
+    recordProviderSuccess: vi.fn(),
+  };
+});
 vi.mock("@/lib/prisma", () => ({ prisma: { aiUsageLog: { create: vi.fn() } } }));
 
 import { getConfiguredProviders, describeProviderConfiguration } from "@/lib/ai/providers/registry";
+import { recordProviderFailure, recordProviderSuccess } from "@/lib/ai/providers/health-cache";
+import { LlmProviderError } from "@/lib/ai/providers/errors";
 import { generateStructuredOutput } from "@/lib/ai/structured-output";
+import { prisma } from "@/lib/prisma";
 
 const mockGetConfigured = vi.mocked(getConfiguredProviders);
 const mockDescribe = vi.mocked(describeProviderConfiguration);
+const mockRecordFailure = vi.mocked(recordProviderFailure);
+const mockRecordSuccess = vi.mocked(recordProviderSuccess);
+const mockCreateLog = vi.mocked(prisma.aiUsageLog.create);
 
 const schema = z.object({ value: z.string() });
 const input = { prompt: "test prompt", taskType: "EXTRACTION" as const, promptVersion: 1 };
+
+/** Minimal LlmProvider fake — just enough for generateStructuredOutput's orchestration logic, not a real network call. */
+function makeFakeProvider(name: string, generateRaw: ReturnType<typeof vi.fn>) {
+  return {
+    name,
+    isConfigured: () => true,
+    generateRaw,
+    healthCheck: async () => "HEALTHY" as const,
+    supportsJson: () => true,
+    maxContext: () => 1_000_000,
+    cost: () => 0.001,
+  };
+}
+
+const SUCCESS_RESULT = { data: { value: "ok" }, usage: { promptTokens: 10, completionTokens: 5 }, model: "test-model", retried: false };
 
 /**
  * Regression coverage for a real bug caught by live verification: once the
@@ -71,5 +100,119 @@ describe("generateStructuredOutput — empty-provider-list error classification"
     ]);
 
     await expect(generateStructuredOutput(schema, input)).rejects.toMatchObject({ type: "INSUFFICIENT_CREDITS" });
+  });
+});
+
+/**
+ * Phase 17 — same-provider retry-with-backoff for RATE_LIMIT/TIMEOUT/
+ * SERVICE_UNAVAILABLE, added ahead of the existing cross-provider fallback.
+ * Fake timers avoid these tests actually waiting out the real backoff delay.
+ */
+describe("generateStructuredOutput — Phase 17 transient-error retry", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockCreateLog.mockClear();
+    mockRecordFailure.mockClear();
+    mockRecordSuccess.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("retries a RATE_LIMIT failure once and succeeds — logs one row with retried: true, never marks the provider unhealthy", async () => {
+    const generateRaw = vi
+      .fn()
+      .mockRejectedValueOnce(new LlmProviderError("rate limited", "RATE_LIMIT", "A"))
+      .mockResolvedValue(SUCCESS_RESULT);
+    mockGetConfigured.mockResolvedValue([makeFakeProvider("A", generateRaw)] as never);
+
+    const promise = generateStructuredOutput(schema, input);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result).toEqual({ value: "ok" });
+    expect(generateRaw).toHaveBeenCalledTimes(2);
+    expect(mockCreateLog).toHaveBeenCalledTimes(1);
+    expect(mockCreateLog).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ succeeded: true, retried: true }) }));
+    expect(mockRecordFailure).not.toHaveBeenCalled();
+    expect(mockRecordSuccess).toHaveBeenCalledWith("A");
+  });
+
+  it("retries TIMEOUT the same way as RATE_LIMIT/SERVICE_UNAVAILABLE", async () => {
+    const generateRaw = vi
+      .fn()
+      .mockRejectedValueOnce(new LlmProviderError("timed out", "TIMEOUT", "A"))
+      .mockResolvedValue(SUCCESS_RESULT);
+    mockGetConfigured.mockResolvedValue([makeFakeProvider("A", generateRaw)] as never);
+
+    const promise = generateStructuredOutput(schema, input);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result).toEqual({ value: "ok" });
+    expect(generateRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it("exhausts retries on sustained SERVICE_UNAVAILABLE, then falls back to the next provider — marks the failed provider unhealthy exactly once, not once per attempt", async () => {
+    const generateRawA = vi.fn().mockRejectedValue(new LlmProviderError("overloaded", "SERVICE_UNAVAILABLE", "A"));
+    const generateRawB = vi.fn().mockResolvedValue(SUCCESS_RESULT);
+    mockGetConfigured.mockResolvedValue([makeFakeProvider("A", generateRawA), makeFakeProvider("B", generateRawB)] as never);
+
+    const promise = generateStructuredOutput(schema, input);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result).toEqual({ value: "ok" });
+    // maxAttempts = 2 for the transient retry — A is tried twice, not more, before falling back.
+    expect(generateRawA).toHaveBeenCalledTimes(2);
+    expect(generateRawB).toHaveBeenCalledTimes(1);
+    expect(mockRecordFailure).toHaveBeenCalledTimes(1);
+    expect(mockRecordFailure).toHaveBeenCalledWith("A", "SERVICE_UNAVAILABLE");
+    expect(mockCreateLog).toHaveBeenCalledTimes(2);
+    expect(mockCreateLog).toHaveBeenNthCalledWith(1, expect.objectContaining({ data: expect.objectContaining({ succeeded: false, retried: true, errorType: "SERVICE_UNAVAILABLE" }) }));
+    expect(mockCreateLog).toHaveBeenNthCalledWith(2, expect.objectContaining({ data: expect.objectContaining({ succeeded: true, retried: false }) }));
+  });
+
+  it("never retries AUTHENTICATION_ERROR — falls back to the next provider after exactly one attempt", async () => {
+    const generateRawA = vi.fn().mockRejectedValue(new LlmProviderError("bad key", "AUTHENTICATION_ERROR", "A"));
+    const generateRawB = vi.fn().mockResolvedValue(SUCCESS_RESULT);
+    mockGetConfigured.mockResolvedValue([makeFakeProvider("A", generateRawA), makeFakeProvider("B", generateRawB)] as never);
+
+    const result = await generateStructuredOutput(schema, input);
+
+    expect(result).toEqual({ value: "ok" });
+    expect(generateRawA).toHaveBeenCalledTimes(1);
+    expect(mockCreateLog).toHaveBeenNthCalledWith(1, expect.objectContaining({ data: expect.objectContaining({ retried: false, errorType: "AUTHENTICATION_ERROR" }) }));
+    expect(mockRecordFailure).toHaveBeenCalledWith("A", "AUTHENTICATION_ERROR");
+  });
+
+  it("never retries INSUFFICIENT_CREDITS or UNKNOWN either", async () => {
+    for (const errorType of ["INSUFFICIENT_CREDITS", "UNKNOWN"] as const) {
+      const generateRaw = vi.fn().mockRejectedValue(new LlmProviderError("nope", errorType, "A"));
+      mockGetConfigured.mockResolvedValue([makeFakeProvider("A", generateRaw)] as never);
+
+      await expect(generateStructuredOutput(schema, input)).rejects.toMatchObject({ type: errorType });
+      expect(generateRaw).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("stops immediately on INVALID_REQUEST — never retries, never falls back to another provider", async () => {
+    const generateRawA = vi.fn().mockRejectedValue(new LlmProviderError("malformed", "INVALID_REQUEST", "A"));
+    const generateRawB = vi.fn().mockResolvedValue(SUCCESS_RESULT);
+    mockGetConfigured.mockResolvedValue([makeFakeProvider("A", generateRawA), makeFakeProvider("B", generateRawB)] as never);
+
+    await expect(generateStructuredOutput(schema, input)).rejects.toMatchObject({ type: "INVALID_REQUEST" });
+    expect(generateRawA).toHaveBeenCalledTimes(1);
+    expect(generateRawB).not.toHaveBeenCalled();
+  });
+
+  it("a schema-validation failure (provider responded, but the JSON didn't match) is not treated as a transient-retryable error at this layer", async () => {
+    const generateRaw = vi.fn().mockResolvedValue({ data: { wrongField: 123 }, usage: { promptTokens: 10, completionTokens: 5 }, model: "test-model", retried: false });
+    mockGetConfigured.mockResolvedValue([makeFakeProvider("A", generateRaw)] as never);
+
+    await expect(generateStructuredOutput(schema, input)).rejects.toMatchObject({ type: "UNKNOWN" });
+    // Schema-validation failure doesn't throw from generateRaw, so the new retry wrapper never even sees it as a rejection — exactly one call, matching pre-Phase-17 behavior.
+    expect(generateRaw).toHaveBeenCalledTimes(1);
   });
 });

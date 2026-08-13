@@ -33,6 +33,23 @@ export function isFallbackWorthy(type: LlmErrorType): boolean {
   return FALLBACK_WORTHY.has(type);
 }
 
+/**
+ * Phase 17 — the subset of FALLBACK_WORTHY that also gets a same-provider
+ * retry-with-backoff attempt (see structured-output.ts) before falling
+ * back to the next configured provider. Deliberately narrower than
+ * FALLBACK_WORTHY: AUTHENTICATION_ERROR/INSUFFICIENT_CREDITS won't
+ * self-resolve within a request's lifetime (matches their 10-minute
+ * health-cache TTL), and UNKNOWN is an unclassified catch-all that could be
+ * a genuine code bug — retrying it blindly risks wasting cost/latency on
+ * something that will never succeed. Only RATE_LIMIT/TIMEOUT/
+ * SERVICE_UNAVAILABLE are well-understood, genuinely transient failures.
+ */
+const RETRYABLE_TRANSIENT: ReadonlySet<LlmErrorType> = new Set(["RATE_LIMIT", "TIMEOUT", "SERVICE_UNAVAILABLE"]);
+
+export function isRetryableTransient(type: LlmErrorType): boolean {
+  return RETRYABLE_TRANSIENT.has(type);
+}
+
 export class LlmProviderError extends Error {
   constructor(
     message: string,

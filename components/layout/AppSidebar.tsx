@@ -12,6 +12,7 @@ import {
   FolderKanban,
   Search,
   Bot,
+  Gauge,
   Settings,
   FileBarChart,
 } from "lucide-react";
@@ -39,6 +40,7 @@ const menuItems = [
   { name: "Projects", icon: FolderKanban, href: "/projects" },
   { name: "SEO Workspace", icon: Search, href: "/seo" },
   { name: "AI Workspace", icon: Bot, href: "/ai" },
+  { name: "AI Usage", icon: Gauge, href: "/ai-usage" },
   { name: "Reports", icon: FileBarChart, href: "/reports" },
   { name: "Settings", icon: Settings, href: "/settings" },
 ];

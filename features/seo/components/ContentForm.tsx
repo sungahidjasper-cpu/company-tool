@@ -20,12 +20,15 @@ import type { Content } from "@/lib/generated/prisma/client";
 const selectClassName =
   "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm";
 
+const textareaClassName =
+  "w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm";
+
 type UserOption = { id: string; firstName: string; lastName: string };
 type KeywordOption = { id: string; term: string };
 
 type ContentFormProps = {
   seoProjectId: string;
-  content?: Pick<Content, "id" | "title" | "url" | "status" | "publishedAt" | "authorId"> & {
+  content?: Pick<Content, "id" | "title" | "url" | "status" | "publishedAt" | "authorId" | "body"> & {
     keywords?: { id: string }[];
   };
   userOptions: UserOption[];
@@ -60,6 +63,7 @@ export default function ContentForm({
         : "",
       authorId: content?.authorId ?? "",
       keywordIds: selectedKeywordIds,
+      body: content?.body ?? "",
     },
   });
 
@@ -167,6 +171,13 @@ export default function ContentForm({
             ))}
           </div>
         )}
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="body" className="text-sm font-medium">
+          Body (Markdown)
+        </label>
+        <textarea id="body" rows={16} className={textareaClassName} {...register("body")} />
       </div>
 
       {formError && <p className="text-sm text-destructive">{formError}</p>}

@@ -141,11 +141,12 @@ describe("getAiSpendByProvider", () => {
 });
 
 describe("getAiSpendByTaskType", () => {
-  it("always returns all 6 task types, including Phase 15's CONTENT_BRIEF", async () => {
+  it("always returns all 7 task types, including Phase 15's CONTENT_BRIEF and Phase 16's CONTENT_DRAFT", async () => {
     mockGroupBy.mockResolvedValue([] as never);
     const result = await getAiSpendByTaskType(COMPANY_ID, NO_FILTERS);
-    expect(result).toHaveLength(6);
+    expect(result).toHaveLength(7);
     expect(result.map((r) => r.taskType)).toContain("CONTENT_BRIEF");
+    expect(result.map((r) => r.taskType)).toContain("CONTENT_DRAFT");
     expect(result.every((r) => r.costUsd === 0 && r.calls === 0)).toBe(true);
   });
 
@@ -166,6 +167,18 @@ describe("getAiSpendByTaskType", () => {
     const brief = result.find((r) => r.taskType === "CONTENT_BRIEF");
     expect(brief?.calls).toBe(2);
     expect(brief?.costUsd).toBeCloseTo(0.002);
+  });
+
+  it("includes a CONTENT_DRAFT row scoped only via seoProjectId (same pattern as CONTENT_BRIEF)", async () => {
+    mockGroupBy.mockResolvedValue([
+      { taskType: "CONTENT_DRAFT", _sum: { estimatedCostUsd: { toString: () => "0.004" } }, _count: { _all: 1, estimatedCostUsd: 1 } },
+    ] as never);
+
+    const result = await getAiSpendByTaskType(COMPANY_ID, NO_FILTERS);
+
+    const draft = result.find((r) => r.taskType === "CONTENT_DRAFT");
+    expect(draft?.calls).toBe(1);
+    expect(draft?.costUsd).toBeCloseTo(0.004);
   });
 });
 

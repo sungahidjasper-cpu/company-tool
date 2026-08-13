@@ -746,6 +746,11 @@ model Content {
   /// Phase 15 — provenance flag; does not affect the existing
   /// SEO_PERFORMANCE report, which only ever counts by `status`.
   generatedByAi   Boolean       @default(false)
+  /// Phase 16 — the long-form article body, stored as plain Markdown text
+  /// (not JSON, not HTML) so it needs no rich-text/WYSIWYG dependency and
+  /// fits the app's existing plain-textarea editing convention exactly.
+  /// Null for every brief-only Content row and every pre-Phase-16 row.
+  body            String?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
   deletedAt       DateTime?
@@ -887,6 +892,10 @@ enum AiTaskType {
   /// Phase 15 — AI SEO Content Brief Generator. Scoped via
   /// AiUsageLog.seoProjectId rather than websiteAnalysisJobId (see below).
   CONTENT_BRIEF
+  /// Phase 16 — AI Long-Form SEO Content Generator. Generates the article
+  /// body from an already-approved CONTENT_BRIEF; also scoped via
+  /// AiUsageLog.seoProjectId, never websiteAnalysisJobId.
+  CONTENT_DRAFT
 }
 
 /// Phase 11C — one row per provider attempt (success or failure), for cost/

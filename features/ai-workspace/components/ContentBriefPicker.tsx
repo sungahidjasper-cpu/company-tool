@@ -6,8 +6,11 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { generateContentBriefAction, saveContentBriefAction } from "@/features/ai-workspace/actions/content-brief.actions";
+import { generateLongFormFromBriefAction, saveLongFormAsNewContentAction } from "@/features/ai-workspace/actions/long-form-content.actions";
 import ContentBriefReview from "@/features/ai-workspace/components/ContentBriefReview";
+import LongFormContentReview, { type LongFormEditableFields } from "@/features/ai-workspace/components/LongFormContentReview";
 import { CONTENT_BRIEF_TYPES, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
+import { formatLongFormContentAsMarkdown } from "@/features/ai-workspace/schemas/long-form-content.schema";
 import { formatEnumLabel } from "@/lib/utils";
 
 const selectClassName =
@@ -42,6 +45,15 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Phase 16 — the long-form step. `longFormFields` non-null means "show
+  // LongFormContentReview instead of ContentBriefReview." Nothing here is
+  // persisted until handleSaveLongForm; runGenerateLongForm/regenerate
+  // never touch the database.
+  const [longFormFields, setLongFormFields] = useState<LongFormEditableFields | null>(null);
+  const [linkSuggestions, setLinkSuggestions] = useState<string[]>([]);
+  const [isGeneratingLongForm, setIsGeneratingLongForm] = useState(false);
+  const [isSavingLongForm, setIsSavingLongForm] = useState(false);
 
   const keywordOptions = useMemo(() => keywordsByProject[seoProjectId] ?? [], [keywordsByProject, seoProjectId]);
 
@@ -82,6 +94,71 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
     router.push(`/seo/${seoProjectId}/content/${result.data.id}`);
   }
 
+  async function runGenerateLongForm() {
+    if (!brief) return;
+    setError(null);
+    setIsGeneratingLongForm(true);
+    const result = await generateLongFormFromBriefAction({
+      seoProjectId,
+      keywordId: keywordId || undefined,
+      brief,
+    });
+    setIsGeneratingLongForm(false);
+
+    if (!result.success) {
+      setError(result.message);
+      return;
+    }
+    setLinkSuggestions(result.data.internalLinkPlacementSuggestions);
+    setLongFormFields({
+      title: brief.title,
+      metaTitle: brief.metaTitle,
+      metaDescription: brief.metaDescription,
+      body: formatLongFormContentAsMarkdown(result.data),
+    });
+  }
+
+  async function handleSaveLongForm() {
+    if (!longFormFields || !brief) return;
+    setError(null);
+    setIsSavingLongForm(true);
+    const result = await saveLongFormAsNewContentAction({
+      seoProjectId,
+      keywordId: keywordId || undefined,
+      brief,
+      ...longFormFields,
+    });
+    setIsSavingLongForm(false);
+
+    if (!result.success) {
+      setError(result.message);
+      return;
+    }
+    toast.success("Draft saved");
+    router.push(`/seo/${seoProjectId}/content/${result.data.id}`);
+  }
+
+  function backToBrief() {
+    setLongFormFields(null);
+    setError(null);
+  }
+
+  if (longFormFields) {
+    return (
+      <LongFormContentReview
+        fields={longFormFields}
+        onChange={setLongFormFields}
+        internalLinkPlacementSuggestions={linkSuggestions}
+        onRegenerate={runGenerateLongForm}
+        onSave={handleSaveLongForm}
+        onBackToBrief={backToBrief}
+        isRegenerating={isGeneratingLongForm}
+        isSaving={isSavingLongForm}
+        error={error}
+      />
+    );
+  }
+
   if (brief) {
     return (
       <ContentBriefReview
@@ -89,6 +166,8 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
         onChange={setBrief}
         onRegenerate={runGenerate}
         onSave={handleSave}
+        onGenerateLongForm={runGenerateLongForm}
+        isGeneratingLongForm={isGeneratingLongForm}
         isRegenerating={isGenerating}
         isSaving={isSaving}
         error={error}

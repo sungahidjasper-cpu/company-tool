@@ -8,6 +8,7 @@ export const AI_TASK_TYPES = [
   "CONTENT_INTELLIGENCE",
   "EXECUTIVE_SUMMARY",
   "CONTENT_BRIEF",
+  "CONTENT_DRAFT",
 ] as const;
 export type AiTaskTypeValue = (typeof AI_TASK_TYPES)[number];
 

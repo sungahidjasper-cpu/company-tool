@@ -19,6 +19,15 @@ type ContentBriefReviewProps = {
   onChange: (brief: ContentBriefOutput) => void;
   onRegenerate: () => void;
   onSave: () => void;
+  /**
+   * Phase 16 — optional, additive. When provided, renders a third action
+   * that moves to the long-form generation step WITHOUT saving the brief
+   * (nothing is persisted by this button). Omitting this prop reproduces
+   * Phase 15's exact original behavior — "Save as Draft" still saves the
+   * brief alone, unchanged.
+   */
+  onGenerateLongForm?: () => void;
+  isGeneratingLongForm?: boolean;
   isRegenerating: boolean;
   isSaving: boolean;
   error?: string | null;
@@ -35,11 +44,13 @@ export default function ContentBriefReview({
   onChange,
   onRegenerate,
   onSave,
+  onGenerateLongForm,
+  isGeneratingLongForm = false,
   isRegenerating,
   isSaving,
   error,
 }: ContentBriefReviewProps) {
-  const busy = isRegenerating || isSaving;
+  const busy = isRegenerating || isSaving || isGeneratingLongForm;
 
   return (
     <div className="flex flex-col gap-4">
@@ -159,6 +170,11 @@ export default function ContentBriefReview({
         <Button type="button" onClick={onSave} disabled={busy}>
           {isSaving ? "Saving..." : "Save as Draft"}
         </Button>
+        {onGenerateLongForm && (
+          <Button type="button" variant="outline" onClick={onGenerateLongForm} disabled={busy}>
+            {isGeneratingLongForm ? "Generating article..." : "Generate Long-Form Content"}
+          </Button>
+        )}
       </div>
     </div>
   );

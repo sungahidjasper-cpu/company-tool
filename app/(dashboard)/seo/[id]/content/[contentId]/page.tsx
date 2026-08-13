@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Pencil } from "lucide-react";
+import { Pencil, Sparkles } from "lucide-react";
 
 import ActivityTimeline from "@/components/dashboard/ActivityTimeline";
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
@@ -90,6 +90,12 @@ export default async function ContentDetailPage({ params }: ContentDetailPagePro
         }
       />
 
+      {content.generatedByAi && (
+        <p className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          <Sparkles size={16} /> AI-generated draft — verify all facts, figures, and claims before publishing.
+        </p>
+      )}
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
@@ -129,6 +135,18 @@ export default async function ContentDetailPage({ params }: ContentDetailPagePro
                 <span>—</span>
               )}
             </div>
+            {(content.metaTitle || content.metaDescription) && (
+              <>
+                <div className="flex justify-between gap-4">
+                  <span className="shrink-0 text-slate-500">Meta title</span>
+                  <span className="truncate text-right">{content.metaTitle ?? "—"}</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-slate-500">Meta description</span>
+                  <span>{content.metaDescription ?? "—"}</span>
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -152,6 +170,33 @@ export default async function ContentDetailPage({ params }: ContentDetailPagePro
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Article</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {content.body ? (
+            <div className="max-h-[32rem] overflow-y-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800">
+              {content.body}
+            </div>
+          ) : content.generatedByAi ? (
+            <div className="flex flex-col items-start gap-3">
+              <p className="text-sm text-slate-500">
+                This content has a saved brief but no article yet.
+              </p>
+              <Link
+                href={`/ai/content-brief/${content.id}/long-form`}
+                className={cn(buttonVariants({ variant: "outline" }))}
+              >
+                <Sparkles size={16} /> Generate Long-Form Content
+              </Link>
+            </div>
+          ) : (
+            <p className="text-sm text-slate-500">No article body yet.</p>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card>

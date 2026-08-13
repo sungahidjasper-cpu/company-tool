@@ -56,6 +56,7 @@ export async function createContent(
       url: parsed.data.url || null,
       status: parsed.data.status,
       publishedAt: parsed.data.publishedAt ? new Date(parsed.data.publishedAt) : null,
+      body: parsed.data.body || null,
       keywords: parsed.data.keywordIds
         ? { connect: parsed.data.keywordIds.map((id) => ({ id })) }
         : undefined,
@@ -104,6 +105,7 @@ export async function updateContent(
       url: parsed.data.url || null,
       status: parsed.data.status,
       publishedAt: parsed.data.publishedAt ? new Date(parsed.data.publishedAt) : null,
+      body: parsed.data.body || null,
       keywords: { set: (parsed.data.keywordIds ?? []).map((keywordId) => ({ id: keywordId })) },
     },
   });

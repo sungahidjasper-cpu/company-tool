@@ -20,6 +20,8 @@ export const contentSchema = z.object({
   publishedAt: optionalString(),
   authorId: optionalString(),
   keywordIds: z.array(z.string()).optional(),
+  /** Phase 16 — plain Markdown/text article body. Optional so manually-tracked content with no body yet is unaffected. */
+  body: optionalString(),
 });
 
 export type ContentInput = z.infer<typeof contentSchema>;

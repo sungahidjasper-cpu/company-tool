@@ -1,17 +1,21 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { generateContentBriefAction, saveContentBriefAction } from "@/features/ai-workspace/actions/content-brief.actions";
-import { generateLongFormFromBriefAction, saveLongFormAsNewContentAction } from "@/features/ai-workspace/actions/long-form-content.actions";
+import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
+import { saveContentBriefAction, startContentBriefGenerationAction } from "@/features/ai-workspace/actions/content-brief.actions";
+import { saveLongFormAsNewContentAction, startLongFormGenerationAction } from "@/features/ai-workspace/actions/long-form-content.actions";
 import ContentBriefReview from "@/features/ai-workspace/components/ContentBriefReview";
 import LongFormContentReview, { type LongFormEditableFields } from "@/features/ai-workspace/components/LongFormContentReview";
-import { CONTENT_BRIEF_TYPES, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
-import { formatLongFormContentAsMarkdown } from "@/features/ai-workspace/schemas/long-form-content.schema";
+import { CONTENT_BRIEF_TYPES, contentBriefOutputSchema, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
+import { formatLongFormContentAsMarkdown, longFormContentOutputSchema } from "@/features/ai-workspace/schemas/long-form-content.schema";
 import { formatEnumLabel } from "@/lib/utils";
+
+const POLL_INTERVAL_MS = 3000;
+const MAX_POLL_MS = 5 * 60 * 1000;
 
 const selectClassName =
   "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm";
@@ -57,22 +61,83 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
 
   const keywordOptions = useMemo(() => keywordsByProject[seoProjectId] ?? [], [keywordsByProject, seoProjectId]);
 
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  /**
+   * Phase 18 — polls an AiGenerationJob until it settles, then hands the
+   * parsed resultJson to onSucceeded. A max poll duration (well above the
+   * documented worst case with Phase 17 retries) stops an abandoned/stuck
+   * poll from running forever rather than leaving it open-ended.
+   */
+  function pollGenerationJob(jobId: string, onSucceeded: (resultJson: unknown) => void, onSettled: () => void) {
+    if (pollRef.current) clearInterval(pollRef.current);
+    const startedAt = Date.now();
+
+    pollRef.current = setInterval(async () => {
+      if (Date.now() - startedAt > MAX_POLL_MS) {
+        if (pollRef.current) clearInterval(pollRef.current);
+        onSettled();
+        setError("This is taking longer than expected. Please check back shortly or try again.");
+        return;
+      }
+
+      const poll = await getAiGenerationJobAction(jobId);
+      if (!poll.success) {
+        if (pollRef.current) clearInterval(pollRef.current);
+        onSettled();
+        setError(poll.message);
+        return;
+      }
+      if (!poll.data) return;
+
+      if (poll.data.status === "FAILED") {
+        if (pollRef.current) clearInterval(pollRef.current);
+        onSettled();
+        setError(poll.data.errorMessage ?? "Generation failed.");
+        return;
+      }
+
+      if (poll.data.status === "SUCCEEDED") {
+        if (pollRef.current) clearInterval(pollRef.current);
+        onSettled();
+        onSucceeded(poll.data.resultJson);
+      }
+    }, POLL_INTERVAL_MS);
+  }
+
   async function runGenerate() {
     setError(null);
     setIsGenerating(true);
-    const result = await generateContentBriefAction({
+    const result = await startContentBriefGenerationAction({
       seoProjectId,
       keywordId: keywordId || undefined,
       contentType,
       notes: notes || undefined,
     });
-    setIsGenerating(false);
 
     if (!result.success) {
+      setIsGenerating(false);
       setError(result.message);
       return;
     }
-    setBrief(result.data);
+
+    pollGenerationJob(
+      result.data.jobId,
+      (resultJson) => {
+        const parsed = contentBriefOutputSchema.safeParse(resultJson);
+        if (!parsed.success) {
+          setError("Received an unexpected result — please try regenerating.");
+          return;
+        }
+        setBrief(parsed.data);
+      },
+      () => setIsGenerating(false)
+    );
   }
 
   async function handleSave() {
@@ -98,24 +163,37 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
     if (!brief) return;
     setError(null);
     setIsGeneratingLongForm(true);
-    const result = await generateLongFormFromBriefAction({
+    const result = await startLongFormGenerationAction({
+      mode: "fromBrief",
       seoProjectId,
       keywordId: keywordId || undefined,
       brief,
     });
-    setIsGeneratingLongForm(false);
 
     if (!result.success) {
+      setIsGeneratingLongForm(false);
       setError(result.message);
       return;
     }
-    setLinkSuggestions(result.data.internalLinkPlacementSuggestions);
-    setLongFormFields({
-      title: brief.title,
-      metaTitle: brief.metaTitle,
-      metaDescription: brief.metaDescription,
-      body: formatLongFormContentAsMarkdown(result.data),
-    });
+
+    pollGenerationJob(
+      result.data.jobId,
+      (resultJson) => {
+        const parsed = longFormContentOutputSchema.safeParse(resultJson);
+        if (!parsed.success) {
+          setError("Received an unexpected result — please try regenerating.");
+          return;
+        }
+        setLinkSuggestions(parsed.data.internalLinkPlacementSuggestions);
+        setLongFormFields({
+          title: brief.title,
+          metaTitle: brief.metaTitle,
+          metaDescription: brief.metaDescription,
+          body: formatLongFormContentAsMarkdown(parsed.data),
+        });
+      },
+      () => setIsGeneratingLongForm(false)
+    );
   }
 
   async function handleSaveLongForm() {

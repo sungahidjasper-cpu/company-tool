@@ -40,6 +40,34 @@ async function reapStaleRunningJobs(): Promise<number> {
   return result.count;
 }
 
+/**
+ * Phase 18 — same reasoning as reapStaleRunningJobs above, extended
+ * slightly: any AiGenerationJob still RUNNING at boot is definitely
+ * orphaned (nothing from a previous process lifetime could legitimately
+ * still be running). PENDING rows are ALSO swept, but only once they're
+ * older than PENDING_GRACE_MS — PENDING should only ever be a millisecond-
+ * scale transient state (the fire-and-forget kickoff starts immediately
+ * after the row is created), so a PENDING row that's survived this long
+ * means the process crashed in the narrow window between "job row created"
+ * and "runner actually started," before it ever reached RUNNING. Without
+ * this, that row would sit PENDING forever — nothing else ever reaps it.
+ */
+const PENDING_GRACE_MS = 5 * 60 * 1000;
+
+async function reapStaleAiGenerationJobs(): Promise<number> {
+  const result = await prisma.aiGenerationJob.updateMany({
+    where: {
+      OR: [{ status: "RUNNING" }, { status: "PENDING", createdAt: { lt: new Date(Date.now() - PENDING_GRACE_MS) } }],
+    },
+    data: {
+      status: "FAILED",
+      errorMessage: "The server restarted while this generation was running.",
+      errorType: "SERVICE_UNAVAILABLE",
+    },
+  });
+  return result.count;
+}
+
 export async function runStartupChecks(): Promise<void> {
   const missingEnvVars = checkRequiredEnvVars();
   if (missingEnvVars.length > 0) {
@@ -62,6 +90,11 @@ export async function runStartupChecks(): Promise<void> {
   const reapedCount = await reapStaleRunningJobs();
   if (reapedCount > 0) {
     logger.warn("Startup: reaped stale RUNNING website analysis jobs", { count: reapedCount });
+  }
+
+  const reapedAiGenerationJobCount = await reapStaleAiGenerationJobs();
+  if (reapedAiGenerationJobCount > 0) {
+    logger.warn("Startup: reaped stale AI generation jobs", { count: reapedAiGenerationJobCount });
   }
 
   const warnings: string[] = [];

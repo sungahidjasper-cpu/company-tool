@@ -8,6 +8,8 @@ import { LlmProviderError, describeLlmError } from "@/lib/ai/providers/errors";
 import { requireUser } from "@/lib/auth";
 import { Permissions } from "@/lib/authorization";
 import { prisma } from "@/lib/prisma";
+import { computeInputHash, createAiGenerationJob, findActiveAiGenerationJob } from "@/lib/jobs/ai-generation-job-table";
+import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
 import { generateContentBrief } from "@/features/ai-workspace/services/content-brief.service";
 import {
   contentBriefInputSchema,
@@ -83,6 +85,57 @@ export async function generateContentBriefAction(input: ContentBriefInput): Prom
     const errorType = error instanceof LlmProviderError ? error.type : "UNKNOWN";
     return actionError(describeLlmError(errorType).message);
   }
+}
+
+/**
+ * Phase 18 — the background-job counterpart to generateContentBriefAction
+ * above. Same ownership/validation checks, same eventual AI call — but
+ * instead of awaiting the AI call inline (10-20s+, longer with Phase 17
+ * retries), this creates an AiGenerationJob row, kicks off
+ * runAiGenerationJob unawaited, and returns the job id immediately for the
+ * caller to poll via getAiGenerationJobAction. generateContentBriefAction
+ * itself is left in place (unused by the UI after this phase) rather than
+ * deleted, for a clean single-commit rollback if this needs reverting.
+ */
+export async function startContentBriefGenerationAction(input: ContentBriefInput): Promise<ActionResult<{ jobId: string }>> {
+  const actor = await requireUser();
+  if (!Permissions.manageSeoProjects(actor.role)) {
+    return actionError("You do not have permission to generate AI content.");
+  }
+
+  const parsed = contentBriefInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionError(parsed.error.issues[0]?.message ?? "Invalid input");
+  }
+
+  const seoProject = await getOwnedSeoProject(parsed.data.seoProjectId, actor.companyId);
+  if (!seoProject) {
+    return actionError("SEO project not found.");
+  }
+
+  if (parsed.data.keywordId) {
+    const owned = await getOwnedKeyword(parsed.data.keywordId, seoProject.id);
+    if (!owned) {
+      return actionError("Keyword not found for this SEO project.");
+    }
+  }
+
+  const inputHash = computeInputHash(parsed.data);
+  const existing = await findActiveAiGenerationJob(actor.companyId, "CONTENT_BRIEF", inputHash);
+  if (existing) {
+    return actionSuccess({ jobId: existing.id });
+  }
+
+  const job = await createAiGenerationJob({
+    companyId: actor.companyId,
+    seoProjectId: seoProject.id,
+    taskType: "CONTENT_BRIEF",
+    inputJson: parsed.data,
+    inputHash,
+    createdById: actor.id,
+  });
+  void runAiGenerationJob(job.id);
+  return actionSuccess({ jobId: job.id });
 }
 
 export type SaveContentBriefInput = {

@@ -125,6 +125,24 @@ enum WebsiteAnalysisErrorType {
   UNKNOWN
 }
 
+/// Phase 18 — status machine for AiGenerationJob, a new enum rather than a
+/// reuse of WebsiteAnalysisStatus (same 4 values, but reusing a
+/// WebsiteAnalysis-named enum for an unrelated job type is exactly the
+/// misleading-name trap this schema already avoids elsewhere — see
+/// WebsiteAnalysisIssueSeverity's comment). SUCCEEDED and FAILED are
+/// terminal everywhere this enum is read — nothing transitions out of them.
+/// Anticipated future addition: CANCELLED, once a Phase 22-style
+/// cancellation feature ships. Deliberately not added yet — an enum value
+/// nothing ever sets is dead schema a future reader has to puzzle out, and
+/// adding it later is an equally cheap, additive migration when it's
+/// actually needed.
+enum AiGenerationJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
 enum ReportType {
   PROJECT_SUMMARY
   CLIENT_SUMMARY
@@ -176,6 +194,7 @@ model Company {
   files               File[]
   activities          Activity[]
   websiteAnalysisJobs WebsiteAnalysisJob[]
+  aiGenerationJobs    AiGenerationJob[]
 
   @@index([deletedAt])
 }
@@ -233,26 +252,27 @@ model User {
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   roles   Role[]
 
-  ownedClients        Client[]         @relation("ClientOwner")
-  ownedProjects       Project[]        @relation("ProjectOwner")
-  assignedProjects    Project[]        @relation("ProjectAssignees")
-  assignedTasks       Task[]           @relation("TaskAssignee")
-  createdTasks        Task[]           @relation("TaskCreatedBy")
-  assignedLeads       Lead[]           @relation("LeadAssignee")
-  createdLeads        Lead[]           @relation("LeadCreatedBy")
-  assignedLeadTasks   LeadTask[]       @relation("LeadTaskAssignee")
-  createdLeadTasks    LeadTask[]       @relation("LeadTaskCreatedBy")
-  authoredNotes       Note[]           @relation("NoteAuthor")
-  performedActivities Activity[]       @relation("ActivityActor")
-  targetedActivities  Activity[]       @relation("ActivityUser")
-  uploadedFiles       File[]           @relation("FileUploadedBy")
-  attachedFiles       File[]           @relation("FileUser")
-  notifications       Notification[]
-  ownedSeoProjects    SEOProject[]     @relation("SeoProjectOwner")
-  ownedKeywords       Keyword[]        @relation("KeywordOwner")
-  authoredContent     Content[]        @relation("ContentAuthor")
-  aiConversations     AIConversation[]
-  generatedReports    Report[]         @relation("ReportGeneratedBy")
+  ownedClients            Client[]          @relation("ClientOwner")
+  ownedProjects           Project[]         @relation("ProjectOwner")
+  assignedProjects        Project[]         @relation("ProjectAssignees")
+  assignedTasks           Task[]            @relation("TaskAssignee")
+  createdTasks            Task[]            @relation("TaskCreatedBy")
+  assignedLeads           Lead[]            @relation("LeadAssignee")
+  createdLeads            Lead[]            @relation("LeadCreatedBy")
+  assignedLeadTasks       LeadTask[]        @relation("LeadTaskAssignee")
+  createdLeadTasks        LeadTask[]        @relation("LeadTaskCreatedBy")
+  authoredNotes           Note[]            @relation("NoteAuthor")
+  performedActivities     Activity[]        @relation("ActivityActor")
+  targetedActivities      Activity[]        @relation("ActivityUser")
+  uploadedFiles           File[]            @relation("FileUploadedBy")
+  attachedFiles           File[]            @relation("FileUser")
+  notifications           Notification[]
+  ownedSeoProjects        SEOProject[]      @relation("SeoProjectOwner")
+  ownedKeywords           Keyword[]         @relation("KeywordOwner")
+  authoredContent         Content[]         @relation("ContentAuthor")
+  aiConversations         AIConversation[]
+  generatedReports        Report[]          @relation("ReportGeneratedBy")
+  startedAiGenerationJobs AiGenerationJob[] @relation("AiGenerationJobCreatedBy")
 
   @@index([companyId, status])
   @@index([deletedAt])
@@ -675,6 +695,7 @@ model SEOProject {
   tags                Tag[]
   websiteAnalysisJobs WebsiteAnalysisJob[]
   aiUsageLogs         AiUsageLog[]
+  aiGenerationJobs    AiGenerationJob[]
 
   @@index([companyId, status])
   @@index([clientId])
@@ -759,10 +780,11 @@ model Content {
   author     User?      @relation("ContentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
   keywords   Keyword[]
 
-  notes      Note[]
-  activities Activity[]
-  files      File[]
-  tags       Tag[]
+  notes            Note[]
+  activities       Activity[]
+  files            File[]
+  tags             Tag[]
+  aiGenerationJobs AiGenerationJob[]
 
   @@index([seoProjectId, status])
   @@index([deletedAt])
@@ -942,6 +964,74 @@ model AiUsageLog {
 // ---------------------------------------------------------------------------
 // AI Workspace & Reporting
 // ---------------------------------------------------------------------------
+
+/// Phase 18 — background job row backing Content Brief (CONTENT_BRIEF) and
+/// Long-Form (CONTENT_DRAFT) generation, replacing the fully-synchronous
+/// generate actions those features used through Phase 17. Mirrors
+/// WebsiteAnalysisJob's proven pattern (status/progress/error fields, a
+/// job-table.ts-style helper module, fire-and-forget kickoff, polling
+/// action, startup reaper) but is generic across task types via
+/// inputJson/resultJson JSON columns instead of crawl-specific columns, so
+/// one table serves both task types today and any future generation task
+/// type without a new migration. Deliberately NOT an extension of
+/// WebsiteAnalysisJob itself — its crawl-specific fields (domain,
+/// crawlResultJson, crawlHash, overallScore) don't apply here, and reusing
+/// it would mix unrelated concerns into one polymorphic table.
+model AiGenerationJob {
+  id           String                    @id @default(uuid(7)) @db.Uuid
+  companyId    String                    @db.Uuid
+  /// Denormalized alongside seoProject's own companyId, same accepted
+  /// convention WebsiteAnalysisJob already uses — lets every query scope
+  /// directly without an extra join.
+  seoProjectId String?                   @db.Uuid
+  /// Set for the already-saved-brief long-form flow (the job IS about this
+  /// row); null for a fresh-flow job, where no Content row exists yet.
+  contentId    String?                   @db.Uuid
+  /// Reuses the existing enum as-is — CONTENT_BRIEF | CONTENT_DRAFT today,
+  /// extensible to a future generation task type with no new migration.
+  taskType     AiTaskType
+  status       AiGenerationJobStatus     @default(PENDING)
+  progress     Int?
+  /// The exact validated input the job was started with — the runner reads
+  /// this back to actually perform the generation. Shape depends on
+  /// taskType; validated with the existing zod schemas at both write time
+  /// and read time, never trusted as already-safe just because it's in the
+  /// database.
+  inputJson    Json
+  /// SHA-256 of the canonicalized inputJson, same technique
+  /// WebsiteAnalysisJob.crawlHash already uses applied to a different
+  /// problem: lets a duplicate "Generate" click (a double-click, or a page
+  /// refresh followed by clicking again while the first job is still in
+  /// flight) reuse the existing PENDING/RUNNING job for the identical
+  /// request instead of starting a second, separately-billed AI call.
+  inputHash    String
+  /// The generated candidate (ContentBriefOutput | LongFormContentOutput)
+  /// once SUCCEEDED — the UI polls this to populate the review screen.
+  resultJson   Json?
+  errorMessage String?
+  /// Reuses the existing enum — the identical taxonomy already used by
+  /// WebsiteAnalysisJob and AiUsageLog, no new error vocabulary needed.
+  errorType    WebsiteAnalysisErrorType?
+  /// Who started it — WebsiteAnalysisJob doesn't track this (company-wide
+  /// visibility was sufficient for an SEO-project-level utility), but a
+  /// content draft is a more personal, actively-being-edited session, so
+  /// this is one deliberate, small addition beyond the source pattern.
+  createdById  String?                   @db.Uuid
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+
+  company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  seoProject SEOProject? @relation(fields: [seoProjectId], references: [id], onDelete: SetNull)
+  content    Content?    @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  createdBy  User?       @relation("AiGenerationJobCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([seoProjectId])
+  @@index([contentId])
+  @@index([status])
+  @@index([createdById])
+  @@index([companyId, taskType, inputHash, status])
+}
 
 /// Messages are stored as a JSON transcript rather than a normalized
 /// AIMessage model, since AIMessage was not part of the requested model

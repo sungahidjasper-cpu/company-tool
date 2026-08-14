@@ -8,6 +8,9 @@ import { LlmProviderError, describeLlmError } from "@/lib/ai/providers/errors";
 import { requireUser } from "@/lib/auth";
 import { Permissions } from "@/lib/authorization";
 import { prisma } from "@/lib/prisma";
+import { computeInputHash, createAiGenerationJob, findActiveAiGenerationJob } from "@/lib/jobs/ai-generation-job-table";
+import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
+import type { LongFormJobInput } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 import { generateLongFormContent } from "@/features/ai-workspace/services/long-form-content.service";
 import { contentBriefOutputSchema, type ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
 import {
@@ -174,6 +177,96 @@ export async function generateLongFormFromContentAction(contentId: string): Prom
     const errorType = error instanceof LlmProviderError ? error.type : "UNKNOWN";
     return actionError(describeLlmError(errorType).message);
   }
+}
+
+export type StartLongFormGenerationInput = LongFormJobInput;
+
+/**
+ * Phase 18 — the background-job counterpart to
+ * generateLongFormFromBriefAction/generateLongFormFromContentAction above,
+ * covering both entry points in one action (they're rows in the same
+ * AiGenerationJob table, distinguished by inputJson.mode). Same
+ * ownership/validation checks as the two functions it replaces in the UI;
+ * both are left in place, unused, for a clean single-commit rollback.
+ */
+export async function startLongFormGenerationAction(input: StartLongFormGenerationInput): Promise<ActionResult<{ jobId: string }>> {
+  const actor = await requireUser();
+  if (!Permissions.manageSeoProjects(actor.role)) {
+    return actionError("You do not have permission to generate AI content.");
+  }
+
+  if (input.mode === "fromContent") {
+    const content = await getOwnedContent(input.contentId, actor.companyId);
+    if (!content) {
+      return actionError("Content not found.");
+    }
+    const brief = buildBriefFromContentRow(content);
+    if (!brief) {
+      return actionError("This content has no saved brief to generate an article from.");
+    }
+
+    const inputJson: LongFormJobInput = { mode: "fromContent", contentId: content.id };
+    const inputHash = computeInputHash(inputJson);
+    const existing = await findActiveAiGenerationJob(actor.companyId, "CONTENT_DRAFT", inputHash);
+    if (existing) {
+      return actionSuccess({ jobId: existing.id });
+    }
+
+    const job = await createAiGenerationJob({
+      companyId: actor.companyId,
+      seoProjectId: content.seoProject.id,
+      contentId: content.id,
+      taskType: "CONTENT_DRAFT",
+      inputJson,
+      inputHash,
+      createdById: actor.id,
+    });
+    void runAiGenerationJob(job.id);
+    return actionSuccess({ jobId: job.id });
+  }
+
+  const parsedContext = generateLongFormFromBriefContextSchema.safeParse({ seoProjectId: input.seoProjectId, keywordId: input.keywordId });
+  if (!parsedContext.success) {
+    return actionError(parsedContext.error.issues[0]?.message ?? "Invalid input");
+  }
+  const parsedBrief = contentBriefOutputSchema.safeParse(input.brief);
+  if (!parsedBrief.success) {
+    return actionError("The brief is missing required fields — regenerate it before continuing.");
+  }
+
+  const seoProject = await getOwnedSeoProject(parsedContext.data.seoProjectId, actor.companyId);
+  if (!seoProject) {
+    return actionError("SEO project not found.");
+  }
+  if (parsedContext.data.keywordId) {
+    const owned = await getOwnedKeyword(parsedContext.data.keywordId, seoProject.id);
+    if (!owned) {
+      return actionError("Keyword not found for this SEO project.");
+    }
+  }
+
+  const inputJson: LongFormJobInput = {
+    mode: "fromBrief",
+    seoProjectId: seoProject.id,
+    keywordId: parsedContext.data.keywordId,
+    brief: parsedBrief.data,
+  };
+  const inputHash = computeInputHash(inputJson);
+  const existing = await findActiveAiGenerationJob(actor.companyId, "CONTENT_DRAFT", inputHash);
+  if (existing) {
+    return actionSuccess({ jobId: existing.id });
+  }
+
+  const job = await createAiGenerationJob({
+    companyId: actor.companyId,
+    seoProjectId: seoProject.id,
+    taskType: "CONTENT_DRAFT",
+    inputJson,
+    inputHash,
+    createdById: actor.id,
+  });
+  void runAiGenerationJob(job.id);
+  return actionSuccess({ jobId: job.id });
 }
 
 export type SaveLongFormAsNewContentInput = LongFormSaveFields & {

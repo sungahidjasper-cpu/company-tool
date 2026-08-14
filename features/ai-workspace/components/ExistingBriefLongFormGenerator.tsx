@@ -1,13 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { generateLongFormFromContentAction, updateLongFormContentAction } from "@/features/ai-workspace/actions/long-form-content.actions";
+import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
+import { startLongFormGenerationAction, updateLongFormContentAction } from "@/features/ai-workspace/actions/long-form-content.actions";
 import LongFormContentReview, { type LongFormEditableFields } from "@/features/ai-workspace/components/LongFormContentReview";
-import { formatLongFormContentAsMarkdown } from "@/features/ai-workspace/schemas/long-form-content.schema";
+import { formatLongFormContentAsMarkdown, longFormContentOutputSchema } from "@/features/ai-workspace/schemas/long-form-content.schema";
+
+const POLL_INTERVAL_MS = 3000;
+const MAX_POLL_MS = 5 * 60 * 1000;
 
 type ExistingBriefLongFormGeneratorProps = {
   contentId: string;
@@ -38,23 +42,67 @@ export default function ExistingBriefLongFormGenerator({
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
   async function runGenerate() {
     setError(null);
     setIsGenerating(true);
-    const result = await generateLongFormFromContentAction(contentId);
-    setIsGenerating(false);
+    const result = await startLongFormGenerationAction({ mode: "fromContent", contentId });
 
     if (!result.success) {
+      setIsGenerating(false);
       setError(result.message);
       return;
     }
-    setLinkSuggestions(result.data.internalLinkPlacementSuggestions);
-    setLongFormFields({
-      title,
-      metaTitle,
-      metaDescription,
-      body: formatLongFormContentAsMarkdown(result.data),
-    });
+
+    if (pollRef.current) clearInterval(pollRef.current);
+    const startedAt = Date.now();
+    pollRef.current = setInterval(async () => {
+      if (Date.now() - startedAt > MAX_POLL_MS) {
+        if (pollRef.current) clearInterval(pollRef.current);
+        setIsGenerating(false);
+        setError("This is taking longer than expected. Please check back shortly or try again.");
+        return;
+      }
+
+      const poll = await getAiGenerationJobAction(result.data.jobId);
+      if (!poll.success) {
+        if (pollRef.current) clearInterval(pollRef.current);
+        setIsGenerating(false);
+        setError(poll.message);
+        return;
+      }
+      if (!poll.data) return;
+
+      if (poll.data.status === "FAILED") {
+        if (pollRef.current) clearInterval(pollRef.current);
+        setIsGenerating(false);
+        setError(poll.data.errorMessage ?? "Generation failed.");
+        return;
+      }
+
+      if (poll.data.status === "SUCCEEDED") {
+        if (pollRef.current) clearInterval(pollRef.current);
+        setIsGenerating(false);
+        const parsed = longFormContentOutputSchema.safeParse(poll.data.resultJson);
+        if (!parsed.success) {
+          setError("Received an unexpected result — please try regenerating.");
+          return;
+        }
+        setLinkSuggestions(parsed.data.internalLinkPlacementSuggestions);
+        setLongFormFields({
+          title,
+          metaTitle,
+          metaDescription,
+          body: formatLongFormContentAsMarkdown(parsed.data),
+        });
+      }
+    }, POLL_INTERVAL_MS);
   }
 
   async function handleSave() {

@@ -74,6 +74,7 @@ export async function generateContentBriefAction(input: ContentBriefInput): Prom
   try {
     const brief = await generateContentBrief({
       seoProjectId: seoProject.id,
+      companyId: actor.companyId,
       seoProjectName: seoProject.name,
       domain: seoProject.domain,
       contentType: parsed.data.contentType,

@@ -20,6 +20,8 @@ const CONTENT_BRIEF_SYSTEM_PROMPT =
 export type ContentBriefContext = {
   /** Provenance for the AiUsageLog row — the project this brief is for. Never a WebsiteAnalysisJob, since this task has none. */
   seoProjectId: string;
+  /** Phase 19 — required for enforceCompanyAiLimits. */
+  companyId: string;
   seoProjectName: string;
   domain: string;
   contentType: ContentBriefType;
@@ -64,5 +66,6 @@ export async function generateContentBrief(ctx: ContentBriefContext): Promise<Co
     taskType: "CONTENT_BRIEF",
     promptVersion: PROMPT_VERSION,
     seoProjectId: ctx.seoProjectId,
+    companyId: ctx.companyId,
   });
 }

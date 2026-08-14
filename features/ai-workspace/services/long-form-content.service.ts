@@ -15,6 +15,8 @@ const LONG_FORM_SYSTEM_PROMPT =
 export type LongFormContentContext = {
   /** Provenance for the AiUsageLog row — never a WebsiteAnalysisJob, same as content-brief.service.ts. */
   seoProjectId: string;
+  /** Phase 19 — required for enforceCompanyAiLimits. */
+  companyId: string;
   seoProjectName: string;
   domain: string;
   /** The already-approved brief — from content-brief.service.ts, either still in memory or read back from a saved Content row's stored fields. */
@@ -63,5 +65,6 @@ export async function generateLongFormContent(ctx: LongFormContentContext): Prom
     taskType: "CONTENT_DRAFT",
     promptVersion: PROMPT_VERSION,
     seoProjectId: ctx.seoProjectId,
+    companyId: ctx.companyId,
   });
 }

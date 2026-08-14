@@ -27,6 +27,7 @@ const BRIEF_RESULT = {
 
 const BASE_CTX: ContentBriefContext = {
   seoProjectId: "project-1",
+  companyId: "company-1",
   seoProjectName: "Acme Plumbing",
   domain: "acme-plumbing.example.com",
   contentType: "BLOG_POST",
@@ -54,6 +55,15 @@ describe("generateContentBrief", () => {
 
     const [, options] = mockGenerate.mock.calls[0];
     expect(options.seoProjectId).toBe("project-1");
+  });
+
+  it("passes companyId through for the Phase 19 company AI limits gate", async () => {
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+
+    await generateContentBrief(BASE_CTX);
+
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.companyId).toBe("company-1");
   });
 
   it("includes the target keyword and its tracked intent in the prompt when a keyword is selected", async () => {

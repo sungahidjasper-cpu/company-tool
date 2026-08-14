@@ -35,6 +35,7 @@ const BASE_BRIEF = {
 
 const BASE_CTX: LongFormContentContext = {
   seoProjectId: "project-1",
+  companyId: "company-1",
   seoProjectName: "Acme Plumbing",
   domain: "acme-plumbing.example.com",
   brief: BASE_BRIEF,
@@ -60,6 +61,13 @@ describe("generateLongFormContent", () => {
     await generateLongFormContent(BASE_CTX);
     const [, options] = mockGenerate.mock.calls[0];
     expect(options.seoProjectId).toBe("project-1");
+  });
+
+  it("passes companyId through for the Phase 19 company AI limits gate", async () => {
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.companyId).toBe("company-1");
   });
 
   it("includes the approved brief's fields and the target keyword in the prompt", async () => {

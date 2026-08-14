@@ -12,7 +12,11 @@ export type LlmErrorType =
   | "SERVICE_UNAVAILABLE"
   | "INVALID_REQUEST"
   | "NOT_CONFIGURED"
-  | "UNKNOWN";
+  | "UNKNOWN"
+  /** Phase 19 — this company's configured monthly AI spend cap has been reached. Never confused with RATE_LIMIT (the provider rate-limited us) or INSUFFICIENT_CREDITS (the provider's own account is out of funds) — this is a limit WE impose on a tenant. */
+  | "BUDGET_EXCEEDED"
+  /** Phase 19 — this company's configured per-minute AI request rate limit has been reached. Same distinction from RATE_LIMIT as above. */
+  | "COMPANY_RATE_LIMITED";
 
 /**
  * "Unavailable right now" types — the fallback orchestrator moves on to the
@@ -108,6 +112,16 @@ const DESCRIPTIONS: Record<LlmErrorType, LlmErrorDescription> = {
     title: "AI analysis failed",
     message: "An unexpected error occurred while generating the AI analysis.",
     recommendedAction: "Retry the analysis. If this persists, contact support.",
+  },
+  BUDGET_EXCEEDED: {
+    title: "AI budget limit reached",
+    message: "This company's configured AI budget for the current month has been reached.",
+    recommendedAction: "Contact your Cloud Compass administrator to raise the monthly AI budget, or wait until next month.",
+  },
+  COMPANY_RATE_LIMITED: {
+    title: "Too many AI requests",
+    message: "This company has made too many AI requests in the last minute.",
+    recommendedAction: "Wait a minute and retry.",
   },
 };
 

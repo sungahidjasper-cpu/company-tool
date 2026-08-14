@@ -3,21 +3,22 @@ import { Prisma, type AiTaskType } from "@/lib/generated/prisma/client";
 import { AI_PROVIDERS, AI_TASK_TYPES, AI_USAGE_PAGE_SIZE, type AiUsageFilters } from "@/features/ai-usage/schemas/ai-usage-filters";
 
 /**
- * AiUsageLog has no direct companyId — the only paths to company-scope it
- * are through websiteAnalysisJob.companyId (SEO-audit-originated calls) or,
- * as of Phase 15, seoProjectId.companyId (calls not tied to any
+ * AiUsageLog is company-scoped three ways: a direct companyId (Phase 19,
+ * populated on every new row going forward), or through
+ * websiteAnalysisJob.companyId (SEO-audit-originated calls), or, as of
+ * Phase 15, seoProjectId.companyId (calls not tied to any
  * WebsiteAnalysisJob, e.g. CONTENT_BRIEF). A relation filter on either
  * nullable to-one relation (without `is`/`isNot`) requires the related row
  * to exist AND match, so a log row with no linked job/project (or one
- * belonging to another company) can never satisfy either branch of this OR
+ * belonging to another company) can never satisfy either of those branches
  * — company isolation is structural, not just a matter of remembering to
- * add a clause. Existing rows all have websiteAnalysisJobId set and
- * seoProjectId null, so this OR matches them exactly as the single-relation
- * filter did before.
+ * add a clause. Pre-Phase-19 rows have a null direct companyId and rely on
+ * the other two branches exactly as before; new rows match on companyId
+ * directly.
  */
 function buildWhere(companyId: string, filters: AiUsageFilters): Prisma.AiUsageLogWhereInput {
   return {
-    OR: [{ websiteAnalysisJob: { companyId } }, { seoProject: { companyId } }],
+    OR: [{ companyId }, { websiteAnalysisJob: { companyId } }, { seoProject: { companyId } }],
     ...(filters.provider ? { provider: filters.provider } : {}),
     ...(filters.taskType ? { taskType: filters.taskType as AiTaskType } : {}),
     ...(filters.dateFrom || filters.dateTo
@@ -84,16 +85,18 @@ type SpendTrendRow = { day: Date; cost: Prisma.Decimal | null; calls: bigint; ca
 /**
  * Prisma's groupBy can't bucket by a truncated date, so this needs raw SQL —
  * same reason features/dashboard/services/dashboard.service.ts's
- * getActivityTrend does. AiUsageLog has no companyId of its own, so this
- * LEFT JOINs both WebsiteAnalysisJob and SEOProject and requires at least
- * one of them to match the company (see buildWhere's comment above — the
- * ORM-level OR-relation filter isn't available in raw SQL, so the two LEFT
- * JOINs + OR here are the raw-SQL equivalent of that same requirement). A
- * plain INNER JOIN on WebsiteAnalysisJob alone would silently exclude every
- * seoProjectId-only row (e.g. CONTENT_BRIEF) from the trend entirely.
+ * getActivityTrend does. Matches a row via its own direct companyId (Phase
+ * 19) OR by LEFT JOINing WebsiteAnalysisJob/SEOProject for older rows (see
+ * buildWhere's comment above — the ORM-level OR-relation filter isn't
+ * available in raw SQL, so the direct column plus the two LEFT JOINs here
+ * are the raw-SQL equivalent of that same three-way requirement). A plain
+ * INNER JOIN on WebsiteAnalysisJob alone would silently exclude every
+ * seoProjectId-only or companyId-only row from the trend entirely.
  */
 export async function getAiSpendTrend(companyId: string, filters: AiUsageFilters): Promise<AiSpendTrendPoint[]> {
-  const conditions = [Prisma.sql`(w."companyId" = ${companyId}::uuid OR sp."companyId" = ${companyId}::uuid)`];
+  const conditions = [
+    Prisma.sql`(a."companyId" = ${companyId}::uuid OR w."companyId" = ${companyId}::uuid OR sp."companyId" = ${companyId}::uuid)`,
+  ];
   if (filters.dateFrom) conditions.push(Prisma.sql`a."createdAt" >= ${filters.dateFrom}`);
   if (filters.dateTo) conditions.push(Prisma.sql`a."createdAt" <= ${filters.dateTo}`);
   if (filters.provider) conditions.push(Prisma.sql`a.provider = ${filters.provider}`);

@@ -123,6 +123,14 @@ enum WebsiteAnalysisErrorType {
   INVALID_REQUEST
   NOT_CONFIGURED
   UNKNOWN
+  /// Phase 19 — this company's configured monthly AI spend cap has been
+  /// reached. Distinct from RATE_LIMIT (which means the AI PROVIDER
+  /// rate-limited us) and from INSUFFICIENT_CREDITS (the provider's own
+  /// account is out of funds) — this is a limit WE impose on a tenant.
+  BUDGET_EXCEEDED
+  /// Phase 19 — this company's configured per-minute AI request rate limit
+  /// has been reached. Distinct from RATE_LIMIT for the same reason above.
+  COMPANY_RATE_LIMITED
 }
 
 /// Phase 18 — status machine for AiGenerationJob, a new enum rather than a
@@ -171,16 +179,29 @@ enum ReportStatus {
 /// itself through this model, directly or by walking a parent relation —
 /// none of them duplicate a companyId that can be reached that way.
 model Company {
-  id        String    @id @default(uuid(7)) @db.Uuid
-  name      String
-  slug      String    @unique
-  industry  String?
-  website   String?
-  logoUrl   String?
-  timezone  String?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  deletedAt DateTime?
+  id                   String    @id @default(uuid(7)) @db.Uuid
+  name                 String
+  slug                 String    @unique
+  industry             String?
+  website              String?
+  logoUrl              String?
+  timezone             String?
+  /// Phase 19 — SUPER_ADMIN-only. Hard ceiling on this company's AI spend
+  /// for the current UTC calendar month, summed from
+  /// AiUsageLog.estimatedCostUsd (see lib/ai/ai-limit.service.ts). Null =
+  /// no cap enforced — the default for every existing company and any
+  /// company a SUPER_ADMIN hasn't explicitly configured. Never editable by
+  /// a company's own ADMIN (see company-ai-limits.actions.ts).
+  aiMonthlyBudgetUsd   Decimal?  @db.Decimal(10, 2)
+  /// Phase 19 — SUPER_ADMIN-only. Ceiling on AI-triggering requests per
+  /// rolling 60-second window, enforced in-memory
+  /// (lib/ai/ai-limit.service.ts). Null = no limit enforced — same no-op
+  /// default as above. Deliberately NOT a platform-wide default when
+  /// null — that would change existing companies' behavior on rollout.
+  aiRateLimitPerMinute Int?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  deletedAt            DateTime?
 
   users               User[]
   roles               Role[]
@@ -195,6 +216,7 @@ model Company {
   activities          Activity[]
   websiteAnalysisJobs WebsiteAnalysisJob[]
   aiGenerationJobs    AiGenerationJob[]
+  aiUsageLogs         AiUsageLog[]
 
   @@index([deletedAt])
 }
@@ -937,6 +959,16 @@ model AiUsageLog {
   /// calling code, not a DB constraint (same convention as the rest of this
   /// schema).
   seoProjectId         String?                   @db.Uuid
+  /// Phase 19 — direct company scoping, added alongside the existing
+  /// websiteAnalysisJobId/seoProjectId relations (not replacing them).
+  /// Nullable for backward compat; historical rows are intentionally not
+  /// backfilled (the budget check only ever looks at the current month, so
+  /// no pre-Phase-19 row can ever fall inside a period that starts after
+  /// this shipped). Populated on every new row going forward, since
+  /// generateStructuredOutput's companyId input is now required. Exists so
+  /// the budget-check query is a single indexed WHERE instead of the
+  /// two-way LEFT JOIN ai-usage.service.ts's dashboard queries need today.
+  companyId            String?                   @db.Uuid
   provider             String
   taskType             AiTaskType
   promptVersion        Int
@@ -953,9 +985,12 @@ model AiUsageLog {
 
   websiteAnalysisJob WebsiteAnalysisJob? @relation(fields: [websiteAnalysisJobId], references: [id], onDelete: SetNull)
   seoProject         SEOProject?         @relation(fields: [seoProjectId], references: [id], onDelete: SetNull)
+  company            Company?            @relation(fields: [companyId], references: [id], onDelete: SetNull)
 
   @@index([websiteAnalysisJobId])
   @@index([seoProjectId])
+  @@index([companyId])
+  @@index([companyId, createdAt])
   @@index([provider])
   @@index([taskType])
   @@index([createdAt])

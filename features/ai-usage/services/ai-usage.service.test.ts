@@ -81,7 +81,7 @@ describe("getAiUsageSummary", () => {
     expect(Number.isNaN(result.successRate)).toBe(false);
   });
 
-  it("scopes every query through websiteAnalysisJob.companyId OR seoProject.companyId — never a bare companyId or omitted scope", async () => {
+  it("scopes every query through a direct companyId (Phase 19) OR websiteAnalysisJob.companyId OR seoProject.companyId — never an omitted scope", async () => {
     mockAggregate.mockResolvedValue({
       _sum: { estimatedCostUsd: null },
       _avg: { latencyMs: null },
@@ -91,7 +91,7 @@ describe("getAiUsageSummary", () => {
 
     await getAiUsageSummary("company-42", NO_FILTERS);
 
-    const expectedOr = [{ websiteAnalysisJob: { companyId: "company-42" } }, { seoProject: { companyId: "company-42" } }];
+    const expectedOr = [{ companyId: "company-42" }, { websiteAnalysisJob: { companyId: "company-42" } }, { seoProject: { companyId: "company-42" } }];
     expect(mockAggregate).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ OR: expectedOr }) }));
     expect(mockCount).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ OR: expectedOr, succeeded: true }) })
@@ -160,7 +160,7 @@ describe("getAiSpendByTaskType", () => {
     expect(mockGroupBy).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [{ websiteAnalysisJob: { companyId: COMPANY_ID } }, { seoProject: { companyId: COMPANY_ID } }],
+          OR: [{ companyId: COMPANY_ID }, { websiteAnalysisJob: { companyId: COMPANY_ID } }, { seoProject: { companyId: COMPANY_ID } }],
         }),
       })
     );
@@ -202,7 +202,7 @@ describe("getAiFailuresByErrorType", () => {
     expect(mockGroupBy).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [{ websiteAnalysisJob: { companyId: COMPANY_ID } }, { seoProject: { companyId: COMPANY_ID } }],
+          OR: [{ companyId: COMPANY_ID }, { websiteAnalysisJob: { companyId: COMPANY_ID } }, { seoProject: { companyId: COMPANY_ID } }],
           succeeded: false,
         }),
       })
@@ -222,7 +222,7 @@ describe("listRecentAiUsage", () => {
     expect(mockFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [{ websiteAnalysisJob: { companyId: COMPANY_ID } }, { seoProject: { companyId: COMPANY_ID } }],
+          OR: [{ companyId: COMPANY_ID }, { websiteAnalysisJob: { companyId: COMPANY_ID } }, { seoProject: { companyId: COMPANY_ID } }],
         }),
         orderBy: { createdAt: "desc" },
         skip: 0,

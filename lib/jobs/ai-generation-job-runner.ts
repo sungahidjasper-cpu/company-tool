@@ -69,7 +69,7 @@ async function loadKeyword(keywordId: string | undefined) {
  * dispatcher only re-validates the job's *shape*, not who's allowed to see
  * it, matching the "thin dispatcher, no new business logic" design.
  */
-async function dispatch(job: { taskType: string; inputJson: unknown }): Promise<Prisma.InputJsonValue> {
+async function dispatch(job: { taskType: string; inputJson: unknown; companyId: string }): Promise<Prisma.InputJsonValue> {
   if (job.taskType === "CONTENT_BRIEF") {
     const parsed = validateContentBriefJobInput(job.inputJson);
     if (!parsed.success) throw new Error(parsed.message);
@@ -80,6 +80,7 @@ async function dispatch(job: { taskType: string; inputJson: unknown }): Promise<
 
     const brief = await generateContentBrief({
       seoProjectId: seoProject.id,
+      companyId: job.companyId,
       seoProjectName: seoProject.name,
       domain: seoProject.domain,
       contentType: parsed.data.contentType,
@@ -106,6 +107,7 @@ async function dispatch(job: { taskType: string; inputJson: unknown }): Promise<
 
       const article = await generateLongFormContent({
         seoProjectId: content.seoProject.id,
+        companyId: job.companyId,
         seoProjectName: content.seoProject.name,
         domain: content.seoProject.domain,
         brief,
@@ -120,6 +122,7 @@ async function dispatch(job: { taskType: string; inputJson: unknown }): Promise<
 
     const article = await generateLongFormContent({
       seoProjectId: seoProject.id,
+      companyId: job.companyId,
       seoProjectName: seoProject.name,
       domain: seoProject.domain,
       brief: parsed.data.brief,

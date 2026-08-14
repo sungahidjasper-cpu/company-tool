@@ -15,6 +15,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import CompanyAiLimitsForm from "@/features/companies/components/CompanyAiLimitsForm";
 import {
   getCompanyById,
   getCompanyClients,
@@ -23,6 +24,7 @@ import {
   getCompanyUsers,
 } from "@/features/companies/services/company.service";
 import { listFilesFor } from "@/features/files/services/file.service";
+import { getCurrentPeriodSpendUsd } from "@/lib/ai/ai-limit.service";
 import { requireUser } from "@/lib/auth";
 import { assertCompanyAccess, Permissions } from "@/lib/authorization";
 import { cn, formatEnumLabel } from "@/lib/utils";
@@ -44,14 +46,16 @@ export default async function CompanyDetailPage({
 
   assertCompanyAccess(user, company.id);
   const canManageFiles = Permissions.manageCompanies(user.role);
+  const canManageAiLimits = Permissions.manageCompanies(user.role);
 
-  const [counts, recentUsers, recentClients, recentProjects, files] =
+  const [counts, recentUsers, recentClients, recentProjects, files, currentPeriodSpendUsd] =
     await Promise.all([
       getCompanyCounts(company.id),
       getCompanyUsers(company.id),
       getCompanyClients(company.id),
       getCompanyProjects(company.id),
       listFilesFor("company", company.id),
+      canManageAiLimits ? getCurrentPeriodSpendUsd(company.id) : Promise.resolve(0),
     ]);
 
   return (
@@ -162,6 +166,22 @@ export default async function CompanyDetailPage({
           <FileList files={files} canDelete={canManageFiles} />
         </CardContent>
       </Card>
+
+      {canManageAiLimits && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">AI cost controls</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <CompanyAiLimitsForm
+              companyId={company.id}
+              aiMonthlyBudgetUsd={company.aiMonthlyBudgetUsd ? Number(company.aiMonthlyBudgetUsd) : null}
+              aiRateLimitPerMinute={company.aiRateLimitPerMinute}
+              currentPeriodSpendUsd={currentPeriodSpendUsd}
+            />
+          </CardContent>
+        </Card>
+      )}
     </PageContainer>
   );
 }

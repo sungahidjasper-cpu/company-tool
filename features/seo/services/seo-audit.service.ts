@@ -25,6 +25,8 @@ export const PROMPT_VERSION = 1;
 export type AuditContext = {
   /** Provenance for AiUsageLog rows — the job this audit call is for. */
   websiteAnalysisJobId: string;
+  /** Phase 19 — required for enforceCompanyAiLimits; the job this call is for already carries it. */
+  companyId: string;
   crawl: CrawlResult;
   extraction: WebsiteAnalysisExtraction;
   deterministicFindings: DeterministicFinding[];
@@ -33,6 +35,9 @@ export type AuditContext = {
   orphanPages: string[];
   thinPageUrls: string[];
 };
+
+/** Phase 19 — bundles jobId+companyId for the 4 generator functions below, rather than adding a second bare string param to each (a second bare string is exactly the shape where a transposition bug across 4 call sites would go unnoticed). */
+type AuditTaskContext = { jobId: string; companyId: string };
 
 const AUDIT_SYSTEM_PROMPT =
   "You are a senior SEO auditor. Be concise, concrete, and grounded strictly in the provided crawl data and business context. Never invent products, services, locations, or facts not evidenced in the input. Every score must be accompanied by reasoning that references specific evidence.";
@@ -68,7 +73,7 @@ Crawled page content (homepage plus a sample of other pages):
 ${pageSummaries}`;
 }
 
-async function generateScores(sharedContext: string, jobId: string): Promise<SeoScoresOutput> {
+async function generateScores(sharedContext: string, taskCtx: AuditTaskContext): Promise<SeoScoresOutput> {
   const prompt = `${sharedContext}
 
 Using ONLY the information above:
@@ -84,11 +89,12 @@ Using ONLY the information above:
     maxTokens: 6000,
     taskType: "SCORES",
     promptVersion: PROMPT_VERSION,
-    websiteAnalysisJobId: jobId,
+    websiteAnalysisJobId: taskCtx.jobId,
+    companyId: taskCtx.companyId,
   });
 }
 
-async function generateRecommendations(sharedContext: string, jobId: string): Promise<Recommendation[]> {
+async function generateRecommendations(sharedContext: string, taskCtx: AuditTaskContext): Promise<Recommendation[]> {
   const prompt = `${sharedContext}
 
 Using ONLY the information above, produce a prioritized list of recommendations covering technical, on-page, content, structured data, internal linking, EEAT, GEO, and AEO — each with a title, description, why it matters, estimated impact, difficulty, priority, and category. Do not just restate the deterministic findings above verbatim; add judgment-based recommendations they don't cover.`;
@@ -99,12 +105,13 @@ Using ONLY the information above, produce a prioritized list of recommendations 
     maxTokens: 6000,
     taskType: "RECOMMENDATIONS",
     promptVersion: PROMPT_VERSION,
-    websiteAnalysisJobId: jobId,
+    websiteAnalysisJobId: taskCtx.jobId,
+    companyId: taskCtx.companyId,
   });
   return result.recommendations;
 }
 
-async function generateContentIntelligence(sharedContext: string, jobId: string): Promise<SeoContentIntelligenceOutput> {
+async function generateContentIntelligence(sharedContext: string, taskCtx: AuditTaskContext): Promise<SeoContentIntelligenceOutput> {
   const prompt = `${sharedContext}
 
 Using ONLY the information above:
@@ -119,7 +126,8 @@ Using ONLY the information above:
     maxTokens: 8000,
     taskType: "CONTENT_INTELLIGENCE",
     promptVersion: PROMPT_VERSION,
-    websiteAnalysisJobId: jobId,
+    websiteAnalysisJobId: taskCtx.jobId,
+    companyId: taskCtx.companyId,
   });
 }
 
@@ -127,7 +135,7 @@ async function generateExecutiveSummary(
   extraction: WebsiteAnalysisExtraction,
   scores: SeoScoresOutput,
   recommendations: Recommendation[],
-  jobId: string
+  taskCtx: AuditTaskContext
 ) {
   const topRecommendations = recommendations.slice(0, 8).map((r) => `- [${r.priority}] ${r.title}`).join("\n");
 
@@ -151,7 +159,8 @@ Write an executive summary: a short narrative on overall health, 3-5 strengths, 
     maxTokens: 2000,
     taskType: "EXECUTIVE_SUMMARY",
     promptVersion: PROMPT_VERSION,
-    websiteAnalysisJobId: jobId,
+    websiteAnalysisJobId: taskCtx.jobId,
+    companyId: taskCtx.companyId,
   });
 }
 
@@ -166,11 +175,12 @@ Write an executive summary: a short narrative on overall health, 3-5 strengths, 
  */
 export async function generateSeoAudit(ctx: AuditContext): Promise<SeoAuditOutput> {
   const sharedContext = buildSharedContext(ctx);
+  const taskCtx: AuditTaskContext = { jobId: ctx.websiteAnalysisJobId, companyId: ctx.companyId };
 
   const [scoresResult, recommendationsResult, contentIntelligenceResult] = await Promise.allSettled([
-    generateScores(sharedContext, ctx.websiteAnalysisJobId),
-    generateRecommendations(sharedContext, ctx.websiteAnalysisJobId),
-    generateContentIntelligence(sharedContext, ctx.websiteAnalysisJobId),
+    generateScores(sharedContext, taskCtx),
+    generateRecommendations(sharedContext, taskCtx),
+    generateContentIntelligence(sharedContext, taskCtx),
   ]);
 
   const logTaskFailure = (task: string, result: PromiseSettledResult<unknown>) => {
@@ -203,7 +213,7 @@ export async function generateSeoAudit(ctx: AuditContext): Promise<SeoAuditOutpu
 
   const executiveSummary =
     scores && recommendations
-      ? await generateExecutiveSummary(ctx.extraction, scores, recommendations, ctx.websiteAnalysisJobId).catch((error) => {
+      ? await generateExecutiveSummary(ctx.extraction, scores, recommendations, taskCtx).catch((error) => {
           logTaskFailure("EXECUTIVE_SUMMARY", { status: "rejected", reason: error });
           return null;
         })

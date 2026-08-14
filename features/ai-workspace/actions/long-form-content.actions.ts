@@ -127,6 +127,7 @@ export async function generateLongFormFromBriefAction(input: GenerateLongFormFro
   try {
     const article = await generateLongFormContent({
       seoProjectId: seoProject.id,
+      companyId: actor.companyId,
       seoProjectName: seoProject.name,
       domain: seoProject.domain,
       brief: parsedBrief.data,
@@ -167,6 +168,7 @@ export async function generateLongFormFromContentAction(contentId: string): Prom
   try {
     const article = await generateLongFormContent({
       seoProjectId: content.seoProject.id,
+      companyId: actor.companyId,
       seoProjectName: content.seoProject.name,
       domain: content.seoProject.domain,
       brief,

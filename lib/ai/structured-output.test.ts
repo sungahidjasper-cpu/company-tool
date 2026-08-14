@@ -14,9 +14,19 @@ vi.mock("@/lib/ai/providers/health-cache", async (importOriginal) => {
   };
 });
 vi.mock("@/lib/prisma", () => ({ prisma: { aiUsageLog: { create: vi.fn() } } }));
+// Phase 19 — a no-op mock for every test in this file except the dedicated
+// "company AI limits" describe block below, which overrides this per-test
+// to exercise the actual integration point. ai-limit.service.ts's own
+// internal logic (the budget query, the rate-limit window) is unit-tested
+// separately in ai-limit.service.test.ts, not re-tested here.
+vi.mock("@/lib/ai/ai-limit.service", () => ({
+  enforceCompanyAiLimits: vi.fn().mockResolvedValue(undefined),
+  getCurrentPeriodSpendUsd: vi.fn(),
+}));
 
 import { getConfiguredProviders, describeProviderConfiguration } from "@/lib/ai/providers/registry";
 import { recordProviderFailure, recordProviderSuccess } from "@/lib/ai/providers/health-cache";
+import { enforceCompanyAiLimits } from "@/lib/ai/ai-limit.service";
 import { LlmProviderError } from "@/lib/ai/providers/errors";
 import { generateStructuredOutput } from "@/lib/ai/structured-output";
 import { prisma } from "@/lib/prisma";
@@ -26,9 +36,10 @@ const mockDescribe = vi.mocked(describeProviderConfiguration);
 const mockRecordFailure = vi.mocked(recordProviderFailure);
 const mockRecordSuccess = vi.mocked(recordProviderSuccess);
 const mockCreateLog = vi.mocked(prisma.aiUsageLog.create);
+const mockEnforceLimits = vi.mocked(enforceCompanyAiLimits);
 
 const schema = z.object({ value: z.string() });
-const input = { prompt: "test prompt", taskType: "EXTRACTION" as const, promptVersion: 1 };
+const input = { prompt: "test prompt", taskType: "EXTRACTION" as const, promptVersion: 1, companyId: "company-1" };
 
 /** Minimal LlmProvider fake — just enough for generateStructuredOutput's orchestration logic, not a real network call. */
 function makeFakeProvider(name: string, generateRaw: ReturnType<typeof vi.fn>) {
@@ -214,5 +225,47 @@ describe("generateStructuredOutput — Phase 17 transient-error retry", () => {
     await expect(generateStructuredOutput(schema, input)).rejects.toMatchObject({ type: "UNKNOWN" });
     // Schema-validation failure doesn't throw from generateRaw, so the new retry wrapper never even sees it as a rejection — exactly one call, matching pre-Phase-17 behavior.
     expect(generateRaw).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Phase 19 — enforceCompanyAiLimits is called before anything else in
+ * generateStructuredOutput. This block tests only the INTEGRATION point
+ * (that a rejection from the gate short-circuits the whole function before
+ * any provider is even looked up, and that a resolved gate is a true
+ * no-op) — ai-limit.service.ts's own internal logic (the budget query, the
+ * rate-limit window) is unit-tested in ai-limit.service.test.ts.
+ */
+describe("generateStructuredOutput — company AI limits gate", () => {
+  beforeEach(() => {
+    mockGetConfigured.mockClear();
+    mockCreateLog.mockClear();
+  });
+
+  it("proceeds normally when the gate resolves (no limits configured)", async () => {
+    mockEnforceLimits.mockResolvedValueOnce(undefined);
+    const generateRaw = vi.fn().mockResolvedValue(SUCCESS_RESULT);
+    mockGetConfigured.mockResolvedValue([makeFakeProvider("A", generateRaw)] as never);
+
+    const result = await generateStructuredOutput(schema, input);
+
+    expect(result).toEqual({ value: "ok" });
+    expect(mockEnforceLimits).toHaveBeenCalledWith("company-1", "EXTRACTION");
+  });
+
+  it("rejects with BUDGET_EXCEEDED before ever looking up a configured provider", async () => {
+    mockEnforceLimits.mockRejectedValueOnce(new LlmProviderError("budget exceeded", "BUDGET_EXCEEDED", "none"));
+
+    await expect(generateStructuredOutput(schema, input)).rejects.toMatchObject({ type: "BUDGET_EXCEEDED" });
+    expect(mockGetConfigured).not.toHaveBeenCalled();
+    expect(mockCreateLog).not.toHaveBeenCalled();
+  });
+
+  it("rejects with COMPANY_RATE_LIMITED before ever looking up a configured provider", async () => {
+    mockEnforceLimits.mockRejectedValueOnce(new LlmProviderError("rate limited", "COMPANY_RATE_LIMITED", "none"));
+
+    await expect(generateStructuredOutput(schema, input)).rejects.toMatchObject({ type: "COMPANY_RATE_LIMITED" });
+    expect(mockGetConfigured).not.toHaveBeenCalled();
+    expect(mockCreateLog).not.toHaveBeenCalled();
   });
 });

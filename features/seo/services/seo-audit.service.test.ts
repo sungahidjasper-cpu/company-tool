@@ -67,6 +67,7 @@ function crawl(): CrawlResult {
 function ctx(): AuditContext {
   return {
     websiteAnalysisJobId: "job-1",
+    companyId: "company-1",
     crawl: crawl(),
     extraction: { businessCategory: "Widgets", services: [], locations: [], topics: [] },
     deterministicFindings: [],

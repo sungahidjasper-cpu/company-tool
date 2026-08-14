@@ -1,5 +1,6 @@
 import { z } from "zod/v4";
 
+import { enforceCompanyAiLimits } from "@/lib/ai/ai-limit.service";
 import { isFallbackWorthy, isRetryableTransient, LlmProviderError } from "@/lib/ai/providers/errors";
 import { healthToErrorType, recordProviderFailure, recordProviderSuccess } from "@/lib/ai/providers/health-cache";
 import { describeProviderConfiguration, getConfiguredProviders } from "@/lib/ai/providers/registry";
@@ -34,6 +35,8 @@ type GenerateStructuredOutputInput = {
   websiteAnalysisJobId?: string;
   /** Phase 15 — company-scoping path for calls with no WebsiteAnalysisJob (e.g. CONTENT_BRIEF). Callers should supply exactly one of websiteAnalysisJobId/seoProjectId so the resulting AiUsageLog row stays company-scopable (see ai-usage.service.ts's buildWhere). */
   seoProjectId?: string;
+  /** Phase 19 — required (unlike websiteAnalysisJobId/seoProjectId above) so enforceCompanyAiLimits can never be silently bypassed by a call site forgetting to supply it. Every caller already has this in scope; see ai-limit.service.ts. */
+  companyId: string;
 };
 
 /** Rough chars-per-token heuristic — good enough for a pre-flight "is this prompt clearly too big for this provider" filter, not exact token counting (providers don't expose a tokenizer here). */
@@ -57,6 +60,7 @@ async function logUsage(params: {
   model: string | null;
   websiteAnalysisJobId: string | undefined;
   seoProjectId: string | undefined;
+  companyId: string;
   usage: TokenUsage;
   estimatedCostUsd: number | null;
   succeeded: boolean;
@@ -69,6 +73,7 @@ async function logUsage(params: {
       data: {
         websiteAnalysisJobId: params.websiteAnalysisJobId,
         seoProjectId: params.seoProjectId,
+        companyId: params.companyId,
         provider: params.provider,
         taskType: params.taskType,
         promptVersion: params.promptVersion,
@@ -117,6 +122,12 @@ export async function generateStructuredOutput<T extends z.ZodType>(
   schema: T,
   input: GenerateStructuredOutputInput
 ): Promise<z.infer<T>> {
+  // Phase 19 — runs before anything else, including provider configuration
+  // checks below. Throws (never retried, never falls back to another
+  // provider — see ai-limit.service.ts) or resolves as a no-op for a
+  // company with no limits configured.
+  await enforceCompanyAiLimits(input.companyId, input.taskType);
+
   const allProviders = await getConfiguredProviders();
 
   if (allProviders.length === 0) {
@@ -222,6 +233,7 @@ export async function generateStructuredOutput<T extends z.ZodType>(
           model: result.model,
           websiteAnalysisJobId: input.websiteAnalysisJobId,
           seoProjectId: input.seoProjectId,
+          companyId: input.companyId,
           usage: result.usage,
           estimatedCostUsd,
           succeeded: true,
@@ -249,6 +261,7 @@ export async function generateStructuredOutput<T extends z.ZodType>(
         model: result.model,
         websiteAnalysisJobId: input.websiteAnalysisJobId,
         seoProjectId: input.seoProjectId,
+        companyId: input.companyId,
         usage: result.usage,
         estimatedCostUsd,
         succeeded: false,
@@ -276,6 +289,7 @@ export async function generateStructuredOutput<T extends z.ZodType>(
         model: null,
         websiteAnalysisJobId: input.websiteAnalysisJobId,
         seoProjectId: input.seoProjectId,
+        companyId: input.companyId,
         usage: { promptTokens: null, completionTokens: null },
         estimatedCostUsd: null,
         succeeded: false,

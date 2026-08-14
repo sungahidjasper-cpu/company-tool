@@ -205,6 +205,7 @@ async function runAiPhase(
       taskType: "EXTRACTION",
       promptVersion: PROMPT_VERSION,
       websiteAnalysisJobId: job.id,
+      companyId: job.companyId,
     });
     await updateWebsiteAnalysisJobProgress(job.id, 70);
   } catch (error) {
@@ -221,6 +222,7 @@ async function runAiPhase(
     try {
       audit = await generateSeoAudit({
         websiteAnalysisJobId: job.id,
+        companyId: job.companyId,
         crawl,
         extraction,
         deterministicFindings,

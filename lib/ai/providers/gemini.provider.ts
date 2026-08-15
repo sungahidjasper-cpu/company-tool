@@ -2,15 +2,13 @@ import { ApiError, GoogleGenAI } from "@google/genai";
 
 import { LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
 import { getCachedHealth } from "@/lib/ai/providers/health-cache";
-import { estimateGeminiCostUsd } from "@/lib/ai/providers/pricing";
+import { estimateGeminiCostUsd, getGeminiMaxContext } from "@/lib/ai/providers/pricing";
 import { withRetry } from "@/lib/ai/providers/retry";
 import type { GeneratedOutput, GenerateRawResult, LlmProvider, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
 
 const MAX_PARSE_ATTEMPTS = 3;
 /** Gemini's Node SDK has no reliably-respected request timeout — enforced ourselves. */
 const REQUEST_TIMEOUT_MS = 120_000;
-/** Gemini 2.5 Flash's documented context window — update if GEMINI_MODEL moves to a different family. */
-const MAX_CONTEXT_TOKENS = 1_000_000;
 
 const globalForGemini = globalThis as unknown as { gemini?: GoogleGenAI };
 
@@ -48,6 +46,7 @@ export function classifyApiError(error: ApiError): LlmProviderError {
   if (status === 401 || status === 403) type = "AUTHENTICATION_ERROR";
   else if (status === 429) type = CREDIT_MESSAGE_PATTERN.test(error.message) ? "INSUFFICIENT_CREDITS" : "RATE_LIMIT";
   else if (status === 400) type = "INVALID_REQUEST";
+  else if (status === 404) type = "MODEL_UNAVAILABLE"; // Phase 20 — a deprecated/unknown GEMINI_MODEL name (confirmed live in an earlier phase: a retired model 404s, not 400).
   else if (status === 503) type = "SERVICE_UNAVAILABLE";
 
   if (type === "INVALID_REQUEST" && CREDIT_MESSAGE_PATTERN.test(error.message)) type = "INSUFFICIENT_CREDITS";
@@ -151,7 +150,7 @@ export const geminiProvider: LlmProvider = {
   },
 
   maxContext() {
-    return MAX_CONTEXT_TOKENS;
+    return getGeminiMaxContext(process.env.GEMINI_MODEL);
   },
 
   cost(usage: TokenUsage) {

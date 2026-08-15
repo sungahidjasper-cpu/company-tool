@@ -27,6 +27,10 @@ describe("isFallbackWorthy", () => {
   it("never falls back on NOT_CONFIGURED — there's nothing left to try", () => {
     expect(isFallbackWorthy("NOT_CONFIGURED")).toBe(false);
   });
+
+  it("treats MODEL_UNAVAILABLE as fallback-worthy — a bad model on one provider says nothing about another", () => {
+    expect(isFallbackWorthy("MODEL_UNAVAILABLE")).toBe(true);
+  });
 });
 
 describe("isRetryableTransient", () => {
@@ -35,8 +39,8 @@ describe("isRetryableTransient", () => {
     for (const type of retryable) expect(isRetryableTransient(type)).toBe(true);
   });
 
-  it("never retries AUTHENTICATION_ERROR, INSUFFICIENT_CREDITS, INVALID_REQUEST, NOT_CONFIGURED, or UNKNOWN", () => {
-    const nonRetryable: LlmErrorType[] = ["AUTHENTICATION_ERROR", "INSUFFICIENT_CREDITS", "INVALID_REQUEST", "NOT_CONFIGURED", "UNKNOWN"];
+  it("never retries AUTHENTICATION_ERROR, INSUFFICIENT_CREDITS, INVALID_REQUEST, NOT_CONFIGURED, UNKNOWN, or MODEL_UNAVAILABLE", () => {
+    const nonRetryable: LlmErrorType[] = ["AUTHENTICATION_ERROR", "INSUFFICIENT_CREDITS", "INVALID_REQUEST", "NOT_CONFIGURED", "UNKNOWN", "MODEL_UNAVAILABLE"];
     for (const type of nonRetryable) expect(isRetryableTransient(type)).toBe(false);
   });
 
@@ -50,6 +54,7 @@ describe("isRetryableTransient", () => {
       "INVALID_REQUEST",
       "NOT_CONFIGURED",
       "UNKNOWN",
+      "MODEL_UNAVAILABLE",
     ];
     for (const type of allTypes) {
       if (isRetryableTransient(type)) expect(isFallbackWorthy(type)).toBe(true);
@@ -68,6 +73,9 @@ describe("describeLlmError", () => {
       "INVALID_REQUEST",
       "NOT_CONFIGURED",
       "UNKNOWN",
+      "BUDGET_EXCEEDED",
+      "COMPANY_RATE_LIMITED",
+      "MODEL_UNAVAILABLE",
     ];
     const seen = new Set<string>();
     for (const type of types) {
@@ -160,6 +168,11 @@ describe("anthropic.provider classifyError", () => {
   it("falls back to UNKNOWN for a completely unrecognized error shape", () => {
     expect(classifyError(new Error("something else entirely")).type).toBe("UNKNOWN");
   });
+
+  it("classifies not_found_error as MODEL_UNAVAILABLE, not INVALID_REQUEST — a bad ANTHROPIC_MODEL name is fallback-worthy, unlike a malformed request", () => {
+    const error = new APIError(404, { type: "error", error: { type: "not_found_error", message: "model: claude-not-a-real-model" } }, undefined, undefined, "not_found_error");
+    expect(classifyError(error).type).toBe("MODEL_UNAVAILABLE");
+  });
 });
 
 /**
@@ -193,6 +206,10 @@ describe("gemini.provider classifyApiError", () => {
 
   it("classifies 503 as SERVICE_UNAVAILABLE", () => {
     expect(classifyApiError(new ApiError({ status: 503, message: "overloaded" })).type).toBe("SERVICE_UNAVAILABLE");
+  });
+
+  it("classifies a 404 as MODEL_UNAVAILABLE — confirmed live: a deprecated/unknown GEMINI_MODEL 404s, not 400", () => {
+    expect(classifyApiError(new ApiError({ status: 404, message: "model not found" })).type).toBe("MODEL_UNAVAILABLE");
   });
 });
 
@@ -228,6 +245,11 @@ describe.each([
   it("classifies a genuine 400 (no credit wording) as INVALID_REQUEST", () => {
     const error = new OpenAiAPIError(400, { message: "model: field required", type: "invalid_request_error" }, undefined, undefined);
     expect(classify(error).type).toBe("INVALID_REQUEST");
+  });
+
+  it("classifies a 404 as MODEL_UNAVAILABLE — an unknown/deprecated configured model, fallback-worthy unlike a malformed request", () => {
+    const error = new OpenAiAPIError(404, { message: "The model `gpt-not-real` does not exist", type: "invalid_request_error", code: "model_not_found" }, undefined, undefined);
+    expect(classify(error).type).toBe("MODEL_UNAVAILABLE");
   });
 
   it("classifies a credit-balance-worded 400 as INSUFFICIENT_CREDITS via message text, not just status", () => {

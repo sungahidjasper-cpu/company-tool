@@ -24,6 +24,14 @@ export type LongFormContentContext = {
   keyword: { term: string; intent: string | null } | null;
 };
 
+/**
+ * ctx.brief's fields are raw, user-editable text (edited in
+ * ContentBriefReview.tsx before this ever runs) interpolated directly
+ * below. Accepted risk, not an oversight — same rationale as
+ * content-brief.service.ts's buildPrompt: nothing generated from it is
+ * ever persisted without an explicit human review + Save, and the system
+ * prompt above already instructs the model not to invent facts.
+ */
 function buildPrompt(ctx: LongFormContentContext): string {
   const keywordLine = ctx.keyword
     ? `Target keyword: "${ctx.keyword.term}"${ctx.keyword.intent ? ` (tracked search intent: ${ctx.keyword.intent})` : ""}`

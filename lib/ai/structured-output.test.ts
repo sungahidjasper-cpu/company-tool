@@ -198,6 +198,19 @@ describe("generateStructuredOutput — Phase 17 transient-error retry", () => {
     expect(mockRecordFailure).toHaveBeenCalledWith("A", "AUTHENTICATION_ERROR");
   });
 
+  it("never retries MODEL_UNAVAILABLE on the same provider, but DOES fall back to the next configured provider — a bad model on A says nothing about B", async () => {
+    const generateRawA = vi.fn().mockRejectedValue(new LlmProviderError("model not found", "MODEL_UNAVAILABLE", "A"));
+    const generateRawB = vi.fn().mockResolvedValue(SUCCESS_RESULT);
+    mockGetConfigured.mockResolvedValue([makeFakeProvider("A", generateRawA), makeFakeProvider("B", generateRawB)] as never);
+
+    const result = await generateStructuredOutput(schema, input);
+
+    expect(result).toEqual({ value: "ok" });
+    expect(generateRawA).toHaveBeenCalledTimes(1);
+    expect(mockCreateLog).toHaveBeenNthCalledWith(1, expect.objectContaining({ data: expect.objectContaining({ retried: false, errorType: "MODEL_UNAVAILABLE" }) }));
+    expect(mockRecordFailure).toHaveBeenCalledWith("A", "MODEL_UNAVAILABLE");
+  });
+
   it("never retries INSUFFICIENT_CREDITS or UNKNOWN either", async () => {
     for (const errorType of ["INSUFFICIENT_CREDITS", "UNKNOWN"] as const) {
       const generateRaw = vi.fn().mockRejectedValue(new LlmProviderError("nope", errorType, "A"));

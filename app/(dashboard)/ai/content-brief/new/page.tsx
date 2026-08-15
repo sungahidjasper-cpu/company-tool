@@ -8,10 +8,12 @@ import Link from "next/link";
 import ContentBriefPicker from "@/features/ai-workspace/components/ContentBriefPicker";
 import { listSeoProjectOptions } from "@/features/seo/services/seo-project.service";
 import { requireUser } from "@/lib/auth";
+import { assertPermission, Permissions } from "@/lib/authorization";
 import { prisma } from "@/lib/prisma";
 
 export default async function NewContentBriefPage() {
   const user = await requireUser();
+  assertPermission(user, Permissions.manageSeoProjects);
 
   const [seoProjectOptions, keywords] = await Promise.all([
     listSeoProjectOptions(user.companyId),

@@ -15,6 +15,17 @@ export type TokenUsage = { promptTokens: number | null; completionTokens: number
 
 type PricingRate = { promptPerMillion: number; completionPerMillion: number };
 
+/**
+ * Phase 20 — pairs each model's cost rate with its documented context
+ * window, so `maxContext()` follows whatever model is actually configured
+ * instead of a static per-provider constant. Only Gemini/OpenAI/Anthropic
+ * get this (they already have real per-model tables); Ollama/OpenRouter
+ * keep their own single hardcoded constant unchanged — neither has a fixed
+ * model catalog to build a table from (Ollama routes to whatever local
+ * model is configured, OpenRouter to whatever it's pointed at).
+ */
+type ModelProfile = PricingRate & { contextWindow: number };
+
 function estimateFromTable(
   provider: string,
   model: string | undefined,
@@ -31,24 +42,38 @@ function estimateFromTable(
   return (promptTokens / 1_000_000) * rate.promptPerMillion + (completionTokens / 1_000_000) * rate.completionPerMillion;
 }
 
-const GEMINI_PRICING: Record<string, PricingRate> = {
-  "gemini-2.5-flash": { promptPerMillion: 0.3, completionPerMillion: 2.5 },
-  "gemini-2.5-pro": { promptPerMillion: 1.25, completionPerMillion: 10 },
-};
-const GEMINI_DEFAULT: PricingRate = GEMINI_PRICING["gemini-2.5-flash"];
+/** Mirrors estimateFromTable's exact fallback-with-logged-warning shape, for context-window lookups instead of cost. */
+function getContextWindow(
+  provider: string,
+  model: string | undefined,
+  table: Record<string, ModelProfile>,
+  defaultProfile: ModelProfile
+): number {
+  const profile = (model && table[model]) || defaultProfile;
+  if (!model || !table[model]) {
+    logger.warn("AI context-window lookup used a fallback — table may be stale", { provider, model });
+  }
+  return profile.contextWindow;
+}
 
-const OPENAI_PRICING: Record<string, PricingRate> = {
-  "gpt-4o": { promptPerMillion: 2.5, completionPerMillion: 10 },
-  "gpt-4o-mini": { promptPerMillion: 0.15, completionPerMillion: 0.6 },
+const GEMINI_PRICING: Record<string, ModelProfile> = {
+  "gemini-2.5-flash": { promptPerMillion: 0.3, completionPerMillion: 2.5, contextWindow: 1_000_000 },
+  "gemini-2.5-pro": { promptPerMillion: 1.25, completionPerMillion: 10, contextWindow: 1_000_000 },
 };
-const OPENAI_DEFAULT: PricingRate = OPENAI_PRICING["gpt-4o-mini"];
+const GEMINI_DEFAULT: ModelProfile = GEMINI_PRICING["gemini-2.5-flash"];
 
-const ANTHROPIC_PRICING: Record<string, PricingRate> = {
-  "claude-opus-5": { promptPerMillion: 5, completionPerMillion: 25 },
-  "claude-sonnet-5": { promptPerMillion: 3, completionPerMillion: 15 },
-  "claude-haiku-4-5": { promptPerMillion: 1, completionPerMillion: 5 },
+const OPENAI_PRICING: Record<string, ModelProfile> = {
+  "gpt-4o": { promptPerMillion: 2.5, completionPerMillion: 10, contextWindow: 128_000 },
+  "gpt-4o-mini": { promptPerMillion: 0.15, completionPerMillion: 0.6, contextWindow: 128_000 },
 };
-const ANTHROPIC_DEFAULT: PricingRate = ANTHROPIC_PRICING["claude-sonnet-5"];
+const OPENAI_DEFAULT: ModelProfile = OPENAI_PRICING["gpt-4o-mini"];
+
+const ANTHROPIC_PRICING: Record<string, ModelProfile> = {
+  "claude-opus-5": { promptPerMillion: 5, completionPerMillion: 25, contextWindow: 1_000_000 },
+  "claude-sonnet-5": { promptPerMillion: 3, completionPerMillion: 15, contextWindow: 1_000_000 },
+  "claude-haiku-4-5": { promptPerMillion: 1, completionPerMillion: 5, contextWindow: 200_000 },
+};
+const ANTHROPIC_DEFAULT: ModelProfile = ANTHROPIC_PRICING["claude-sonnet-5"];
 
 /**
  * OpenRouter routes to whichever underlying model is configured — its real
@@ -80,4 +105,36 @@ export function estimateOpenRouterCostUsd(usage: TokenUsage): number {
 /** Self-hosted — no per-token billing. */
 export function estimateOllamaCostUsd(): number {
   return 0;
+}
+
+export function getGeminiMaxContext(model: string | undefined): number {
+  return getContextWindow("gemini", model, GEMINI_PRICING, GEMINI_DEFAULT);
+}
+
+export function getOpenAiMaxContext(model: string | undefined): number {
+  return getContextWindow("openai", model, OPENAI_PRICING, OPENAI_DEFAULT);
+}
+
+export function getAnthropicMaxContext(model: string | undefined): number {
+  return getContextWindow("anthropic", model, ANTHROPIC_PRICING, ANTHROPIC_DEFAULT);
+}
+
+const KNOWN_MODEL_TABLES: Record<string, Record<string, ModelProfile>> = {
+  gemini: GEMINI_PRICING,
+  openai: OPENAI_PRICING,
+  anthropic: ANTHROPIC_PRICING,
+};
+
+/**
+ * Used by lib/startup.ts to warn — never to block — when a configured
+ * model isn't in this table. An unrecognized model still works at runtime
+ * (cost/context-window estimates just use a fallback default); rejecting it
+ * outright would defeat the whole point of models being env-configurable, a
+ * genuinely new model that hasn't been added here yet must keep working.
+ * Ollama/OpenRouter are deliberately excluded — neither has a fixed model
+ * catalog to check a configured value against.
+ */
+export function isKnownModel(provider: string, model: string | undefined): boolean {
+  const table = KNOWN_MODEL_TABLES[provider];
+  return Boolean(table && model && table[model]);
 }

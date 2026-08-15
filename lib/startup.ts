@@ -1,4 +1,5 @@
-import { describeProviderConfiguration } from "@/lib/ai/providers/registry";
+import { describeProviderConfiguration, type ProviderConfigurationStatus } from "@/lib/ai/providers/registry";
+import { isKnownModel } from "@/lib/ai/providers/pricing";
 import { logger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -7,6 +8,40 @@ const OLLAMA_CHECK_TIMEOUT_MS = 2000;
 
 function checkRequiredEnvVars(): string[] {
   return REQUIRED_ENV_VARS.filter((name) => !process.env[name]);
+}
+
+/** Phase 20 — today this only ever happens per-request inside describeProviderConfiguration (registry.ts), silently producing a permanently-skipped phantom entry. Surfacing it as its own startup warning class catches an LLM_PROVIDER_ORDER typo at boot instead of only when someone notices a provider never gets tried. */
+function checkUnrecognizedProviderNames(providers: ProviderConfigurationStatus[]): string[] {
+  return providers.filter((p) => p.reason.includes("not a recognized provider name")).map((p) => p.name);
+}
+
+/**
+ * Phase 20 — a warning, never a block: an unrecognized model still works at
+ * runtime (pricing.ts's own estimateFromTable/getContextWindow already
+ * degrade gracefully to a fallback rate/window), this just surfaces it at
+ * boot instead of only the first time a cost/context estimate silently uses
+ * a fallback. Only checked for providers with a real per-model table
+ * (Gemini/OpenAI/Anthropic) — Ollama/OpenRouter have no fixed model catalog
+ * to check a configured value against.
+ */
+const MODEL_ENV_VAR_BY_PROVIDER: Record<string, string> = {
+  gemini: "GEMINI_MODEL",
+  openai: "OPENAI_MODEL",
+  anthropic: "ANTHROPIC_MODEL",
+};
+
+function checkUnrecognizedModels(providers: ProviderConfigurationStatus[]): string[] {
+  const warnings: string[] = [];
+  for (const p of providers) {
+    if (!p.configured) continue;
+    const envVar = MODEL_ENV_VAR_BY_PROVIDER[p.name];
+    if (!envVar) continue;
+    const model = process.env[envVar];
+    if (!isKnownModel(p.name, model)) {
+      warnings.push(`${envVar}="${model}" is not a recognized ${p.name} model — cost/context-window estimates will use a fallback default.`);
+    }
+  }
+  return warnings;
 }
 
 async function checkOllamaReachability(): Promise<{ checked: boolean; reachable: boolean }> {
@@ -82,6 +117,16 @@ export async function runStartupChecks(): Promise<void> {
     skipped: skipped.map((p) => ({ name: p.name, reason: p.reason })),
   });
 
+  const unrecognizedProviderNames = checkUnrecognizedProviderNames(providers);
+  if (unrecognizedProviderNames.length > 0) {
+    logger.warn("Startup: LLM_PROVIDER_ORDER contains unrecognized provider name(s)", { names: unrecognizedProviderNames });
+  }
+
+  const unrecognizedModelWarnings = checkUnrecognizedModels(providers);
+  for (const warning of unrecognizedModelWarnings) {
+    logger.warn("Startup: configured model not in the known-models table", { warning });
+  }
+
   const ollama = await checkOllamaReachability();
   if (ollama.checked) {
     logger.info("Startup: Ollama reachability check", { reachable: ollama.reachable, host: process.env.OLLAMA_HOST });
@@ -101,6 +146,8 @@ export async function runStartupChecks(): Promise<void> {
   if (missingEnvVars.length > 0) warnings.push(`Missing env vars: ${missingEnvVars.join(", ")}`);
   if (enabled.length === 0) warnings.push("No AI providers are configured — Website Analysis will fail immediately.");
   if (ollama.checked && !ollama.reachable) warnings.push(`OLLAMA_HOST is set (${process.env.OLLAMA_HOST}) but not reachable.`);
+  if (unrecognizedProviderNames.length > 0) warnings.push(`LLM_PROVIDER_ORDER contains unrecognized name(s): ${unrecognizedProviderNames.join(", ")}`);
+  warnings.push(...unrecognizedModelWarnings);
 
   if (process.env.NODE_ENV === "development" && warnings.length > 0) {
     console.warn(

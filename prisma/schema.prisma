@@ -131,6 +131,12 @@ enum WebsiteAnalysisErrorType {
   /// Phase 19 — this company's configured per-minute AI request rate limit
   /// has been reached. Distinct from RATE_LIMIT for the same reason above.
   COMPANY_RATE_LIMITED
+  /// Phase 20 — the configured model for a provider was rejected as not
+  /// found/no longer available (e.g. a deprecated model name). Unlike
+  /// INVALID_REQUEST, this is fallback-worthy — a bad model name on one
+  /// provider says nothing about whether another configured provider would
+  /// also fail.
+  MODEL_UNAVAILABLE
 }
 
 /// Phase 18 — status machine for AiGenerationJob, a new enum rather than a

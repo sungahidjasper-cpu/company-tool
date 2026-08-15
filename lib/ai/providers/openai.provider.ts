@@ -2,13 +2,11 @@ import OpenAI, { APIConnectionError, APIConnectionTimeoutError, APIError, RateLi
 
 import { LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
 import { getCachedHealth } from "@/lib/ai/providers/health-cache";
-import { estimateOpenAiCostUsd } from "@/lib/ai/providers/pricing";
+import { estimateOpenAiCostUsd, getOpenAiMaxContext } from "@/lib/ai/providers/pricing";
 import { withRetry } from "@/lib/ai/providers/retry";
 import type { GeneratedOutput, GenerateRawResult, LlmProvider, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
 
 const MAX_PARSE_ATTEMPTS = 3;
-/** GPT-4o family's documented context window — update if OPENAI_MODEL moves to a different family. */
-const MAX_CONTEXT_TOKENS = 128_000;
 
 const globalForOpenAi = globalThis as unknown as { openai?: OpenAI };
 
@@ -53,6 +51,7 @@ export function classifyError(error: unknown): LlmProviderError {
     const status = error.status;
     let type: LlmErrorType = "UNKNOWN";
     if (status === 401 || status === 403) type = "AUTHENTICATION_ERROR";
+    else if (status === 404) type = "MODEL_UNAVAILABLE"; // Phase 20 — OpenAI's real "model not found" response for a deprecated/unknown OPENAI_MODEL.
     else if (status === 400 || status === 422) type = "INVALID_REQUEST";
     else if (status !== undefined && status >= 500) type = "SERVICE_UNAVAILABLE";
     if (type === "INVALID_REQUEST" && CREDIT_MESSAGE_PATTERN.test(error.message)) type = "INSUFFICIENT_CREDITS";
@@ -140,7 +139,7 @@ export const openaiProvider: LlmProvider = {
   },
 
   maxContext() {
-    return MAX_CONTEXT_TOKENS;
+    return getOpenAiMaxContext(process.env.OPENAI_MODEL);
   },
 
   cost(usage: TokenUsage) {

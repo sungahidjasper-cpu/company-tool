@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import ExistingBriefLongFormGenerator from "@/features/ai-workspace/components/ExistingBriefLongFormGenerator";
 import { getContentById } from "@/features/seo/services/content.service";
 import { requireUser } from "@/lib/auth";
-import { assertCompanyAccess } from "@/lib/authorization";
+import { assertCompanyAccess, assertPermission, Permissions } from "@/lib/authorization";
 
 type GenerateLongFormFromContentPageProps = {
   params: Promise<{ contentId: string }>;
@@ -15,6 +15,7 @@ type GenerateLongFormFromContentPageProps = {
 export default async function GenerateLongFormFromContentPage({ params }: GenerateLongFormFromContentPageProps) {
   const { contentId } = await params;
   const user = await requireUser();
+  assertPermission(user, Permissions.manageSeoProjects);
 
   const content = await getContentById(contentId);
   if (!content) {

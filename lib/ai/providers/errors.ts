@@ -16,7 +16,9 @@ export type LlmErrorType =
   /** Phase 19 — this company's configured monthly AI spend cap has been reached. Never confused with RATE_LIMIT (the provider rate-limited us) or INSUFFICIENT_CREDITS (the provider's own account is out of funds) — this is a limit WE impose on a tenant. */
   | "BUDGET_EXCEEDED"
   /** Phase 19 — this company's configured per-minute AI request rate limit has been reached. Same distinction from RATE_LIMIT as above. */
-  | "COMPANY_RATE_LIMITED";
+  | "COMPANY_RATE_LIMITED"
+  /** Phase 20 — the configured model for this provider was rejected as not found/no longer available (e.g. a deprecated model name). Distinct from INVALID_REQUEST: a bad model name on one provider says nothing about whether another configured provider would also fail, so this IS fallback-worthy where INVALID_REQUEST deliberately isn't. Never confused with NOT_CONFIGURED (no model set at all) or INSUFFICIENT_CREDITS. */
+  | "MODEL_UNAVAILABLE";
 
 /**
  * "Unavailable right now" types — the fallback orchestrator moves on to the
@@ -31,6 +33,7 @@ const FALLBACK_WORTHY: ReadonlySet<LlmErrorType> = new Set([
   "TIMEOUT",
   "SERVICE_UNAVAILABLE",
   "UNKNOWN",
+  "MODEL_UNAVAILABLE",
 ]);
 
 export function isFallbackWorthy(type: LlmErrorType): boolean {
@@ -106,7 +109,7 @@ const DESCRIPTIONS: Record<LlmErrorType, LlmErrorDescription> = {
   NOT_CONFIGURED: {
     title: "No AI providers are configured",
     message: "No AI providers are configured.",
-    recommendedAction: "Set at least one provider's API key (and model, for non-Anthropic providers) in the environment, then retry.",
+    recommendedAction: "Set at least one provider's API key and model in the environment, then retry.",
   },
   UNKNOWN: {
     title: "AI analysis failed",
@@ -122,6 +125,11 @@ const DESCRIPTIONS: Record<LlmErrorType, LlmErrorDescription> = {
     title: "Too many AI requests",
     message: "This company has made too many AI requests in the last minute.",
     recommendedAction: "Wait a minute and retry.",
+  },
+  MODEL_UNAVAILABLE: {
+    title: "Configured AI model unavailable",
+    message: "The configured AI model for this provider was not found or is no longer available.",
+    recommendedAction: "Update the model configuration for this provider, then retry.",
   },
 };
 

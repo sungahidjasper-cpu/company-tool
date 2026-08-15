@@ -54,6 +54,7 @@ export function classifyError(error: unknown): LlmProviderError {
     const status = error.status;
     let type: LlmErrorType = "UNKNOWN";
     if (status === 401 || status === 403) type = "AUTHENTICATION_ERROR";
+    else if (status === 404) type = "MODEL_UNAVAILABLE"; // Phase 20 — the underlying model OPENROUTER_MODEL names is unknown/no longer routed.
     else if (status === 400 || status === 422) type = "INVALID_REQUEST";
     else if (status !== undefined && status >= 500) type = "SERVICE_UNAVAILABLE";
     if (type === "INVALID_REQUEST" && CREDIT_MESSAGE_PATTERN.test(error.message)) type = "INSUFFICIENT_CREDITS";

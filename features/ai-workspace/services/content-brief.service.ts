@@ -30,6 +30,15 @@ export type ContentBriefContext = {
   notes?: string;
 };
 
+/**
+ * ctx.notes is raw, unsanitized user text interpolated directly below.
+ * Accepted risk, not an oversight: nothing generated from it is ever
+ * persisted without an explicit human review + Save (see
+ * content-brief.actions.ts's "approval gate"), and the system prompt
+ * above already instructs the model not to invent facts — the human
+ * review step is the actual mitigation for injected instructions, not a
+ * sanitizer on this string.
+ */
 function buildPrompt(ctx: ContentBriefContext): string {
   const keywordLine = ctx.keyword
     ? `Target keyword: "${ctx.keyword.term}"${ctx.keyword.intent ? ` (tracked search intent: ${ctx.keyword.intent})` : ""}`

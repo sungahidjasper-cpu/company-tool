@@ -1,15 +1,12 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIError } from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 
-import { AI_MODEL, getAnthropicClient } from "@/lib/ai/client";
+import { getAnthropicClient } from "@/lib/ai/client";
 import { LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
 import { getCachedHealth } from "@/lib/ai/providers/health-cache";
-import { estimateAnthropicCostUsd } from "@/lib/ai/providers/pricing";
+import { estimateAnthropicCostUsd, getAnthropicMaxContext } from "@/lib/ai/providers/pricing";
 import { withRetry } from "@/lib/ai/providers/retry";
 import type { GeneratedOutput, GenerateRawResult, LlmProvider, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
-
-/** Claude Opus 5's documented context window — update if AI_MODEL changes. */
-const MAX_CONTEXT_TOKENS = 1_000_000;
 
 const MAX_PARSE_ATTEMPTS = 3;
 
@@ -29,7 +26,14 @@ const ERROR_TYPE_MAP: Record<string, LlmErrorType> = {
   permission_error: "AUTHENTICATION_ERROR",
   rate_limit_error: "RATE_LIMIT",
   invalid_request_error: "INVALID_REQUEST",
-  not_found_error: "INVALID_REQUEST",
+  // Phase 20 — a real, distinct signal (not a message-text guess like the
+  // credit-balance check below): Anthropic's own SDK already distinguishes
+  // "this specific thing wasn't found" (not_found_error, e.g. an unknown
+  // model name) from "the request itself is malformed" (invalid_request_error).
+  // Unlike INVALID_REQUEST, a bad model name on Anthropic says nothing about
+  // whether another configured provider would also fail, so this is
+  // fallback-worthy where INVALID_REQUEST deliberately isn't.
+  not_found_error: "MODEL_UNAVAILABLE",
   api_error: "UNKNOWN",
 };
 
@@ -60,9 +64,10 @@ export function classifyError(error: unknown): LlmProviderError {
 
 async function attemptGenerate(request: StructuredOutputRequest): Promise<GeneratedOutput> {
   const client = getAnthropicClient();
+  const model = process.env.ANTHROPIC_MODEL!;
 
   const message = await client.messages.parse({
-    model: AI_MODEL,
+    model,
     max_tokens: request.maxTokens ?? 4096,
     system: request.system,
     output_config: { format: zodOutputFormat(request.zodSchema) },
@@ -82,7 +87,7 @@ async function attemptGenerate(request: StructuredOutputRequest): Promise<Genera
       promptTokens: message.usage?.input_tokens ?? null,
       completionTokens: message.usage?.output_tokens ?? null,
     },
-    model: AI_MODEL,
+    model,
   };
 }
 
@@ -90,7 +95,7 @@ export const anthropicProvider: LlmProvider = {
   name: "anthropic",
 
   isConfigured() {
-    return Boolean(process.env.ANTHROPIC_API_KEY);
+    return Boolean(process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_MODEL);
   },
 
   async generateRaw(request: StructuredOutputRequest): Promise<GenerateRawResult> {
@@ -125,10 +130,10 @@ export const anthropicProvider: LlmProvider = {
   },
 
   maxContext() {
-    return MAX_CONTEXT_TOKENS;
+    return getAnthropicMaxContext(process.env.ANTHROPIC_MODEL);
   },
 
   cost(usage: TokenUsage) {
-    return estimateAnthropicCostUsd(AI_MODEL, usage);
+    return estimateAnthropicCostUsd(process.env.ANTHROPIC_MODEL, usage);
   },
 };

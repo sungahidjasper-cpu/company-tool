@@ -47,7 +47,7 @@ function isConnectionRefused(error: unknown): boolean {
   );
 }
 
-function classifyError(error: unknown): LlmProviderError {
+export function classifyError(error: unknown): LlmProviderError {
   if (error instanceof LlmProviderError) return error;
 
   if (isConnectionRefused(error)) {
@@ -56,7 +56,10 @@ function classifyError(error: unknown): LlmProviderError {
     });
   }
   if (isOllamaResponseError(error)) {
-    const type = error.status_code >= 500 ? "SERVICE_UNAVAILABLE" : "INVALID_REQUEST";
+    // Phase 20 — Ollama returns 404 with a "model ... not found, try pulling
+    // it first" message when OLLAMA_MODEL isn't pulled locally; distinct
+    // from a genuinely malformed request.
+    const type = error.status_code >= 500 ? "SERVICE_UNAVAILABLE" : error.status_code === 404 ? "MODEL_UNAVAILABLE" : "INVALID_REQUEST";
     return new LlmProviderError(error.message, type, "ollama", { cause: error });
   }
   if (error instanceof Error && error.name === "AbortError") {

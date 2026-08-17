@@ -28,7 +28,7 @@ import { getConfiguredProviders, describeProviderConfiguration } from "@/lib/ai/
 import { recordProviderFailure, recordProviderSuccess } from "@/lib/ai/providers/health-cache";
 import { enforceCompanyAiLimits } from "@/lib/ai/ai-limit.service";
 import { LlmProviderError } from "@/lib/ai/providers/errors";
-import { generateStructuredOutput } from "@/lib/ai/structured-output";
+import { generateStructuredOutput, generateStructuredOutputStreaming } from "@/lib/ai/structured-output";
 import { prisma } from "@/lib/prisma";
 
 const mockGetConfigured = vi.mocked(getConfiguredProviders);
@@ -55,6 +55,11 @@ function makeFakeProvider(name: string, generateRaw: ReturnType<typeof vi.fn>) {
 }
 
 const SUCCESS_RESULT = { data: { value: "ok" }, usage: { promptTokens: 10, completionTokens: 5 }, model: "test-model", retried: false };
+
+/** A fake provider with a generateRawStreaming implementation, for Phase 22 tests. */
+function makeFakeStreamingProvider(name: string, generateRawStreaming: ReturnType<typeof vi.fn>, generateRaw: ReturnType<typeof vi.fn> = vi.fn()) {
+  return { ...makeFakeProvider(name, generateRaw), generateRawStreaming };
+}
 
 /**
  * Regression coverage for a real bug caught by live verification: once the
@@ -280,5 +285,143 @@ describe("generateStructuredOutput — company AI limits gate", () => {
     await expect(generateStructuredOutput(schema, input)).rejects.toMatchObject({ type: "COMPANY_RATE_LIMITED" });
     expect(mockGetConfigured).not.toHaveBeenCalled();
     expect(mockCreateLog).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Phase 22 — generateStructuredOutputStreaming is a separate function from
+ * generateStructuredOutput (never a parameterized branch of it), so these
+ * tests exercise it independently rather than assuming shared coverage.
+ */
+describe("generateStructuredOutputStreaming", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockEnforceLimits.mockResolvedValue(undefined);
+    mockCreateLog.mockClear();
+    mockRecordFailure.mockClear();
+    mockRecordSuccess.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("calls generateRawStreaming and forwards each chunk as a text event, never firing reset before the first attempt", async () => {
+    const generateRawStreaming = vi.fn().mockImplementation(async (_request, onChunk) => {
+      onChunk('{"value":"o');
+      onChunk('{"value":"ok"}');
+      return SUCCESS_RESULT;
+    });
+    mockGetConfigured.mockResolvedValue([makeFakeStreamingProvider("A", generateRawStreaming)] as never);
+
+    const events: unknown[] = [];
+    const result = await generateStructuredOutputStreaming(schema, input, (event) => events.push(event));
+
+    expect(result).toEqual({ value: "ok" });
+    expect(generateRawStreaming).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([
+      { type: "text", text: '{"value":"o' },
+      { type: "text", text: '{"value":"ok"}' },
+    ]);
+  });
+
+  it("falls back to generateRaw and fires exactly one text event with the whole response for a provider with no generateRawStreaming", async () => {
+    const generateRaw = vi.fn().mockResolvedValue(SUCCESS_RESULT);
+    mockGetConfigured.mockResolvedValue([makeFakeProvider("A", generateRaw)] as never);
+
+    const events: unknown[] = [];
+    const result = await generateStructuredOutputStreaming(schema, input, (event) => events.push(event));
+
+    expect(result).toEqual({ value: "ok" });
+    expect(generateRaw).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([{ type: "text", text: JSON.stringify(SUCCESS_RESULT.data) }]);
+  });
+
+  it("fires a reset event before a same-provider transient retry, before any of the retry's own chunks", async () => {
+    const generateRawStreaming = vi
+      .fn()
+      .mockImplementationOnce(async (_request, onChunk) => {
+        onChunk("partial from first attempt");
+        throw new LlmProviderError("rate limited", "RATE_LIMIT", "A");
+      })
+      .mockImplementationOnce(async (_request, onChunk) => {
+        onChunk('{"value":"ok"}');
+        return SUCCESS_RESULT;
+      });
+    mockGetConfigured.mockResolvedValue([makeFakeStreamingProvider("A", generateRawStreaming)] as never);
+
+    const events: unknown[] = [];
+    const promise = generateStructuredOutputStreaming(schema, input, (event) => events.push(event));
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result).toEqual({ value: "ok" });
+    expect(generateRawStreaming).toHaveBeenCalledTimes(2);
+    expect(events).toEqual([
+      { type: "text", text: "partial from first attempt" },
+      { type: "reset" },
+      { type: "text", text: '{"value":"ok"}' },
+    ]);
+  });
+
+  it("fires a reset event before falling back to the next provider, and never splices provider A's output with provider B's", async () => {
+    const generateRawStreamingA = vi.fn().mockImplementation(async (_request, onChunk) => {
+      onChunk("some output from A");
+      throw new LlmProviderError("bad key", "AUTHENTICATION_ERROR", "A");
+    });
+    const generateRawStreamingB = vi.fn().mockImplementation(async (_request, onChunk) => {
+      onChunk('{"value":"ok"}');
+      return SUCCESS_RESULT;
+    });
+    mockGetConfigured.mockResolvedValue([
+      makeFakeStreamingProvider("A", generateRawStreamingA),
+      makeFakeStreamingProvider("B", generateRawStreamingB),
+    ] as never);
+
+    const events: unknown[] = [];
+    const result = await generateStructuredOutputStreaming(schema, input, (event) => events.push(event));
+
+    expect(result).toEqual({ value: "ok" });
+    expect(events).toEqual([
+      { type: "text", text: "some output from A" },
+      { type: "reset" },
+      { type: "text", text: '{"value":"ok"}' },
+    ]);
+  });
+
+  it("classifies a failure identically whether it happens up-front or after chunks were already streamed, and still logs/marks health exactly once per provider-turn", async () => {
+    const generateRawStreamingA = vi.fn().mockImplementation(async (_request, onChunk) => {
+      onChunk("most of a good-looking response");
+      throw new LlmProviderError("overloaded", "SERVICE_UNAVAILABLE", "A");
+    });
+    const generateRawA = vi.fn().mockRejectedValue(new LlmProviderError("overloaded", "SERVICE_UNAVAILABLE", "A"));
+    const generateRawB = vi.fn().mockResolvedValue(SUCCESS_RESULT);
+    mockGetConfigured.mockResolvedValue([makeFakeStreamingProvider("A", generateRawStreamingA, generateRawA), makeFakeProvider("B", generateRawB)] as never);
+
+    const streamingPromise = generateStructuredOutputStreaming(schema, input, () => {});
+    await vi.runAllTimersAsync();
+    const streamingResult = await streamingPromise;
+
+    // Same fixture through the non-streaming path, for direct comparison of the resulting AiUsageLog/health-cache calls.
+    mockCreateLog.mockClear();
+    mockRecordFailure.mockClear();
+    const nonStreamingPromise = generateStructuredOutput(schema, input);
+    await vi.runAllTimersAsync();
+    const nonStreamingResult = await nonStreamingPromise;
+
+    expect(streamingResult).toEqual(nonStreamingResult);
+    expect(mockRecordFailure).toHaveBeenCalledTimes(1);
+    expect(mockRecordFailure).toHaveBeenCalledWith("A", "SERVICE_UNAVAILABLE");
+    expect(mockCreateLog).toHaveBeenCalledTimes(2);
+  });
+
+  it("never streams anything unvalidated as final — the only success path is still schema.safeParse() on the complete result", async () => {
+    const generateRawStreaming = vi.fn().mockImplementation(async (_request, onChunk) => {
+      onChunk('{"wrongField":1');
+      return { data: { wrongField: 123 }, usage: { promptTokens: 10, completionTokens: 5 }, model: "test-model", retried: false };
+    });
+    mockGetConfigured.mockResolvedValue([makeFakeStreamingProvider("A", generateRawStreaming)] as never);
+
+    await expect(generateStructuredOutputStreaming(schema, input)).rejects.toMatchObject({ type: "UNKNOWN" });
   });
 });

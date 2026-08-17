@@ -37,6 +37,25 @@ export type GenerateRawResult = GeneratedOutput & {
   retried: boolean;
 };
 
+/**
+ * Phase 22 — reports the raw accumulating text of an in-progress streaming
+ * attempt, called as chunks arrive. Never validated/parsed here; the
+ * orchestrator's schema.safeParse() once the full result is back is still
+ * the only validation gate (see structured-output.ts). A provider without a
+ * streaming variant simply never calls this.
+ */
+export type StreamChunkCallback = (accumulatedText: string) => void;
+
+/**
+ * Phase 22 — the orchestrator-level event generateStructuredOutputStreaming
+ * reports to its caller. `text` carries a provider's accumulating raw
+ * output. `reset` is emitted immediately before any same-provider retry or
+ * cross-provider fallback re-attempt, telling the caller to discard
+ * whatever partial output it showed for the abandoned attempt rather than
+ * splicing it with the next one's output.
+ */
+export type StreamEvent = { type: "text"; text: string } | { type: "reset" };
+
 export interface LlmProvider {
   readonly name: string;
   /** Whether this provider has the env vars it needs to be attempted at all. */
@@ -47,6 +66,15 @@ export interface LlmProvider {
    * agnostically). Throws LlmProviderError on any failure.
    */
   generateRaw(request: StructuredOutputRequest): Promise<GenerateRawResult>;
+  /**
+   * Phase 22 — optional streaming variant: identical contract/result shape
+   * to generateRaw(), but calls `onChunk` with the accumulating raw text as
+   * the provider's SDK streams it, before resolving with the same
+   * GenerateRawResult. Optional so providers migrate one at a time — the
+   * orchestrator falls back to generateRaw() (firing onChunk once with the
+   * whole response) for any provider without it.
+   */
+  generateRawStreaming?(request: StructuredOutputRequest, onChunk: StreamChunkCallback): Promise<GenerateRawResult>;
   /**
    * Never makes a network call — DISABLED if unconfigured, otherwise the
    * shared in-memory health-cache's current status for this provider (see

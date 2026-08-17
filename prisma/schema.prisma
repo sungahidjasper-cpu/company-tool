@@ -1019,47 +1019,57 @@ model AiUsageLog {
 /// crawlResultJson, crawlHash, overallScore) don't apply here, and reusing
 /// it would mix unrelated concerns into one polymorphic table.
 model AiGenerationJob {
-  id           String                    @id @default(uuid(7)) @db.Uuid
-  companyId    String                    @db.Uuid
+  id                String                    @id @default(uuid(7)) @db.Uuid
+  companyId         String                    @db.Uuid
   /// Denormalized alongside seoProject's own companyId, same accepted
   /// convention WebsiteAnalysisJob already uses — lets every query scope
   /// directly without an extra join.
-  seoProjectId String?                   @db.Uuid
+  seoProjectId      String?                   @db.Uuid
   /// Set for the already-saved-brief long-form flow (the job IS about this
   /// row); null for a fresh-flow job, where no Content row exists yet.
-  contentId    String?                   @db.Uuid
+  contentId         String?                   @db.Uuid
   /// Reuses the existing enum as-is — CONTENT_BRIEF | CONTENT_DRAFT today,
   /// extensible to a future generation task type with no new migration.
-  taskType     AiTaskType
-  status       AiGenerationJobStatus     @default(PENDING)
-  progress     Int?
+  taskType          AiTaskType
+  status            AiGenerationJobStatus     @default(PENDING)
+  progress          Int?
   /// The exact validated input the job was started with — the runner reads
   /// this back to actually perform the generation. Shape depends on
   /// taskType; validated with the existing zod schemas at both write time
   /// and read time, never trusted as already-safe just because it's in the
   /// database.
-  inputJson    Json
+  inputJson         Json
   /// SHA-256 of the canonicalized inputJson, same technique
   /// WebsiteAnalysisJob.crawlHash already uses applied to a different
   /// problem: lets a duplicate "Generate" click (a double-click, or a page
   /// refresh followed by clicking again while the first job is still in
   /// flight) reuse the existing PENDING/RUNNING job for the identical
   /// request instead of starting a second, separately-billed AI call.
-  inputHash    String
+  inputHash         String
   /// The generated candidate (ContentBriefOutput | LongFormContentOutput)
   /// once SUCCEEDED — the UI polls this to populate the review screen.
-  resultJson   Json?
-  errorMessage String?
+  resultJson        Json?
+  /// Phase 22 — the accumulating raw text of an in-progress streaming
+  /// generation, throttle-written by the runner while status is RUNNING.
+  /// Presentation-only: never validated, never trusted as a final result,
+  /// and explicitly reset to null immediately before any same-provider
+  /// retry or cross-provider fallback so a live viewer never sees stale
+  /// output from a since-abandoned attempt spliced with a new one. Read by
+  /// the SSE route handler, which polls this same row directly — there is
+  /// no separate cache/pub-sub layer, so this column is the only source of
+  /// truth for a live preview, correct regardless of process topology.
+  partialResultText String?
+  errorMessage      String?
   /// Reuses the existing enum — the identical taxonomy already used by
   /// WebsiteAnalysisJob and AiUsageLog, no new error vocabulary needed.
-  errorType    WebsiteAnalysisErrorType?
+  errorType         WebsiteAnalysisErrorType?
   /// Who started it — WebsiteAnalysisJob doesn't track this (company-wide
   /// visibility was sufficient for an SEO-project-level utility), but a
   /// content draft is a more personal, actively-being-edited session, so
   /// this is one deliberate, small addition beyond the source pattern.
-  createdById  String?                   @db.Uuid
-  createdAt    DateTime                  @default(now())
-  updatedAt    DateTime                  @updatedAt
+  createdById       String?                   @db.Uuid
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
 
   company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
   seoProject SEOProject? @relation(fields: [seoProjectId], references: [id], onDelete: SetNull)

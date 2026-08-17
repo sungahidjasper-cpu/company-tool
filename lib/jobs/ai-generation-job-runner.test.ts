@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -11,6 +11,7 @@ vi.mock("@/lib/jobs/ai-generation-job-table", () => ({
   markAiGenerationJobRunning: vi.fn(),
   markAiGenerationJobSucceeded: vi.fn(),
   markAiGenerationJobFailed: vi.fn(),
+  updateAiGenerationJobPartialText: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/features/ai-workspace/services/content-brief.service", () => ({
   generateContentBrief: vi.fn(),
@@ -24,6 +25,7 @@ import {
   markAiGenerationJobFailed,
   markAiGenerationJobRunning,
   markAiGenerationJobSucceeded,
+  updateAiGenerationJobPartialText,
 } from "@/lib/jobs/ai-generation-job-table";
 import { generateContentBrief } from "@/features/ai-workspace/services/content-brief.service";
 import { generateLongFormContent } from "@/features/ai-workspace/services/long-form-content.service";
@@ -38,6 +40,7 @@ const mockMarkSucceeded = vi.mocked(markAiGenerationJobSucceeded);
 const mockMarkFailed = vi.mocked(markAiGenerationJobFailed);
 const mockGenerateContentBrief = vi.mocked(generateContentBrief);
 const mockGenerateLongFormContent = vi.mocked(generateLongFormContent);
+const mockUpdatePartialText = vi.mocked(updateAiGenerationJobPartialText);
 
 const SEO_PROJECT = { id: "project-1", name: "Acme SEO", domain: "acme.example" };
 
@@ -91,14 +94,18 @@ describe("runAiGenerationJob — CONTENT_BRIEF", () => {
 
     await runAiGenerationJob("job-1");
 
-    expect(mockGenerateContentBrief).toHaveBeenCalledWith({
-      seoProjectId: "project-1",
-      seoProjectName: "Acme SEO",
-      domain: "acme.example",
-      contentType: "BLOG_POST",
-      keyword: { term: "emergency plumber austin", intent: "COMMERCIAL" },
-      notes: "focus on emergency calls",
-    });
+    expect(mockGenerateContentBrief).toHaveBeenCalledWith(
+      {
+        seoProjectId: "project-1",
+        seoProjectName: "Acme SEO",
+        domain: "acme.example",
+        contentType: "BLOG_POST",
+        keyword: { term: "emergency plumber austin", intent: "COMMERCIAL" },
+        notes: "focus on emergency calls",
+        settings: undefined,
+      },
+      undefined
+    );
     expect(mockMarkSucceeded).toHaveBeenCalledWith("job-1", BRIEF_OUTPUT);
     expect(mockMarkFailed).not.toHaveBeenCalled();
   });
@@ -166,14 +173,17 @@ describe("runAiGenerationJob — CONTENT_DRAFT", () => {
 
     await runAiGenerationJob("job-5");
 
-    expect(mockGenerateLongFormContent).toHaveBeenCalledWith({
-      seoProjectId: "project-1",
-      seoProjectName: "Acme SEO",
-      domain: "acme.example",
-      brief: BRIEF_OUTPUT_CANONICAL,
-      keyword: null,
-      settings: undefined,
-    });
+    expect(mockGenerateLongFormContent).toHaveBeenCalledWith(
+      {
+        seoProjectId: "project-1",
+        seoProjectName: "Acme SEO",
+        domain: "acme.example",
+        brief: BRIEF_OUTPUT_CANONICAL,
+        keyword: null,
+        settings: undefined,
+      },
+      undefined
+    );
     expect(mockMarkSucceeded).toHaveBeenCalledWith("job-5", ARTICLE_OUTPUT);
   });
 
@@ -202,14 +212,17 @@ describe("runAiGenerationJob — CONTENT_DRAFT", () => {
 
     await runAiGenerationJob("job-6");
 
-    expect(mockGenerateLongFormContent).toHaveBeenCalledWith({
-      seoProjectId: "project-1",
-      seoProjectName: "Acme SEO",
-      domain: "acme.example",
-      brief: BRIEF_OUTPUT_CANONICAL,
-      keyword: { term: "emergency plumber austin", intent: "COMMERCIAL" },
-      settings: undefined,
-    });
+    expect(mockGenerateLongFormContent).toHaveBeenCalledWith(
+      {
+        seoProjectId: "project-1",
+        seoProjectName: "Acme SEO",
+        domain: "acme.example",
+        brief: BRIEF_OUTPUT_CANONICAL,
+        keyword: { term: "emergency plumber austin", intent: "COMMERCIAL" },
+        settings: undefined,
+      },
+      undefined
+    );
     expect(mockMarkSucceeded).toHaveBeenCalledWith("job-6", ARTICLE_OUTPUT);
   });
 
@@ -232,5 +245,98 @@ describe("runAiGenerationJob — CONTENT_DRAFT", () => {
 
     expect(mockGenerateLongFormContent).not.toHaveBeenCalled();
     expect(mockMarkFailed).toHaveBeenCalledWith("job-7", "This content has no saved brief to generate an article from.", "UNKNOWN");
+  });
+});
+
+/**
+ * Phase 22 — the runner's onChunk wiring. generateContentBrief/generateLongFormContent
+ * are still fully mocked; these tests only verify what the runner does with
+ * whatever onChunk it's handed and how the AI_STREAMING_ENABLED flag gates it.
+ */
+describe("runAiGenerationJob — Phase 22 streaming wiring", () => {
+  const originalFlag = process.env.AI_STREAMING_ENABLED;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockMarkRunning.mockResolvedValue({
+      id: "job-8",
+      taskType: "CONTENT_BRIEF",
+      inputJson: { seoProjectId: "project-1", contentType: "BLOG_POST" },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockGenerateContentBrief.mockResolvedValue(BRIEF_OUTPUT as never);
+  });
+
+  afterEach(() => {
+    if (originalFlag === undefined) delete process.env.AI_STREAMING_ENABLED;
+    else process.env.AI_STREAMING_ENABLED = originalFlag;
+  });
+
+  it("passes onChunk as undefined and never writes partial text when the flag is off", async () => {
+    delete process.env.AI_STREAMING_ENABLED;
+
+    await runAiGenerationJob("job-8");
+
+    expect(mockGenerateContentBrief).toHaveBeenCalledWith(expect.anything(), undefined);
+    expect(mockUpdatePartialText).not.toHaveBeenCalled();
+  });
+
+  it("writes accumulating text to the job row when the flag is on", async () => {
+    process.env.AI_STREAMING_ENABLED = "true";
+    mockGenerateContentBrief.mockImplementation(async (_ctx, onChunk) => {
+      onChunk?.({ type: "text", text: '{"title":"Hello' });
+      return BRIEF_OUTPUT as never;
+    });
+
+    await runAiGenerationJob("job-8");
+
+    expect(mockUpdatePartialText).toHaveBeenCalledWith("job-8", '{"title":"Hello', expect.any(Number));
+  });
+
+  it("writes null immediately on a reset event, not subject to the same throttle as text events", async () => {
+    process.env.AI_STREAMING_ENABLED = "true";
+    mockGenerateContentBrief.mockImplementation(async (_ctx, onChunk) => {
+      onChunk?.({ type: "text", text: "first attempt output" });
+      onChunk?.({ type: "reset" });
+      return BRIEF_OUTPUT as never;
+    });
+
+    await runAiGenerationJob("job-8");
+
+    expect(mockUpdatePartialText).toHaveBeenCalledWith("job-8", null);
+  });
+
+  it("throttles rapid text events rather than writing on every single one", async () => {
+    process.env.AI_STREAMING_ENABLED = "true";
+    vi.useFakeTimers();
+    try {
+      mockGenerateContentBrief.mockImplementation(async (_ctx, onChunk) => {
+        onChunk?.({ type: "text", text: "a" });
+        onChunk?.({ type: "text", text: "ab" });
+        onChunk?.({ type: "text", text: "abc" });
+        return BRIEF_OUTPUT as never;
+      });
+
+      await runAiGenerationJob("job-8");
+
+      // All three chunks arrive within the same instant — only the first should have written.
+      expect(mockUpdatePartialText).toHaveBeenCalledTimes(1);
+      expect(mockUpdatePartialText).toHaveBeenCalledWith("job-8", "a", expect.any(Number));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a failed partial-text write affect the job's own success", async () => {
+    process.env.AI_STREAMING_ENABLED = "true";
+    mockUpdatePartialText.mockRejectedValueOnce(new Error("db hiccup"));
+    mockGenerateContentBrief.mockImplementation(async (_ctx, onChunk) => {
+      onChunk?.({ type: "text", text: "some output" });
+      return BRIEF_OUTPUT as never;
+    });
+
+    await runAiGenerationJob("job-8");
+
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-8", BRIEF_OUTPUT);
   });
 });

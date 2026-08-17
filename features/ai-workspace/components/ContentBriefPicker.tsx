@@ -104,12 +104,76 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
   const keywordOptions = useMemo(() => keywordsByProject[seoProjectId] ?? [], [keywordsByProject, seoProjectId]);
   const targetKeyword = useMemo(() => keywordOptions.find((k) => k.id === keywordId)?.term, [keywordOptions, keywordId]);
 
+  // Phase 22 — a live preview layered on top of the poll loop below, never a
+  // replacement for it. streamCharCount/streamProgress are purely cosmetic;
+  // isSwitchingProvider briefly shows a wipe-and-restart message when the
+  // orchestrator falls back to a different provider mid-stream, so partial
+  // output from an abandoned attempt is never confused with the new one.
+  const [streamCharCount, setStreamCharCount] = useState<number | null>(null);
+  const [streamProgress, setStreamProgress] = useState<number | null>(null);
+  const [isSwitchingProvider, setIsSwitchingProvider] = useState(false);
+  const streamRef = useRef<EventSource | null>(null);
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
+      streamRef.current?.close();
     };
   }, []);
+
+  /**
+   * Phase 22 — best-effort only: if streaming is disabled server-side, this
+   * endpoint 404s and onerror below just closes the connection, leaving the
+   * existing poll-only experience completely unaffected. Never awaited,
+   * never a dependency of anything that detects job completion — that stays
+   * pollGenerationJob's job alone.
+   */
+  function openGenerationStream(jobId: string) {
+    streamRef.current?.close();
+    setStreamCharCount(null);
+    setStreamProgress(null);
+    setIsSwitchingProvider(false);
+
+    const source = new EventSource(`/api/ai-workspace/jobs/${jobId}/stream`);
+    streamRef.current = source;
+
+    source.addEventListener("text", (event) => {
+      try {
+        const { text } = JSON.parse((event as MessageEvent).data);
+        setIsSwitchingProvider(false);
+        setStreamCharCount(typeof text === "string" ? text.length : null);
+      } catch {
+        // Malformed event — ignore, this is a cosmetic preview only.
+      }
+    });
+    source.addEventListener("progress", (event) => {
+      try {
+        const { progress } = JSON.parse((event as MessageEvent).data);
+        setStreamProgress(typeof progress === "number" ? progress : null);
+      } catch {
+        // Ignore — cosmetic only.
+      }
+    });
+    source.addEventListener("reset", () => {
+      setIsSwitchingProvider(true);
+      setStreamCharCount(null);
+    });
+    source.addEventListener("done", () => {
+      source.close();
+    });
+    source.onerror = () => {
+      source.close();
+    };
+  }
+
+  function closeGenerationStream() {
+    streamRef.current?.close();
+    streamRef.current = null;
+    setStreamCharCount(null);
+    setStreamProgress(null);
+    setIsSwitchingProvider(false);
+  }
 
   /**
    * Phase 18 — polls an AiGenerationJob until it settles, then hands the
@@ -170,6 +234,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
       return;
     }
 
+    openGenerationStream(result.data.jobId);
     pollGenerationJob(
       result.data.jobId,
       (resultJson) => {
@@ -180,7 +245,10 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
         }
         setBrief(parsed.data);
       },
-      () => setIsGenerating(false)
+      () => {
+        setIsGenerating(false);
+        closeGenerationStream();
+      }
     );
   }
 
@@ -240,6 +308,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
       return;
     }
 
+    openGenerationStream(result.data.jobId);
     pollGenerationJob(
       result.data.jobId,
       (resultJson) => {
@@ -263,7 +332,10 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
           body: formatLongFormContentAsMarkdown(parsed.data, settings.sections.cta ? settings.cta : undefined),
         });
       },
-      () => setIsGeneratingLongForm(false)
+      () => {
+        setIsGeneratingLongForm(false);
+        closeGenerationStream();
+      }
     );
   }
 
@@ -595,6 +667,14 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
       </details>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
+
+      {isGenerating && (isSwitchingProvider || streamCharCount !== null) && (
+        <p className="text-sm text-slate-500">
+          {isSwitchingProvider
+            ? "Switching to backup AI provider — restarting…"
+            : `Generating… ${streamCharCount} characters so far${streamProgress !== null ? ` (~${streamProgress}%)` : ""}`}
+        </p>
+      )}
 
       <div className="flex gap-3">
         <Button type="button" onClick={runGenerate} disabled={isGenerating || !seoProjectId}>

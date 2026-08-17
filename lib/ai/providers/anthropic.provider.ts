@@ -6,7 +6,7 @@ import { LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
 import { getCachedHealth } from "@/lib/ai/providers/health-cache";
 import { estimateAnthropicCostUsd, getAnthropicMaxContext } from "@/lib/ai/providers/pricing";
 import { withRetry } from "@/lib/ai/providers/retry";
-import type { GeneratedOutput, GenerateRawResult, LlmProvider, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
+import type { GeneratedOutput, GenerateRawResult, LlmProvider, StreamChunkCallback, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
 
 const MAX_PARSE_ATTEMPTS = 3;
 
@@ -91,6 +91,46 @@ async function attemptGenerate(request: StructuredOutputRequest): Promise<Genera
   };
 }
 
+/**
+ * Phase 22 — client.messages.stream() is a drop-in replacement for
+ * client.messages.parse() above: same output_config/zodOutputFormat setup,
+ * same final parsed_output shape, plus a "text" event that fires with the
+ * accumulated snapshot (not just the delta) as the model writes — exactly
+ * the shape onChunk wants, no reassembly needed on this provider.
+ */
+async function attemptGenerateStreaming(request: StructuredOutputRequest, onChunk: StreamChunkCallback): Promise<GeneratedOutput> {
+  const client = getAnthropicClient();
+  const model = process.env.ANTHROPIC_MODEL!;
+
+  const stream = client.messages.stream({
+    model,
+    max_tokens: request.maxTokens ?? 4096,
+    system: request.system,
+    output_config: { format: zodOutputFormat(request.zodSchema) },
+    messages: [{ role: "user", content: request.prompt }],
+  });
+
+  stream.on("text", (_delta, snapshot) => onChunk(snapshot));
+
+  const message = await stream.finalMessage();
+
+  if (message.stop_reason === "refusal") {
+    throw new LlmProviderError("The AI declined to process this request.", "INVALID_REQUEST", "anthropic");
+  }
+  if (!message.parsed_output) {
+    throw new LlmProviderError("AI response could not be parsed against the expected schema.", "UNKNOWN", "anthropic");
+  }
+
+  return {
+    data: message.parsed_output,
+    usage: {
+      promptTokens: message.usage?.input_tokens ?? null,
+      completionTokens: message.usage?.output_tokens ?? null,
+    },
+    model,
+  };
+}
+
 export const anthropicProvider: LlmProvider = {
   name: "anthropic",
 
@@ -109,6 +149,29 @@ export const anthropicProvider: LlmProvider = {
         {
           maxAttempts: MAX_PARSE_ATTEMPTS,
           label: "anthropic",
+          isRetryable: (error) =>
+            error instanceof LlmProviderError &&
+            error.type === "UNKNOWN" &&
+            /could not be parsed against the expected schema/i.test(error.message),
+        }
+      );
+      return { ...result, retried: attempts > 1 };
+    } catch (error) {
+      throw classifyError(error);
+    }
+  },
+
+  async generateRawStreaming(request: StructuredOutputRequest, onChunk: StreamChunkCallback): Promise<GenerateRawResult> {
+    let attempts = 0;
+    try {
+      const result = await withRetry(
+        () => {
+          attempts++;
+          return attemptGenerateStreaming(request, onChunk);
+        },
+        {
+          maxAttempts: MAX_PARSE_ATTEMPTS,
+          label: "anthropic-streaming",
           isRetryable: (error) =>
             error instanceof LlmProviderError &&
             error.type === "UNKNOWN" &&

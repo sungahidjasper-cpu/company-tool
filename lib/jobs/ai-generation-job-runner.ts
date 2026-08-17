@@ -1,11 +1,13 @@
 import type { Prisma, WebsiteAnalysisErrorType } from "@/lib/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { describeLlmError, LlmProviderError } from "@/lib/ai/providers/errors";
+import type { StreamEvent } from "@/lib/ai/providers/types";
 import { logger } from "@/lib/logger";
 import {
   markAiGenerationJobFailed,
   markAiGenerationJobRunning,
   markAiGenerationJobSucceeded,
+  updateAiGenerationJobPartialText,
 } from "@/lib/jobs/ai-generation-job-table";
 import { generateContentBrief } from "@/features/ai-workspace/services/content-brief.service";
 import { generateLongFormContent } from "@/features/ai-workspace/services/long-form-content.service";
@@ -75,6 +77,51 @@ async function loadKeyword(keywordId: string | undefined) {
   return keyword ? { term: keyword.term, intent: keyword.intent } : null;
 }
 
+/** A rough size for a typical complete brief/article response — good enough for a coarse progress bar, not a measurement. Tune later against real completion lengths. */
+const ESTIMATED_RESPONSE_CHARS = 3000;
+/** Never write on every chunk — a streaming provider can emit dozens per second; this is a live PREVIEW, not an audit trail. */
+const PARTIAL_TEXT_THROTTLE_MS = 500;
+
+function estimateProgressFromText(text: string): number {
+  const ratio = Math.min(1, text.length / ESTIMATED_RESPONSE_CHARS);
+  return Math.min(90, 10 + Math.round(ratio * 80));
+}
+
+/**
+ * Phase 22 — converts orchestrator-level StreamEvents into throttled writes
+ * to the job row, which is the only thing the new SSE route handler reads.
+ * Returns undefined (no streaming) when the feature flag is off, so a
+ * disabled flag costs nothing beyond this one env check — dispatch()/the
+ * generation services below already treat "no onChunk" as "call the
+ * existing, unchanged non-streaming orchestrator." Writes are fire-and-
+ * forget with errors logged and swallowed, same discipline
+ * structured-output.ts's logUsage() already uses — a partial-preview write
+ * failing must never affect the actual generation in progress.
+ */
+function createStreamingHandler(jobId: string): ((event: StreamEvent) => void) | undefined {
+  if (process.env.AI_STREAMING_ENABLED !== "true") return undefined;
+
+  let lastWriteAt = 0;
+
+  return (event) => {
+    if (event.type === "reset") {
+      lastWriteAt = 0;
+      void updateAiGenerationJobPartialText(jobId, null).catch((error) => {
+        logger.error("Failed to reset partial generation text", { jobId, error: error instanceof Error ? error.message : String(error) });
+      });
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastWriteAt < PARTIAL_TEXT_THROTTLE_MS) return;
+    lastWriteAt = now;
+
+    void updateAiGenerationJobPartialText(jobId, event.text, estimateProgressFromText(event.text)).catch((error) => {
+      logger.error("Failed to persist partial generation text", { jobId, error: error instanceof Error ? error.message : String(error) });
+    });
+  };
+}
+
 /**
  * Dispatches a job to the existing, UNCHANGED generation service functions
  * — generateContentBrief/generateLongFormContent are called with exactly
@@ -86,7 +133,10 @@ async function loadKeyword(keywordId: string | undefined) {
  * dispatcher only re-validates the job's *shape*, not who's allowed to see
  * it, matching the "thin dispatcher, no new business logic" design.
  */
-async function dispatch(job: { taskType: string; inputJson: unknown; companyId: string }): Promise<Prisma.InputJsonValue> {
+async function dispatch(
+  job: { taskType: string; inputJson: unknown; companyId: string },
+  onChunk?: (event: StreamEvent) => void
+): Promise<Prisma.InputJsonValue> {
   if (job.taskType === "CONTENT_BRIEF") {
     const parsed = validateContentBriefJobInput(job.inputJson);
     if (!parsed.success) throw new Error(parsed.message);
@@ -95,16 +145,19 @@ async function dispatch(job: { taskType: string; inputJson: unknown; companyId: 
     if (!seoProject) throw new Error("SEO project not found.");
     const keyword = await loadKeyword(parsed.data.keywordId);
 
-    const brief = await generateContentBrief({
-      seoProjectId: seoProject.id,
-      companyId: job.companyId,
-      seoProjectName: seoProject.name,
-      domain: seoProject.domain,
-      contentType: parsed.data.contentType,
-      keyword,
-      notes: parsed.data.notes,
-      settings: parsed.data.settings,
-    });
+    const brief = await generateContentBrief(
+      {
+        seoProjectId: seoProject.id,
+        companyId: job.companyId,
+        seoProjectName: seoProject.name,
+        domain: seoProject.domain,
+        contentType: parsed.data.contentType,
+        keyword,
+        notes: parsed.data.notes,
+        settings: parsed.data.settings,
+      },
+      onChunk
+    );
     return brief as unknown as Prisma.InputJsonValue;
   }
 
@@ -123,15 +176,18 @@ async function dispatch(job: { taskType: string; inputJson: unknown; companyId: 
       const firstKeyword = content.keywords[0];
       const keyword = firstKeyword ? { term: firstKeyword.term, intent: firstKeyword.intent } : null;
 
-      const article = await generateLongFormContent({
-        seoProjectId: content.seoProject.id,
-        companyId: job.companyId,
-        seoProjectName: content.seoProject.name,
-        domain: content.seoProject.domain,
-        brief,
-        keyword,
-        settings: readBriefSettingsFromContentRow(content.aiBriefDetails),
-      });
+      const article = await generateLongFormContent(
+        {
+          seoProjectId: content.seoProject.id,
+          companyId: job.companyId,
+          seoProjectName: content.seoProject.name,
+          domain: content.seoProject.domain,
+          brief,
+          keyword,
+          settings: readBriefSettingsFromContentRow(content.aiBriefDetails),
+        },
+        onChunk
+      );
       return article as unknown as Prisma.InputJsonValue;
     }
 
@@ -139,15 +195,18 @@ async function dispatch(job: { taskType: string; inputJson: unknown; companyId: 
     if (!seoProject) throw new Error("SEO project not found.");
     const keyword = await loadKeyword(parsed.data.keywordId);
 
-    const article = await generateLongFormContent({
-      seoProjectId: seoProject.id,
-      companyId: job.companyId,
-      seoProjectName: seoProject.name,
-      domain: seoProject.domain,
-      brief: parsed.data.brief,
-      keyword,
-      settings: parsed.data.settings,
-    });
+    const article = await generateLongFormContent(
+      {
+        seoProjectId: seoProject.id,
+        companyId: job.companyId,
+        seoProjectName: seoProject.name,
+        domain: seoProject.domain,
+        brief: parsed.data.brief,
+        keyword,
+        settings: parsed.data.settings,
+      },
+      onChunk
+    );
     return article as unknown as Prisma.InputJsonValue;
   }
 
@@ -172,8 +231,9 @@ function classifyFailure(error: unknown): { errorType: WebsiteAnalysisErrorType;
 
 export async function runAiGenerationJob(jobId: string): Promise<void> {
   const job = await markAiGenerationJobRunning(jobId);
+  const onChunk = createStreamingHandler(job.id);
   try {
-    const result = await dispatch(job);
+    const result = await dispatch(job, onChunk);
     await markAiGenerationJobSucceeded(job.id, result);
     logger.info("AI generation job succeeded", { jobId: job.id, taskType: job.taskType });
   } catch (error) {

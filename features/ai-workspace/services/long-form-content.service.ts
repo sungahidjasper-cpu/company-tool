@@ -1,4 +1,5 @@
-import { generateStructuredOutput } from "@/lib/ai/structured-output";
+import { generateStructuredOutput, generateStructuredOutputStreaming } from "@/lib/ai/structured-output";
+import type { StreamEvent } from "@/lib/ai/providers/types";
 import type { ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { DEFAULT_CONTENT_BRIEF_SETTINGS, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { buildLongFormOutputSchema } from "@/features/ai-workspace/schemas/long-form-output-builder";
@@ -84,17 +85,22 @@ Do not restate the brief verbatim — write real prose. Do not add facts, number
  * with a dynamically-narrowed, settings-driven schema instead of a fixed
  * one.
  */
-export async function generateLongFormContent(ctx: LongFormContentContext): Promise<LongFormContentOutput> {
+export async function generateLongFormContent(ctx: LongFormContentContext, onChunk?: (event: StreamEvent) => void): Promise<LongFormContentOutput> {
   const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
-  const result = await generateStructuredOutput(buildLongFormOutputSchema(settings.sections, settings.draftOptions), {
+  const schema = buildLongFormOutputSchema(settings.sections, settings.draftOptions);
+  const options = {
     system: LONG_FORM_SYSTEM_PROMPT,
     prompt: buildPrompt(ctx),
     maxTokens: 4000,
-    taskType: "CONTENT_DRAFT",
+    taskType: "CONTENT_DRAFT" as const,
     promptVersion: PROMPT_VERSION,
     seoProjectId: ctx.seoProjectId,
     companyId: ctx.companyId,
-  });
+  };
+  // Phase 22 — onChunk present means the caller (the job runner, when
+  // AI_STREAMING_ENABLED) wants live progress; generateStructuredOutput
+  // itself is never touched, this just picks which orchestrator to call.
+  const result = onChunk ? await generateStructuredOutputStreaming(schema, options, onChunk) : await generateStructuredOutput(schema, options);
   // Reparse through the canonical schema so every disabled-section field
   // gets its default rather than being undefined at runtime — see
   // content-brief.service.ts's identical comment.

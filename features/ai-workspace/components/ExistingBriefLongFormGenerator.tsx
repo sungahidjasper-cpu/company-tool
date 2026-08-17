@@ -47,12 +47,62 @@ export default function ExistingBriefLongFormGenerator({
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Phase 22 — same best-effort live preview as ContentBriefPicker.tsx; see
+  // that file's openGenerationStream comment for the full rationale.
+  const [streamCharCount, setStreamCharCount] = useState<number | null>(null);
+  const [streamProgress, setStreamProgress] = useState<number | null>(null);
+  const [isSwitchingProvider, setIsSwitchingProvider] = useState(false);
+  const streamRef = useRef<EventSource | null>(null);
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
+      streamRef.current?.close();
     };
   }, []);
+
+  function closeGenerationStream() {
+    streamRef.current?.close();
+    streamRef.current = null;
+    setStreamCharCount(null);
+    setStreamProgress(null);
+    setIsSwitchingProvider(false);
+  }
+
+  function openGenerationStream(jobId: string) {
+    streamRef.current?.close();
+    setStreamCharCount(null);
+    setStreamProgress(null);
+    setIsSwitchingProvider(false);
+
+    const source = new EventSource(`/api/ai-workspace/jobs/${jobId}/stream`);
+    streamRef.current = source;
+
+    source.addEventListener("text", (event) => {
+      try {
+        const { text } = JSON.parse((event as MessageEvent).data);
+        setIsSwitchingProvider(false);
+        setStreamCharCount(typeof text === "string" ? text.length : null);
+      } catch {
+        // Malformed event — ignore, this is a cosmetic preview only.
+      }
+    });
+    source.addEventListener("progress", (event) => {
+      try {
+        const { progress } = JSON.parse((event as MessageEvent).data);
+        setStreamProgress(typeof progress === "number" ? progress : null);
+      } catch {
+        // Ignore — cosmetic only.
+      }
+    });
+    source.addEventListener("reset", () => {
+      setIsSwitchingProvider(true);
+      setStreamCharCount(null);
+    });
+    source.addEventListener("done", () => source.close());
+    source.onerror = () => source.close();
+  }
 
   async function runGenerate() {
     setError(null);
@@ -65,12 +115,14 @@ export default function ExistingBriefLongFormGenerator({
       return;
     }
 
+    openGenerationStream(result.data.jobId);
     if (pollRef.current) clearInterval(pollRef.current);
     const startedAt = Date.now();
     pollRef.current = setInterval(async () => {
       if (Date.now() - startedAt > MAX_POLL_MS) {
         if (pollRef.current) clearInterval(pollRef.current);
         setIsGenerating(false);
+        closeGenerationStream();
         setError("This is taking longer than expected. Please check back shortly or try again.");
         return;
       }
@@ -79,6 +131,7 @@ export default function ExistingBriefLongFormGenerator({
       if (!poll.success) {
         if (pollRef.current) clearInterval(pollRef.current);
         setIsGenerating(false);
+        closeGenerationStream();
         setError(poll.message);
         return;
       }
@@ -87,6 +140,7 @@ export default function ExistingBriefLongFormGenerator({
       if (poll.data.status === "FAILED") {
         if (pollRef.current) clearInterval(pollRef.current);
         setIsGenerating(false);
+        closeGenerationStream();
         setError(poll.data.errorMessage ?? "Generation failed.");
         return;
       }
@@ -94,6 +148,7 @@ export default function ExistingBriefLongFormGenerator({
       if (poll.data.status === "SUCCEEDED") {
         if (pollRef.current) clearInterval(pollRef.current);
         setIsGenerating(false);
+        closeGenerationStream();
         const parsed = longFormContentOutputSchema.safeParse(poll.data.resultJson);
         if (!parsed.success) {
           setError("Received an unexpected result — please try regenerating.");
@@ -155,6 +210,13 @@ export default function ExistingBriefLongFormGenerator({
         This generates a full draft article from the brief already saved for &quot;{title}.&quot; Nothing is saved until you review it and click Save as Draft.
       </p>
       {error && <p className="text-sm text-destructive">{error}</p>}
+      {isGenerating && (isSwitchingProvider || streamCharCount !== null) && (
+        <p className="text-sm text-slate-500">
+          {isSwitchingProvider
+            ? "Switching to backup AI provider — restarting…"
+            : `Generating… ${streamCharCount} characters so far${streamProgress !== null ? ` (~${streamProgress}%)` : ""}`}
+        </p>
+      )}
       <Button type="button" onClick={runGenerate} disabled={isGenerating}>
         {isGenerating ? "Generating..." : "Generate Long-Form Content"}
       </Button>

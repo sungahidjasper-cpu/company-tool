@@ -1,4 +1,5 @@
-import { generateStructuredOutput } from "@/lib/ai/structured-output";
+import { generateStructuredOutput, generateStructuredOutputStreaming } from "@/lib/ai/structured-output";
+import type { StreamEvent } from "@/lib/ai/providers/types";
 import { buildContentBriefOutputSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { DEFAULT_CONTENT_BRIEF_SETTINGS, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { contentBriefOutputSchema, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
@@ -159,17 +160,22 @@ ${requirements.join("\n")}`;
  * schema-validated JSON call like every existing AI task, just with a
  * dynamically-narrowed, settings-driven schema instead of a fixed one.
  */
-export async function generateContentBrief(ctx: ContentBriefContext): Promise<ContentBriefOutput> {
+export async function generateContentBrief(ctx: ContentBriefContext, onChunk?: (event: StreamEvent) => void): Promise<ContentBriefOutput> {
   const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
-  const result = await generateStructuredOutput(buildContentBriefOutputSchema(settings.sections), {
+  const schema = buildContentBriefOutputSchema(settings.sections);
+  const options = {
     system: CONTENT_BRIEF_SYSTEM_PROMPT,
     prompt: buildPrompt(ctx),
     maxTokens: 3000,
-    taskType: "CONTENT_BRIEF",
+    taskType: "CONTENT_BRIEF" as const,
     promptVersion: PROMPT_VERSION,
     seoProjectId: ctx.seoProjectId,
     companyId: ctx.companyId,
-  });
+  };
+  // Phase 22 — onChunk present means the caller (the job runner, when
+  // AI_STREAMING_ENABLED) wants live progress; generateStructuredOutput
+  // itself is never touched, this just picks which orchestrator to call.
+  const result = onChunk ? await generateStructuredOutputStreaming(schema, options, onChunk) : await generateStructuredOutput(schema, options);
   // The narrow per-request schema is always a subset of the canonical
   // ContentBriefOutput shape — reparsing through it fills in every
   // disabled-section field with its default ([] / "") so callers never see

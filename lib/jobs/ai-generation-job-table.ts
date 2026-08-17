@@ -93,6 +93,23 @@ export function updateAiGenerationJobProgress(id: string, progress: number) {
   });
 }
 
+/**
+ * Phase 22 — throttle-written by the runner while a streaming generation is
+ * RUNNING. `partialResultText: null` is a real, meaningful write (not a
+ * no-op): it's how the runner signals a same-provider retry or cross-
+ * provider fallback is about to start a fresh attempt, so a connected SSE
+ * client (see the stream route handler, which polls this same row) knows to
+ * discard whatever partial output it was showing rather than splice it with
+ * the next attempt's. Presentation-only — never read by anything that
+ * treats it as a validated or final result.
+ */
+export function updateAiGenerationJobPartialText(id: string, partialResultText: string | null, progress?: number) {
+  return prisma.aiGenerationJob.update({
+    where: { id },
+    data: progress === undefined ? { partialResultText } : { partialResultText, progress },
+  });
+}
+
 export function markAiGenerationJobSucceeded(id: string, resultJson: Prisma.InputJsonValue) {
   return prisma.aiGenerationJob.update({
     where: { id },

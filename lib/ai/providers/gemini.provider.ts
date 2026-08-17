@@ -4,7 +4,7 @@ import { LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
 import { getCachedHealth } from "@/lib/ai/providers/health-cache";
 import { estimateGeminiCostUsd, getGeminiMaxContext } from "@/lib/ai/providers/pricing";
 import { withRetry } from "@/lib/ai/providers/retry";
-import type { GeneratedOutput, GenerateRawResult, LlmProvider, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
+import type { GeneratedOutput, GenerateRawResult, LlmProvider, StreamChunkCallback, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
 
 const MAX_PARSE_ATTEMPTS = 3;
 /** Gemini's Node SDK has no reliably-respected request timeout — enforced ourselves. */
@@ -113,6 +113,64 @@ async function attemptGenerate(request: StructuredOutputRequest): Promise<Genera
   }
 }
 
+/**
+ * Phase 22 — generateContentStream() accepts the identical `config` already
+ * built for the non-streaming call above (same responseJsonSchema/
+ * responseMimeType/abortSignal). Unlike Anthropic's snapshot-style "text"
+ * event, each chunk here carries only its own delta, so the accumulated
+ * text is built up manually before being handed to onChunk.
+ */
+async function attemptGenerateStreaming(request: StructuredOutputRequest, onChunk: StreamChunkCallback): Promise<GeneratedOutput> {
+  const client = getClient();
+  const model = process.env.GEMINI_MODEL!;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const stream = await client.models.generateContentStream({
+      model,
+      contents: request.prompt,
+      config: {
+        systemInstruction: request.system,
+        maxOutputTokens: request.maxTokens ?? 4096,
+        responseMimeType: "application/json",
+        responseJsonSchema: request.jsonSchema,
+        abortSignal: controller.signal,
+      },
+    });
+
+    let accumulated = "";
+    let usage: TokenUsage = { promptTokens: null, completionTokens: null };
+    for await (const chunk of stream) {
+      if (chunk.text) {
+        accumulated += chunk.text;
+        onChunk(accumulated);
+      }
+      if (chunk.usageMetadata) {
+        usage = {
+          promptTokens: chunk.usageMetadata.promptTokenCount ?? null,
+          completionTokens: chunk.usageMetadata.candidatesTokenCount ?? null,
+        };
+      }
+    }
+
+    if (!accumulated) {
+      throw new LlmProviderError("AI response contained no content.", "UNKNOWN", "gemini");
+    }
+
+    let data: unknown;
+    try {
+      data = JSON.parse(accumulated);
+    } catch (error) {
+      throw new LlmProviderError("AI response could not be parsed as JSON.", "UNKNOWN", "gemini", { cause: error });
+    }
+
+    return { data, usage, model };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export const geminiProvider: LlmProvider = {
   name: "gemini",
 
@@ -131,6 +189,27 @@ export const geminiProvider: LlmProvider = {
         {
           maxAttempts: MAX_PARSE_ATTEMPTS,
           label: "gemini",
+          isRetryable: (error) =>
+            error instanceof LlmProviderError && error.type === "UNKNOWN" && /could not be parsed as JSON/i.test(error.message),
+        }
+      );
+      return { ...result, retried: attempts > 1 };
+    } catch (error) {
+      throw classifyError(error);
+    }
+  },
+
+  async generateRawStreaming(request: StructuredOutputRequest, onChunk: StreamChunkCallback): Promise<GenerateRawResult> {
+    let attempts = 0;
+    try {
+      const result = await withRetry(
+        () => {
+          attempts++;
+          return attemptGenerateStreaming(request, onChunk);
+        },
+        {
+          maxAttempts: MAX_PARSE_ATTEMPTS,
+          label: "gemini-streaming",
           isRetryable: (error) =>
             error instanceof LlmProviderError && error.type === "UNKNOWN" && /could not be parsed as JSON/i.test(error.message),
         }

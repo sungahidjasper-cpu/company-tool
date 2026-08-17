@@ -1,9 +1,7 @@
 import { generateStructuredOutput } from "@/lib/ai/structured-output";
-import {
-  contentBriefOutputSchema,
-  type ContentBriefOutput,
-  type ContentBriefType,
-} from "@/features/ai-workspace/schemas/content-brief.schema";
+import { buildContentBriefOutputSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
+import { DEFAULT_CONTENT_BRIEF_SETTINGS, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
+import { contentBriefOutputSchema, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
 
 /**
  * Bumped whenever the prompt template below changes — same convention as
@@ -12,10 +10,10 @@ import {
  * equivalent exists for this task; every "Generate"/"Regenerate" click is
  * a fresh call).
  */
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 2;
 
-const CONTENT_BRIEF_SYSTEM_PROMPT =
-  "You are a senior SEO content strategist. Produce a practical, concrete content brief grounded strictly in the provided project/keyword context. Never invent products, services, or facts not evidenced in the input. This is a BRIEF — outlines, headings, and suggestions, not a full drafted article body.";
+export const CONTENT_BRIEF_SYSTEM_PROMPT =
+  "You are a senior SEO content strategist. Produce a practical, concrete content brief grounded strictly in the provided project/keyword context. Never invent products, services, or facts not evidenced in the input. Never invent a URL, citation, or source you cannot verify — describe what kind of source to add instead. This is a BRIEF — outlines, headings, and suggestions, not a full drafted article body.";
 
 export type ContentBriefContext = {
   /** Provenance for the AiUsageLog row — the project this brief is for. Never a WebsiteAnalysisJob, since this task has none. */
@@ -28,7 +26,86 @@ export type ContentBriefContext = {
   /** Null when the user generates from an ad-hoc topic (via notes) rather than an existing tracked keyword. */
   keyword: { term: string; intent: string | null } | null;
   notes?: string;
+  /** Phase 21 — defaults to DEFAULT_CONTENT_BRIEF_SETTINGS when omitted, reproducing Phase 20's fixed-shape behavior exactly. */
+  settings?: ContentBriefSettings;
 };
+
+const FAQ_STYLE_INSTRUCTIONS: Record<string, string> = {
+  PEOPLE_ALSO_ASK: "phrased the way Google's 'People Also Ask' box phrases questions",
+  CONVERSATIONAL: "phrased conversationally, the way a person would actually ask a voice assistant",
+  SCHEMA_READY: "phrased and answered so they could be dropped directly into FAQPage schema markup with no editing",
+};
+
+/**
+ * Appends one prompt clause per enabled toggle. Each function only ever
+ * pushes lines — no restructuring of buildPrompt's overall shape, just a
+ * longer, still-linear builder, matching the plan's own framing.
+ */
+function buildSettingsClauses(settings: ContentBriefSettings): string[] {
+  const lines: string[] = [];
+
+  if (settings.secondaryKeywords.length > 0) {
+    lines.push(`Secondary keywords to naturally incorporate: ${settings.secondaryKeywords.join(", ")}.`);
+  }
+  if (settings.searchIntent) {
+    lines.push(`Requested search intent: ${settings.searchIntent}.`);
+  }
+  if (settings.targetCountry) lines.push(`Target country/market: ${settings.targetCountry}.`);
+  if (settings.language) lines.push(`Write in this language: ${settings.language}.`);
+  if (settings.brandName) lines.push(`Brand name: ${settings.brandName}.`);
+  if (settings.competitorUrls.length > 0) {
+    lines.push(`Competitor pages to differentiate from (for context only — do not copy): ${settings.competitorUrls.join(", ")}.`);
+  }
+  if (settings.existingUrl) {
+    lines.push(
+      `This brief is for OPTIMIZING an existing page at ${settings.existingUrl}, not writing brand-new content — frame the outline and recommendations as improvements to what likely already exists there.`
+    );
+  } else {
+    lines.push("This brief is for writing brand-new content — there is no existing page to optimize.");
+  }
+
+  lines.push(`Target article length for the eventual draft: approximately ${settings.wordCount} words.`);
+  lines.push(`Reading level: ${settings.readingLevel.toLowerCase().replace("_", " ")}.`);
+  lines.push(`Brand voice/tone: ${settings.brandVoice.toLowerCase().replace(/_/g, " ")}.`);
+
+  const outline = settings.outline;
+  lines.push(
+    `Outline structure: produce exactly ${outline.h2Count} top-level (H2) sections${outline.h3Count > 0 ? `, with roughly ${outline.h3Count} H3 subsections distributed across them` : ""}${outline.maxHeadingDepth === 2 ? " (H2 only — no nested subsections)" : ""}.`
+  );
+  if (outline.includeComparisonTable) lines.push("Include a comparison-table section in the outline (e.g. option A vs option B).");
+  if (outline.includeChecklist) lines.push("Include a checklist-style section in the outline.");
+  if (outline.includeNumberedProcess) lines.push("Include a numbered step-by-step process section in the outline.");
+  if (outline.includeProsCons) lines.push("Include a pros/cons section in the outline.");
+
+  if (settings.sections.faq) {
+    const styleNote = FAQ_STYLE_INSTRUCTIONS[settings.faqConfig.style] ?? "";
+    lines.push(`Produce exactly ${settings.faqConfig.count} FAQ items${styleNote ? `, ${styleNote}` : ""}.`);
+  }
+  if (settings.sections.cta) {
+    lines.push(
+      "A call-to-action belongs near the end of this piece. Do NOT write the CTA copy, button text, phone number, or URL yourself — that will be inserted separately by the requester's own literal, pre-approved text. Only account for its presence when structuring the outline."
+    );
+  }
+  if (settings.sections.externalSources) {
+    lines.push(
+      "For external sources, suggest only a source TYPE and a real-world organization name that would plausibly publish this kind of information (e.g. 'CDC', 'Pew Research Center') plus why it's relevant. Never invent or guess a specific URL you cannot verify — describe the source, do not link to it."
+    );
+  }
+
+  const q = settings.qualityControls;
+  if (q.avoidCliches) lines.push("Avoid marketing clichés and generic filler phrasing.");
+  if (q.avoidKeywordStuffing) lines.push("Integrate keywords naturally — do not keyword-stuff.");
+  if (q.includeStatistics) lines.push("Suggest, in the statistics section, what kinds of statistics would strengthen this piece (do not invent actual numbers).");
+  if (q.includeDefinitions) lines.push("Note where a clear definition of a key term would help both readers and AI answer engines.");
+  if (q.includeEeatSignals) lines.push("Note concrete ways this piece could demonstrate Experience, Expertise, Authoritativeness, and Trust (EEAT).");
+  if (q.optimizeForFeaturedSnippets) lines.push("Structure recommendations to make this content eligible for a featured snippet (concise direct-answer framing).");
+  if (q.optimizeForAiOverviews) lines.push("Structure recommendations to make this content citable by AI Overviews / answer engines.");
+  if (q.optimizeForGeo) lines.push("Include GEO (Generative Engine Optimization) recommendations.");
+  if (q.optimizeForAeo) lines.push("Include AEO (Answer Engine Optimization) recommendations.");
+  if (q.optimizeForSemanticSeo) lines.push("Include semantic SEO recommendations (related entities/topics to cover, not just the exact keyword).");
+
+  return lines;
+}
 
 /**
  * ctx.notes is raw, unsanitized user text interpolated directly below.
@@ -39,25 +116,40 @@ export type ContentBriefContext = {
  * review step is the actual mitigation for injected instructions, not a
  * sanitizer on this string.
  */
-function buildPrompt(ctx: ContentBriefContext): string {
+export function buildPrompt(ctx: ContentBriefContext): string {
+  const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
   const keywordLine = ctx.keyword
     ? `Target keyword: "${ctx.keyword.term}"${ctx.keyword.intent ? ` (tracked search intent: ${ctx.keyword.intent})` : ""}`
     : "No specific tracked keyword was selected — infer a sensible topic and target keyword from the notes below.";
+
+  const requirements = [
+    "1. A working title.",
+    "2. A meta title of EXACTLY 50-60 characters (never shorter than 50, never longer than 60) and a meta description of EXACTLY 150-160 characters (never shorter than 150, never longer than 160). Count characters carefully before finalizing these two fields — these are hard SEO display limits, not approximations.",
+    "3. An outline (ordered list of section names) matching the outline structure below.",
+    "4. A separate list of suggested subheadings within those sections.",
+    "5. A short list of SEO recommendations specific to this piece (not generic advice).",
+    "6. GEO/AEO notes: concrete suggestions for how this content could be structured to be cited by AI answer engines (e.g. direct Q&A framing, definitions, structured lists).",
+    "7. Your own suggested search intent for this piece (one of: informational, navigational, commercial, transactional), confirming or refining the tracked intent above if one was given.",
+  ];
+  if (settings.sections.internalLinks) requirements.push("8. Internal-link suggestions (anchor text, target page description, reason, placement, priority) — describe pages in words, never invent URLs that don't exist.");
+  if (settings.sections.externalSources) requirements.push("9. External-source suggestions (type + real-world source name + description) — see the trust-boundary rule below.");
+  if (settings.sections.faq) requirements.push("10. FAQ items per the count/style specified below.");
+  if (settings.sections.conclusion) requirements.push("11. A short closing/conclusion note for the brief itself.");
+  if (settings.sections.keyTakeaways) requirements.push("12. A short list of key takeaways.");
+  if (settings.sections.schemaSuggestions) requirements.push("13. Suggested schema.org structured-data types this page should use (e.g. Article, FAQPage, HowTo).");
+  if (settings.sections.statistics) requirements.push("14. A list of statistic ANGLES this piece should cite (topics/claims to support with data — not invented numbers).");
+  if (settings.sections.examples) requirements.push("15. A list of concrete example ideas the draft could use to illustrate points.");
+  if (settings.sections.cta) requirements.push("16. A ctaPlacementSuggestion: ONE sentence describing where/how a call-to-action should appear — never the CTA's actual copy, button text, phone number, or URL, which come from the requester's own pre-approved fields.");
 
   return `Website: ${ctx.domain} (SEO project: ${ctx.seoProjectName})
 Content type: ${ctx.contentType}
 ${keywordLine}
 ${ctx.notes ? `Additional context/notes from the requester: ${ctx.notes}` : "No additional notes were provided."}
 
+${buildSettingsClauses(settings).join("\n")}
+
 Using ONLY the information above, produce a content brief with:
-1. A working title.
-2. A meta title (~60 characters) and meta description (~155 characters).
-3. An outline (ordered list of section names).
-4. A separate list of suggested subheadings within those sections.
-5. Internal-link suggestions (described in words — do not invent URLs that don't exist).
-6. A short list of SEO recommendations specific to this piece (not generic advice).
-7. GEO/AEO notes: concrete suggestions for how this content could be structured to be cited by AI answer engines (e.g. direct Q&A framing, definitions, structured lists).
-8. Your own suggested search intent for this piece (one of: informational, navigational, commercial, transactional), confirming or refining the tracked intent above if one was given.`;
+${requirements.join("\n")}`;
 }
 
 /**
@@ -65,10 +157,11 @@ Using ONLY the information above, produce a content brief with:
  * a thin prompt-builder around the shared generateStructuredOutput
  * orchestrator. No changes to lib/ai/providers/* — this is still a
  * schema-validated JSON call like every existing AI task, just with a
- * brief-shaped schema instead of an audit-shaped one.
+ * dynamically-narrowed, settings-driven schema instead of a fixed one.
  */
 export async function generateContentBrief(ctx: ContentBriefContext): Promise<ContentBriefOutput> {
-  return generateStructuredOutput(contentBriefOutputSchema, {
+  const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
+  const result = await generateStructuredOutput(buildContentBriefOutputSchema(settings.sections), {
     system: CONTENT_BRIEF_SYSTEM_PROMPT,
     prompt: buildPrompt(ctx),
     maxTokens: 3000,
@@ -77,4 +170,9 @@ export async function generateContentBrief(ctx: ContentBriefContext): Promise<Co
     seoProjectId: ctx.seoProjectId,
     companyId: ctx.companyId,
   });
+  // The narrow per-request schema is always a subset of the canonical
+  // ContentBriefOutput shape — reparsing through it fills in every
+  // disabled-section field with its default ([] / "") so callers never see
+  // an undefined array/string just because that section wasn't requested.
+  return contentBriefOutputSchema.parse(result);
 }

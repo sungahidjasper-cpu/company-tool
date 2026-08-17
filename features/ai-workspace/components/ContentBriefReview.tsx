@@ -1,8 +1,15 @@
 "use client";
 
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
+import { regenerateBriefFieldAction, type RegenerateBriefField } from "@/features/ai-workspace/actions/content-brief.actions";
+import { formatBriefAsMarkdown, markdownToHtml } from "@/features/ai-workspace/services/content-export.service";
+import { checkMetaLengths, computeSeoChecklist } from "@/features/ai-workspace/services/seo-checklist.service";
+import type { ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
+import type { ContentBriefOutput, ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
 
 const textareaClassName =
   "w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm";
@@ -14,8 +21,18 @@ function linesToArray(value: string): string[] {
     .filter(Boolean);
 }
 
+type RegenerateFieldContext = {
+  seoProjectId: string;
+  keywordId?: string;
+  contentType: ContentBriefType;
+  notes?: string;
+};
+
 type ContentBriefReviewProps = {
   brief: ContentBriefOutput;
+  settings: ContentBriefSettings;
+  /** Used for the SEO checklist's keyword-presence checks — omitted when generation was ad-hoc/notes-only. */
+  targetKeyword?: string;
   onChange: (brief: ContentBriefOutput) => void;
   onRegenerate: () => void;
   onSave: () => void;
@@ -31,16 +48,52 @@ type ContentBriefReviewProps = {
   isRegenerating: boolean;
   isSaving: boolean;
   error?: string | null;
+  /** Phase 21 §15 — context regenerateBriefFieldAction needs to rebuild the same prompt for a single-field regeneration. */
+  regenerateFieldContext: RegenerateFieldContext;
 };
+
+function CounterBadge({ length, min, max }: { length: number; min: number; max: number }) {
+  const status = length < min ? "TOO_SHORT" : length > max ? "TOO_LONG" : "OK";
+  const color = status === "OK" ? "text-emerald-600" : "text-amber-600";
+  return (
+    <span className={`text-xs ${color}`}>
+      {length}/{min}-{max} chars {status === "OK" ? "✅" : "⚠"}
+    </span>
+  );
+}
+
+/** Declared outside the parent's render, not as a nested function component, so state isn't reset on every ContentBriefReview render. */
+function RegenerateFieldButton({
+  field,
+  disabled,
+  regeneratingField,
+  onRegenerate,
+}: {
+  field: RegenerateBriefField;
+  disabled: boolean;
+  regeneratingField: RegenerateBriefField | null;
+  onRegenerate: (field: RegenerateBriefField) => void;
+}) {
+  return (
+    <Button type="button" variant="ghost" size="sm" onClick={() => onRegenerate(field)} disabled={disabled}>
+      {regeneratingField === field ? "Regenerating..." : "Regenerate this field"}
+    </Button>
+  );
+}
 
 /**
  * Purely presentational + edits-in-place — nothing here writes to the
  * database. "Regenerate" and "Save as Draft" are both just callbacks the
  * parent (ContentBriefPicker) wires to the actual server actions; this
- * component only ever holds the current in-memory candidate.
+ * component only ever holds the current in-memory candidate. Phase 21
+ * makes rendering modular (only enabled sections show) and adds the SEO
+ * checklist, character counters, per-field regeneration, and export
+ * buttons.
  */
 export default function ContentBriefReview({
   brief,
+  settings,
+  targetKeyword,
   onChange,
   onRegenerate,
   onSave,
@@ -49,22 +102,59 @@ export default function ContentBriefReview({
   isRegenerating,
   isSaving,
   error,
+  regenerateFieldContext,
 }: ContentBriefReviewProps) {
   const busy = isRegenerating || isSaving || isGeneratingLongForm;
+  const [regeneratingField, setRegeneratingField] = useState<RegenerateBriefField | null>(null);
+  const [fieldError, setFieldError] = useState<string | null>(null);
+
+  const lengths = useMemo(() => checkMetaLengths(brief), [brief]);
+  const checklist = useMemo(() => computeSeoChecklist(brief, settings, targetKeyword), [brief, settings, targetKeyword]);
+
+  async function handleRegenerateField(field: RegenerateBriefField) {
+    setFieldError(null);
+    setRegeneratingField(field);
+    const result = await regenerateBriefFieldAction({ ...regenerateFieldContext, currentBrief: brief, field });
+    setRegeneratingField(null);
+    if (!result.success) {
+      setFieldError(result.message);
+      return;
+    }
+    onChange(result.data);
+  }
+
+  async function copyAsMarkdown() {
+    await navigator.clipboard.writeText(formatBriefAsMarkdown(brief));
+    toast.success("Copied brief as Markdown");
+  }
+
+  async function copyAsHtml() {
+    await navigator.clipboard.writeText(markdownToHtml(formatBriefAsMarkdown(brief)));
+    toast.success("Copied brief as HTML");
+  }
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
-        <label htmlFor="brief-title" className="text-sm font-medium">
-          Title
-        </label>
+        <div className="flex items-center justify-between">
+          <label htmlFor="brief-title" className="text-sm font-medium">
+            Title
+          </label>
+          <RegenerateFieldButton field="title" disabled={busy || regeneratingField !== null} regeneratingField={regeneratingField} onRegenerate={handleRegenerateField} />
+        </div>
         <Input id="brief-title" value={brief.title} onChange={(e) => onChange({ ...brief, title: e.target.value })} />
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label htmlFor="brief-meta-title" className="text-sm font-medium">
-          Meta title
-        </label>
+        <div className="flex items-center justify-between">
+          <label htmlFor="brief-meta-title" className="text-sm font-medium">
+            Meta title
+          </label>
+          <div className="flex items-center gap-2">
+            <CounterBadge length={lengths.metaTitle.length} min={lengths.metaTitle.min} max={lengths.metaTitle.max} />
+            <RegenerateFieldButton field="metaTitle" disabled={busy || regeneratingField !== null} regeneratingField={regeneratingField} onRegenerate={handleRegenerateField} />
+          </div>
+        </div>
         <Input
           id="brief-meta-title"
           value={brief.metaTitle}
@@ -73,9 +163,15 @@ export default function ContentBriefReview({
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label htmlFor="brief-meta-description" className="text-sm font-medium">
-          Meta description
-        </label>
+        <div className="flex items-center justify-between">
+          <label htmlFor="brief-meta-description" className="text-sm font-medium">
+            Meta description
+          </label>
+          <div className="flex items-center gap-2">
+            <CounterBadge length={lengths.metaDescription.length} min={lengths.metaDescription.min} max={lengths.metaDescription.max} />
+            <RegenerateFieldButton field="metaDescription" disabled={busy || regeneratingField !== null} regeneratingField={regeneratingField} onRegenerate={handleRegenerateField} />
+          </div>
+        </div>
         <textarea
           id="brief-meta-description"
           rows={2}
@@ -86,9 +182,12 @@ export default function ContentBriefReview({
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label htmlFor="brief-outline" className="text-sm font-medium">
-          Outline (one section per line)
-        </label>
+        <div className="flex items-center justify-between">
+          <label htmlFor="brief-outline" className="text-sm font-medium">
+            Outline (one section per line) — {brief.outline.length} of {settings.outline.h2Count} requested
+          </label>
+          <RegenerateFieldButton field="outline" disabled={busy || regeneratingField !== null} regeneratingField={regeneratingField} onRegenerate={handleRegenerateField} />
+        </div>
         <textarea
           id="brief-outline"
           rows={5}
@@ -111,18 +210,126 @@ export default function ContentBriefReview({
         />
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="brief-links" className="text-sm font-medium">
-          Internal-link suggestions (one per line)
-        </label>
-        <textarea
-          id="brief-links"
-          rows={3}
-          className={textareaClassName}
-          value={brief.internalLinkSuggestions.join("\n")}
-          onChange={(e) => onChange({ ...brief, internalLinkSuggestions: linesToArray(e.target.value) })}
-        />
-      </div>
+      {settings.sections.internalLinks && (
+        <div className="flex flex-col gap-1.5">
+          <label className="text-sm font-medium">Internal-link suggestions</label>
+          <div className="flex flex-col gap-2">
+            {brief.internalLinkSuggestions.map((link, index) => (
+              <div key={index} className="rounded-lg border border-slate-200 p-2 text-sm">
+                <p className="font-medium text-slate-700">{link.anchorText || "(no anchor text)"}</p>
+                <p className="text-slate-500">
+                  → {link.targetPage || "(page TBD)"} · {link.reason} · {link.placement} · priority: {link.priority}
+                </p>
+              </div>
+            ))}
+            {brief.internalLinkSuggestions.length === 0 && <p className="text-sm text-slate-400">No suggestions generated.</p>}
+          </div>
+        </div>
+      )}
+
+      {settings.sections.externalSources && (
+        <div className="flex flex-col gap-1.5">
+          <label className="text-sm font-medium">External-source suggestions (never a fabricated URL — add a verified link yourself before publishing)</label>
+          <div className="flex flex-col gap-2">
+            {brief.externalSources.map((source, index) => (
+              <div key={index} className="rounded-lg border border-slate-200 p-2 text-sm">
+                <p className="font-medium text-slate-700">
+                  [{source.type}] {source.name}
+                </p>
+                <p className="text-slate-500">{source.description}</p>
+              </div>
+            ))}
+            {brief.externalSources.length === 0 && <p className="text-sm text-slate-400">No suggestions generated.</p>}
+          </div>
+        </div>
+      )}
+
+      {settings.sections.faq && (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium">
+              FAQ — {brief.faq.length} of {settings.faqConfig.count} requested
+            </label>
+            <RegenerateFieldButton field="faq" disabled={busy || regeneratingField !== null} regeneratingField={regeneratingField} onRegenerate={handleRegenerateField} />
+          </div>
+          <div className="flex flex-col gap-2">
+            {brief.faq.map((item, index) => (
+              <div key={index} className="rounded-lg border border-slate-200 p-2 text-sm">
+                <p className="font-medium text-slate-700">{item.question}</p>
+                <p className="text-slate-500">{item.answer}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {settings.sections.keyTakeaways && (
+        <div className="flex flex-col gap-1.5">
+          <label className="text-sm font-medium">Key takeaways</label>
+          <ul className="list-inside list-disc text-sm text-slate-600">
+            {brief.keyTakeaways.map((item, index) => (
+              <li key={index}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {settings.sections.conclusion && (
+        <div className="flex flex-col gap-1.5">
+          <label className="text-sm font-medium">Conclusion (brief note)</label>
+          <textarea
+            rows={2}
+            className={textareaClassName}
+            value={brief.conclusion}
+            onChange={(e) => onChange({ ...brief, conclusion: e.target.value })}
+          />
+        </div>
+      )}
+
+      {settings.sections.cta && (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium">CTA placement suggestion (guidance only — your own CTA text is inserted as-is at draft time)</label>
+            <RegenerateFieldButton field="cta" disabled={busy || regeneratingField !== null} regeneratingField={regeneratingField} onRegenerate={handleRegenerateField} />
+          </div>
+          <p className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-sm text-slate-600">{brief.ctaPlacementSuggestion || "No suggestion generated."}</p>
+        </div>
+      )}
+
+      {(settings.sections.schemaSuggestions || settings.sections.statistics || settings.sections.examples) && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          {settings.sections.schemaSuggestions && (
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium">Schema.org suggestions</label>
+              <ul className="list-inside list-disc text-sm text-slate-600">
+                {brief.schemaSuggestions.map((item, index) => (
+                  <li key={index}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {settings.sections.statistics && (
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium">Statistic angles</label>
+              <ul className="list-inside list-disc text-sm text-slate-600">
+                {brief.statistics.map((item, index) => (
+                  <li key={index}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {settings.sections.examples && (
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium">Example ideas</label>
+              <ul className="list-inside list-disc text-sm text-slate-600">
+                {brief.examples.map((item, index) => (
+                  <li key={index}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-col gap-1.5">
         <label htmlFor="brief-seo" className="text-sm font-medium">
@@ -161,9 +368,22 @@ export default function ContentBriefReview({
         />
       </div>
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      <div className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <p className="text-sm font-medium text-slate-700">SEO quality checklist</p>
+        <ul className="flex flex-col gap-1">
+          {checklist.map((item) => (
+            <li key={item.id} className="flex items-center gap-2 text-sm">
+              <span>{item.status === "PASS" ? "✅" : "⚠"}</span>
+              <span className="text-slate-600">{item.label}</span>
+              <span className="text-xs text-slate-400">({item.detail})</span>
+            </li>
+          ))}
+        </ul>
+      </div>
 
-      <div className="flex gap-3">
+      {(error || fieldError) && <p className="text-sm text-destructive">{error || fieldError}</p>}
+
+      <div className="flex flex-wrap gap-3">
         <Button type="button" variant="outline" onClick={onRegenerate} disabled={busy}>
           {isRegenerating ? "Regenerating..." : "Regenerate"}
         </Button>
@@ -175,6 +395,12 @@ export default function ContentBriefReview({
             {isGeneratingLongForm ? "Generating article..." : "Generate Long-Form Content"}
           </Button>
         )}
+        <Button type="button" variant="ghost" onClick={copyAsMarkdown} disabled={busy}>
+          Copy as Markdown
+        </Button>
+        <Button type="button" variant="ghost" onClick={copyAsHtml} disabled={busy}>
+          Copy as HTML
+        </Button>
       </div>
     </div>
   );

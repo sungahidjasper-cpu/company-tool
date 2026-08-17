@@ -7,7 +7,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import { startLongFormGenerationAction, updateLongFormContentAction } from "@/features/ai-workspace/actions/long-form-content.actions";
-import LongFormContentReview, { type LongFormEditableFields } from "@/features/ai-workspace/components/LongFormContentReview";
+import LongFormContentReview, { type LongFormDraftExtras, type LongFormEditableFields } from "@/features/ai-workspace/components/LongFormContentReview";
+import type { ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { formatLongFormContentAsMarkdown, longFormContentOutputSchema } from "@/features/ai-workspace/schemas/long-form-content.schema";
 
 const POLL_INTERVAL_MS = 3000;
@@ -19,6 +20,8 @@ type ExistingBriefLongFormGeneratorProps = {
   title: string;
   metaTitle: string;
   metaDescription: string;
+  /** Phase 21 — the settings originally used to generate this content's brief, read back from Content.aiBriefDetails.briefSettings by the page. */
+  settings: ContentBriefSettings;
 };
 
 /**
@@ -34,10 +37,12 @@ export default function ExistingBriefLongFormGenerator({
   title,
   metaTitle,
   metaDescription,
+  settings,
 }: ExistingBriefLongFormGeneratorProps) {
   const router = useRouter();
   const [longFormFields, setLongFormFields] = useState<LongFormEditableFields | null>(null);
   const [linkSuggestions, setLinkSuggestions] = useState<string[]>([]);
+  const [draftExtras, setDraftExtras] = useState<LongFormDraftExtras | undefined>(undefined);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,11 +100,18 @@ export default function ExistingBriefLongFormGenerator({
           return;
         }
         setLinkSuggestions(parsed.data.internalLinkPlacementSuggestions);
+        setDraftExtras({
+          imagePlaceholders: parsed.data.imagePlaceholders,
+          altTextSuggestions: parsed.data.altTextSuggestions,
+          featuredImagePrompt: parsed.data.featuredImagePrompt,
+          socialSnippets: parsed.data.socialSnippets,
+          excerpt: parsed.data.excerpt,
+        });
         setLongFormFields({
           title,
           metaTitle,
           metaDescription,
-          body: formatLongFormContentAsMarkdown(parsed.data),
+          body: formatLongFormContentAsMarkdown(parsed.data, settings.sections.cta ? settings.cta : undefined),
         });
       }
     }, POLL_INTERVAL_MS);
@@ -126,6 +138,8 @@ export default function ExistingBriefLongFormGenerator({
         fields={longFormFields}
         onChange={setLongFormFields}
         internalLinkPlacementSuggestions={linkSuggestions}
+        draftExtras={draftExtras}
+        targetWordCount={settings.wordCount}
         onRegenerate={runGenerate}
         onSave={handleSave}
         isRegenerating={isGenerating}

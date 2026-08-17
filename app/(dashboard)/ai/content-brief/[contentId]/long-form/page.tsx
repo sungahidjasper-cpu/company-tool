@@ -4,6 +4,7 @@ import DashboardHeader from "@/components/dashboard/DashboardHeader";
 import PageContainer from "@/components/dashboard/PageContainer";
 import { Card, CardContent } from "@/components/ui/card";
 import ExistingBriefLongFormGenerator from "@/features/ai-workspace/components/ExistingBriefLongFormGenerator";
+import { DEFAULT_CONTENT_BRIEF_SETTINGS, contentBriefSettingsSchema } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { getContentById } from "@/features/seo/services/content.service";
 import { requireUser } from "@/lib/auth";
 import { assertCompanyAccess, assertPermission, Permissions } from "@/lib/authorization";
@@ -30,6 +31,13 @@ export default async function GenerateLongFormFromContentPage({ params }: Genera
     notFound();
   }
 
+  const rawSettings =
+    typeof content.aiBriefDetails === "object" && content.aiBriefDetails !== null
+      ? (content.aiBriefDetails as Record<string, unknown>).briefSettings
+      : undefined;
+  const parsedSettings = contentBriefSettingsSchema.safeParse(rawSettings);
+  const settings = parsedSettings.success ? parsedSettings.data : DEFAULT_CONTENT_BRIEF_SETTINGS;
+
   return (
     <PageContainer>
       <DashboardHeader title="Generate Long-Form Content" description={`From the saved brief for "${content.title}."`} />
@@ -41,6 +49,7 @@ export default async function GenerateLongFormFromContentPage({ params }: Genera
             title={content.title}
             metaTitle={content.metaTitle}
             metaDescription={content.metaDescription}
+            settings={settings}
           />
         </CardContent>
       </Card>

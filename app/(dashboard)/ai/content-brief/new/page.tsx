@@ -14,6 +14,7 @@ import { prisma } from "@/lib/prisma";
 export default async function NewContentBriefPage() {
   const user = await requireUser();
   assertPermission(user, Permissions.manageSeoProjects);
+  const canPreviewPrompt = Permissions.manageCompanies(user.role);
 
   const [seoProjectOptions, keywords] = await Promise.all([
     listSeoProjectOptions(user.companyId),
@@ -50,7 +51,7 @@ export default async function NewContentBriefPage() {
               }
             />
           ) : (
-            <ContentBriefPicker seoProjectOptions={seoProjectOptions} keywordsByProject={keywordsByProject} />
+            <ContentBriefPicker seoProjectOptions={seoProjectOptions} keywordsByProject={keywordsByProject} canPreviewPrompt={canPreviewPrompt} />
           )}
         </CardContent>
       </Card>

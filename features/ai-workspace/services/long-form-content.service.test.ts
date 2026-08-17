@@ -17,7 +17,7 @@ const ARTICLE_RESULT = {
   introduction: "Plumbing emergencies can happen at any hour.",
   sections: [{ heading: "What counts as an emergency?", body: "Burst pipes and active leaks." }],
   conclusion: "Call Acme Plumbing any time.",
-  faq: null,
+  faq: [] as { question: string; answer: string }[],
   internalLinkPlacementSuggestions: ["Link to the services page in the introduction."],
 };
 
@@ -27,10 +27,18 @@ const BASE_BRIEF = {
   metaDescription: "Fast 24/7 emergency plumbing in Austin.",
   outline: ["Introduction", "Signs of an emergency", "Contact us"],
   suggestedHeadings: ["What counts as an emergency?"],
-  internalLinkSuggestions: ["Link to services page"],
+  internalLinkSuggestions: [{ anchorText: "our services page", targetPage: "/services", reason: "relevant", placement: "intro", priority: "MEDIUM" as const }],
   seoRecommendations: ["Use the keyword in the H1"],
   geoAeoNotes: "Use direct Q&A framing.",
   suggestedSearchIntent: "TRANSACTIONAL",
+  conclusion: "",
+  ctaPlacementSuggestion: "",
+  externalSources: [],
+  faq: [],
+  keyTakeaways: [],
+  schemaSuggestions: [],
+  statistics: [],
+  examples: [],
 };
 
 const BASE_CTX: LongFormContentContext = {
@@ -48,7 +56,7 @@ describe("generateLongFormContent", () => {
 
     const result = await generateLongFormContent(BASE_CTX);
 
-    expect(result).toEqual(ARTICLE_RESULT);
+    expect(result).toMatchObject(ARTICLE_RESULT);
     expect(mockGenerate).toHaveBeenCalledTimes(1);
     const [, options] = mockGenerate.mock.calls[0];
     expect(options.taskType).toBe("CONTENT_DRAFT");

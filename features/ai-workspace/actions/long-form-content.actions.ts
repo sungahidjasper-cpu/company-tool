@@ -13,6 +13,8 @@ import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
 import type { LongFormJobInput } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 import { generateLongFormContent } from "@/features/ai-workspace/services/long-form-content.service";
 import { contentBriefOutputSchema, type ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
+import { externalSourceSchema, faqItemSchema, normalizeArray, normalizeInternalLinkSuggestions } from "@/features/ai-workspace/schemas/content-brief-output-builder";
+import { contentBriefSettingsSchema, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import {
   generateLongFormFromBriefContextSchema,
   longFormSaveFieldsSchema,
@@ -51,6 +53,14 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
+/** Same as ai-generation-job-runner.ts's identical helper — see buildBriefFromContentRow's comment on why this is duplicated rather than shared. */
+function readBriefSettingsFromContentRow(aiBriefDetails: unknown): ContentBriefSettings | undefined {
+  if (!aiBriefDetails || typeof aiBriefDetails !== "object") return undefined;
+  const raw = (aiBriefDetails as Record<string, unknown>).briefSettings;
+  const parsed = contentBriefSettingsSchema.safeParse(raw);
+  return parsed.success ? parsed.data : undefined;
+}
+
 /**
  * Reconstructs a ContentBriefOutput-shaped object from an already-saved
  * Content row (Phase 15's saveContentBriefAction is what originally wrote
@@ -75,10 +85,18 @@ function buildBriefFromContentRow(content: {
     metaDescription: content.metaDescription,
     outline: asStringArray(raw.outline),
     suggestedHeadings: asStringArray(raw.suggestedHeadings),
-    internalLinkSuggestions: asStringArray(raw.internalLinkSuggestions),
+    internalLinkSuggestions: normalizeInternalLinkSuggestions(raw.internalLinkSuggestions),
     seoRecommendations: asStringArray(raw.seoRecommendations),
     geoAeoNotes: typeof raw.geoAeoNotes === "string" ? raw.geoAeoNotes : "",
     suggestedSearchIntent: typeof raw.suggestedSearchIntent === "string" ? raw.suggestedSearchIntent : "",
+    conclusion: typeof raw.conclusion === "string" ? raw.conclusion : "",
+    ctaPlacementSuggestion: typeof raw.ctaPlacementSuggestion === "string" ? raw.ctaPlacementSuggestion : "",
+    externalSources: normalizeArray(externalSourceSchema, raw.externalSources),
+    faq: normalizeArray(faqItemSchema, raw.faq),
+    keyTakeaways: asStringArray(raw.keyTakeaways),
+    schemaSuggestions: asStringArray(raw.schemaSuggestions),
+    statistics: asStringArray(raw.statistics),
+    examples: asStringArray(raw.examples),
   };
   const parsed = contentBriefOutputSchema.safeParse(brief);
   return parsed.success ? parsed.data : null;
@@ -88,6 +106,7 @@ export type GenerateLongFormFromBriefInput = {
   seoProjectId: string;
   keywordId?: string;
   brief: ContentBriefOutput;
+  settings?: ContentBriefSettings;
 };
 
 /**
@@ -101,7 +120,11 @@ export async function generateLongFormFromBriefAction(input: GenerateLongFormFro
     return actionError("You do not have permission to generate AI content.");
   }
 
-  const parsedContext = generateLongFormFromBriefContextSchema.safeParse({ seoProjectId: input.seoProjectId, keywordId: input.keywordId });
+  const parsedContext = generateLongFormFromBriefContextSchema.safeParse({
+    seoProjectId: input.seoProjectId,
+    keywordId: input.keywordId,
+    settings: input.settings,
+  });
   if (!parsedContext.success) {
     return actionError(parsedContext.error.issues[0]?.message ?? "Invalid input");
   }
@@ -132,6 +155,7 @@ export async function generateLongFormFromBriefAction(input: GenerateLongFormFro
       domain: seoProject.domain,
       brief: parsedBrief.data,
       keyword,
+      settings: parsedContext.data.settings,
     });
     return actionSuccess(article);
   } catch (error) {
@@ -173,6 +197,7 @@ export async function generateLongFormFromContentAction(contentId: string): Prom
       domain: content.seoProject.domain,
       brief,
       keyword,
+      settings: readBriefSettingsFromContentRow(content.aiBriefDetails),
     });
     return actionSuccess(article);
   } catch (error) {
@@ -227,7 +252,11 @@ export async function startLongFormGenerationAction(input: StartLongFormGenerati
     return actionSuccess({ jobId: job.id });
   }
 
-  const parsedContext = generateLongFormFromBriefContextSchema.safeParse({ seoProjectId: input.seoProjectId, keywordId: input.keywordId });
+  const parsedContext = generateLongFormFromBriefContextSchema.safeParse({
+    seoProjectId: input.seoProjectId,
+    keywordId: input.keywordId,
+    settings: input.settings,
+  });
   if (!parsedContext.success) {
     return actionError(parsedContext.error.issues[0]?.message ?? "Invalid input");
   }
@@ -252,6 +281,7 @@ export async function startLongFormGenerationAction(input: StartLongFormGenerati
     seoProjectId: seoProject.id,
     keywordId: parsedContext.data.keywordId,
     brief: parsedBrief.data,
+    settings: parsedContext.data.settings,
   };
   const inputHash = computeInputHash(inputJson);
   const existing = await findActiveAiGenerationJob(actor.companyId, "CONTENT_DRAFT", inputHash);
@@ -275,6 +305,7 @@ export type SaveLongFormAsNewContentInput = LongFormSaveFields & {
   seoProjectId: string;
   keywordId?: string;
   brief: ContentBriefOutput;
+  settings?: ContentBriefSettings;
 };
 
 /**
@@ -325,6 +356,15 @@ export async function saveLongFormAsNewContentAction(input: SaveLongFormAsNewCon
         seoRecommendations: input.brief.seoRecommendations,
         geoAeoNotes: input.brief.geoAeoNotes,
         suggestedSearchIntent: input.brief.suggestedSearchIntent,
+        conclusion: input.brief.conclusion,
+        ctaPlacementSuggestion: input.brief.ctaPlacementSuggestion,
+        externalSources: input.brief.externalSources,
+        faq: input.brief.faq,
+        keyTakeaways: input.brief.keyTakeaways,
+        schemaSuggestions: input.brief.schemaSuggestions,
+        statistics: input.brief.statistics,
+        examples: input.brief.examples,
+        briefSettings: input.settings,
       },
       keywords: input.keywordId ? { connect: [{ id: input.keywordId }] } : undefined,
     },

@@ -13,7 +13,7 @@ const VALID_BRIEF = {
   metaDescription: "Fast 24/7 emergency plumbing in Austin.",
   outline: ["Introduction", "Signs of an emergency", "Contact us"],
   suggestedHeadings: ["What counts as an emergency?"],
-  internalLinkSuggestions: ["Link to services page"],
+  internalLinkSuggestions: [{ anchorText: "our services page", targetPage: "/services", reason: "relevant service list", placement: "introduction", priority: "MEDIUM" }],
   seoRecommendations: ["Use the keyword in the H1"],
   geoAeoNotes: "Use direct Q&A framing.",
   suggestedSearchIntent: "TRANSACTIONAL",
@@ -40,6 +40,14 @@ describe("generateLongFormFromBriefContextSchema", () => {
     const result = generateLongFormFromBriefContextSchema.safeParse({ seoProjectId: "" });
     expect(result.success).toBe(false);
   });
+
+  it("accepts an optional settings object", () => {
+    const result = generateLongFormFromBriefContextSchema.safeParse({ seoProjectId: "project-1", settings: { wordCount: 2500 } });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.settings?.wordCount).toBe(2500);
+    }
+  });
 });
 
 describe("the brief itself is validated separately, via contentBriefOutputSchema (zod/v4)", () => {
@@ -51,6 +59,22 @@ describe("the brief itself is validated separately, via contentBriefOutputSchema
     const { title, ...withoutTitle } = VALID_BRIEF;
     void title;
     expect(contentBriefOutputSchema.safeParse(withoutTitle).success).toBe(false);
+  });
+
+  it("defaults every Phase 21 modular field when absent — a pre-Phase-21 saved row still validates", () => {
+    const result = contentBriefOutputSchema.safeParse(VALID_BRIEF);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.faq).toEqual([]);
+      expect(result.data.externalSources).toEqual([]);
+      expect(result.data.keyTakeaways).toEqual([]);
+      expect(result.data.conclusion).toBe("");
+    }
+  });
+
+  it("converts a legacy bare-string internalLinkSuggestions entry via the normalizer, not the schema itself", () => {
+    const result = contentBriefOutputSchema.safeParse({ ...VALID_BRIEF, internalLinkSuggestions: ["a bare legacy string"] });
+    expect(result.success).toBe(false);
   });
 });
 
@@ -67,15 +91,25 @@ describe("longFormContentOutputSchema", () => {
     expect(longFormContentOutputSchema.safeParse(validArticle).success).toBe(true);
   });
 
-  it("accepts faq: null when a FAQ section isn't a natural fit", () => {
-    const result = longFormContentOutputSchema.safeParse({ ...validArticle, faq: null });
+  it("defaults conclusion/faq/keyTakeaways/draft-option fields when a narrow per-request generation omitted them", () => {
+    const minimal = {
+      introduction: "Intro.",
+      sections: [{ heading: "H2", body: "Body." }],
+      internalLinkPlacementSuggestions: [],
+    };
+    const result = longFormContentOutputSchema.safeParse(minimal);
     expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.faq).toEqual([]);
+      expect(result.data.keyTakeaways).toEqual([]);
+      expect(result.data.conclusion).toBeUndefined();
+    }
   });
 
   it("rejects an article missing a required field", () => {
-    const { conclusion, ...withoutConclusion } = validArticle;
-    void conclusion;
-    expect(longFormContentOutputSchema.safeParse(withoutConclusion).success).toBe(false);
+    const { introduction, ...withoutIntroduction } = validArticle;
+    void introduction;
+    expect(longFormContentOutputSchema.safeParse(withoutIntroduction).success).toBe(false);
   });
 
   it("rejects a section that is a string instead of a {heading, body} object", () => {
@@ -93,6 +127,10 @@ describe("formatLongFormContentAsMarkdown", () => {
     ],
     conclusion: "Wrap-up paragraph.",
     faq: [{ question: "Q1?", answer: "A1." }],
+    keyTakeaways: [] as string[],
+    imagePlaceholders: [] as string[],
+    altTextSuggestions: [] as string[],
+    socialSnippets: [] as string[],
     internalLinkPlacementSuggestions: ["Suggestion that must NOT appear in the saved body"],
   };
 
@@ -113,13 +151,25 @@ describe("formatLongFormContentAsMarkdown", () => {
     expect(markdown).toContain("A1.");
   });
 
-  it("omits the FAQ section entirely when faq is null", () => {
-    const markdown = formatLongFormContentAsMarkdown({ ...article, faq: null });
+  it("omits the FAQ section entirely when faq is empty", () => {
+    const markdown = formatLongFormContentAsMarkdown({ ...article, faq: [] });
     expect(markdown).not.toContain("## FAQ");
+  });
+
+  it("omits the Conclusion section entirely when conclusion is undefined (disabled toggle)", () => {
+    const markdown = formatLongFormContentAsMarkdown({ ...article, conclusion: undefined });
+    expect(markdown).not.toContain("## Conclusion");
   });
 
   it("never includes internalLinkPlacementSuggestions in the saved body — those are reviewer-only", () => {
     const markdown = formatLongFormContentAsMarkdown(article);
     expect(markdown).not.toContain("Suggestion that must NOT appear in the saved body");
+  });
+
+  it("appends the user's literal CTA fields, never AI-generated copy, when a cta is passed", () => {
+    const markdown = formatLongFormContentAsMarkdown(article, { title: "Ready to talk?", text: "Contact us today.", buttonText: "Get a quote", url: "https://example.com/contact" });
+    expect(markdown).toContain("Ready to talk?");
+    expect(markdown).toContain("Contact us today.");
+    expect(markdown).toContain("[Get a quote](https://example.com/contact)");
   });
 });

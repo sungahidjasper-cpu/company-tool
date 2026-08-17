@@ -10,6 +10,8 @@ import {
 import { generateContentBrief } from "@/features/ai-workspace/services/content-brief.service";
 import { generateLongFormContent } from "@/features/ai-workspace/services/long-form-content.service";
 import { contentBriefOutputSchema, type ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
+import { externalSourceSchema, faqItemSchema, normalizeArray, normalizeInternalLinkSuggestions } from "@/features/ai-workspace/schemas/content-brief-output-builder";
+import { contentBriefSettingsSchema, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { validateContentBriefJobInput, validateLongFormJobInput } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 
 /**
@@ -43,13 +45,28 @@ function buildBriefFromContentRow(content: {
     metaDescription: content.metaDescription,
     outline: asStringArray(raw.outline),
     suggestedHeadings: asStringArray(raw.suggestedHeadings),
-    internalLinkSuggestions: asStringArray(raw.internalLinkSuggestions),
+    internalLinkSuggestions: normalizeInternalLinkSuggestions(raw.internalLinkSuggestions),
     seoRecommendations: asStringArray(raw.seoRecommendations),
     geoAeoNotes: typeof raw.geoAeoNotes === "string" ? raw.geoAeoNotes : "",
     suggestedSearchIntent: typeof raw.suggestedSearchIntent === "string" ? raw.suggestedSearchIntent : "",
+    conclusion: typeof raw.conclusion === "string" ? raw.conclusion : "",
+    externalSources: normalizeArray(externalSourceSchema, raw.externalSources),
+    faq: normalizeArray(faqItemSchema, raw.faq),
+    keyTakeaways: asStringArray(raw.keyTakeaways),
+    schemaSuggestions: asStringArray(raw.schemaSuggestions),
+    statistics: asStringArray(raw.statistics),
+    examples: asStringArray(raw.examples),
   };
   const parsed = contentBriefOutputSchema.safeParse(brief);
   return parsed.success ? parsed.data : null;
+}
+
+/** The generation settings persisted alongside a saved brief (Phase 21) — falls back to undefined (default settings) for pre-Phase-21 rows or a corrupted value, never throws. */
+function readBriefSettingsFromContentRow(aiBriefDetails: unknown): ContentBriefSettings | undefined {
+  if (!aiBriefDetails || typeof aiBriefDetails !== "object") return undefined;
+  const raw = (aiBriefDetails as Record<string, unknown>).briefSettings;
+  const parsed = contentBriefSettingsSchema.safeParse(raw);
+  return parsed.success ? parsed.data : undefined;
 }
 
 async function loadKeyword(keywordId: string | undefined) {
@@ -86,6 +103,7 @@ async function dispatch(job: { taskType: string; inputJson: unknown; companyId: 
       contentType: parsed.data.contentType,
       keyword,
       notes: parsed.data.notes,
+      settings: parsed.data.settings,
     });
     return brief as unknown as Prisma.InputJsonValue;
   }
@@ -112,6 +130,7 @@ async function dispatch(job: { taskType: string; inputJson: unknown; companyId: 
         domain: content.seoProject.domain,
         brief,
         keyword,
+        settings: readBriefSettingsFromContentRow(content.aiBriefDetails),
       });
       return article as unknown as Prisma.InputJsonValue;
     }
@@ -127,6 +146,7 @@ async function dispatch(job: { taskType: string; inputJson: unknown; companyId: 
       domain: seoProject.domain,
       brief: parsed.data.brief,
       keyword,
+      settings: parsed.data.settings,
     });
     return article as unknown as Prisma.InputJsonValue;
   }

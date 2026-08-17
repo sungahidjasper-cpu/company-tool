@@ -4,6 +4,8 @@ vi.mock("@/lib/ai/structured-output", () => ({
   generateStructuredOutput: vi.fn(),
 }));
 
+import { z as zv4 } from "zod/v4";
+
 import { generateStructuredOutput } from "@/lib/ai/structured-output";
 import { generateContentBrief, PROMPT_VERSION, type ContentBriefContext } from "@/features/ai-workspace/services/content-brief.service";
 
@@ -19,7 +21,7 @@ const BRIEF_RESULT = {
   metaDescription: "Practical local SEO tactics for small businesses.",
   outline: ["Introduction", "Tactics", "Conclusion"],
   suggestedHeadings: ["What is local SEO?"],
-  internalLinkSuggestions: ["Link to /services"],
+  internalLinkSuggestions: [{ anchorText: "our services", targetPage: "/services", reason: "relevant", placement: "intro", priority: "MEDIUM" as const }],
   seoRecommendations: ["Add a Google Business Profile"],
   geoAeoNotes: "Use direct Q&A framing.",
   suggestedSearchIntent: "INFORMATIONAL",
@@ -40,7 +42,7 @@ describe("generateContentBrief", () => {
 
     const result = await generateContentBrief(BASE_CTX);
 
-    expect(result).toEqual(BRIEF_RESULT);
+    expect(result).toMatchObject(BRIEF_RESULT);
     expect(mockGenerate).toHaveBeenCalledTimes(1);
     const [, options] = mockGenerate.mock.calls[0];
     expect(options.taskType).toBe("CONTENT_BRIEF");
@@ -76,6 +78,14 @@ describe("generateContentBrief", () => {
     expect(options.prompt).toContain("COMMERCIAL");
   });
 
+  it("instructs the model with the exact meta title/description character ranges, not a vague approximation", async () => {
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+    await generateContentBrief(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("50-60 characters");
+    expect(options.prompt).toContain("150-160 characters");
+  });
+
   it("still generates a brief from notes alone when no keyword is selected (ad-hoc topic)", async () => {
     mockGenerate.mockResolvedValue(BRIEF_RESULT);
 
@@ -92,5 +102,43 @@ describe("generateContentBrief", () => {
     // generateStructuredOutput is the only dependency; asserting it's the
     // sole call confirms this function has no other side effect to mock out.
     expect(mockGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("reflects settings in the prompt: word count target, brand voice, and a disabled section is never requested", async () => {
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+    await generateContentBrief({
+      ...BASE_CTX,
+      settings: {
+        secondaryKeywords: [],
+        competitorUrls: [],
+        wordCount: 2500,
+        readingLevel: "GENERAL",
+        brandVoice: "FRIENDLY",
+        sections: { faq: false, conclusion: true, cta: false, keyTakeaways: false, internalLinks: true, externalSources: false, schemaSuggestions: false, statistics: false, examples: false },
+        outline: { h2Count: 6, h3Count: 0, maxHeadingDepth: 2, includeComparisonTable: false, includeChecklist: false, includeNumberedProcess: false, includeProsCons: false },
+        faqConfig: { count: 5, style: "PEOPLE_ALSO_ASK" },
+        cta: {},
+        qualityControls: {
+          avoidCliches: true,
+          avoidKeywordStuffing: true,
+          includeStatistics: true,
+          includeDefinitions: true,
+          includeEeatSignals: true,
+          optimizeForFeaturedSnippets: true,
+          optimizeForAiOverviews: true,
+          optimizeForGeo: true,
+          optimizeForAeo: true,
+          optimizeForSemanticSeo: true,
+        },
+        draftOptions: { imagePlaceholders: false, altTextSuggestions: false, featuredImagePrompt: false, socialSnippets: false, excerpt: false },
+      },
+    });
+
+    const [schema, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("approximately 2500 words");
+    expect(options.prompt).toContain("friendly");
+    const shapeKeys = Object.keys((schema as zv4.ZodObject<Record<string, zv4.ZodTypeAny>>).shape);
+    expect(shapeKeys).not.toContain("faq");
+    expect(shapeKeys).toContain("internalLinkSuggestions");
   });
 });

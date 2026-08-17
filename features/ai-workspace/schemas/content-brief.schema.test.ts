@@ -45,7 +45,7 @@ describe("contentBriefOutputSchema", () => {
     metaDescription: "Learn practical, actionable local SEO tactics for small businesses.",
     outline: ["Introduction", "Why local SEO matters", "Conclusion"],
     suggestedHeadings: ["What is local SEO?", "Top tactics"],
-    internalLinkSuggestions: ["Link to /services/seo"],
+    internalLinkSuggestions: [{ anchorText: "our SEO services", targetPage: "/services/seo", reason: "relevant service page", placement: "conclusion", priority: "MEDIUM" as const }],
     seoRecommendations: ["Add a Google Business Profile"],
     geoAeoNotes: "Structure answers as direct Q&A for AI answer engines.",
     suggestedSearchIntent: "INFORMATIONAL",
@@ -53,6 +53,16 @@ describe("contentBriefOutputSchema", () => {
 
   it("accepts a fully-formed brief", () => {
     expect(contentBriefOutputSchema.safeParse(validOutput).success).toBe(true);
+  });
+
+  it("defaults every Phase 21 modular field to an empty value when omitted", () => {
+    const result = contentBriefOutputSchema.safeParse(validOutput);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.faq).toEqual([]);
+      expect(result.data.externalSources).toEqual([]);
+      expect(result.data.conclusion).toBe("");
+    }
   });
 
   it("rejects a brief missing a required field", () => {

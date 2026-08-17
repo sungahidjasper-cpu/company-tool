@@ -53,11 +53,24 @@ const BRIEF_OUTPUT = {
   suggestedSearchIntent: "informational",
 };
 
+/** BRIEF_OUTPUT as it comes back out of contentBriefOutputSchema's own parse — Phase 21's modular fields default to "" / [] when absent from the raw stored/carried value. */
+const BRIEF_OUTPUT_CANONICAL = {
+  ...BRIEF_OUTPUT,
+  conclusion: "",
+  ctaPlacementSuggestion: "",
+  externalSources: [],
+  faq: [],
+  keyTakeaways: [],
+  schemaSuggestions: [],
+  statistics: [],
+  examples: [],
+};
+
 const ARTICLE_OUTPUT = {
   introduction: "Intro text.",
   sections: [{ heading: "Section", body: "Body text." }],
   conclusion: "Conclusion text.",
-  faq: null,
+  faq: [],
   internalLinkPlacementSuggestions: [],
 };
 
@@ -157,8 +170,9 @@ describe("runAiGenerationJob — CONTENT_DRAFT", () => {
       seoProjectId: "project-1",
       seoProjectName: "Acme SEO",
       domain: "acme.example",
-      brief: BRIEF_OUTPUT,
+      brief: BRIEF_OUTPUT_CANONICAL,
       keyword: null,
+      settings: undefined,
     });
     expect(mockMarkSucceeded).toHaveBeenCalledWith("job-5", ARTICLE_OUTPUT);
   });
@@ -192,8 +206,9 @@ describe("runAiGenerationJob — CONTENT_DRAFT", () => {
       seoProjectId: "project-1",
       seoProjectName: "Acme SEO",
       domain: "acme.example",
-      brief: BRIEF_OUTPUT,
+      brief: BRIEF_OUTPUT_CANONICAL,
       keyword: { term: "emergency plumber austin", intent: "COMMERCIAL" },
+      settings: undefined,
     });
     expect(mockMarkSucceeded).toHaveBeenCalledWith("job-6", ARTICLE_OUTPUT);
   });

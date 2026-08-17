@@ -1,16 +1,20 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { z as zv4 } from "zod/v4";
 
 import { actionError, actionSuccess, type ActionResult } from "@/lib/action-result";
 import { logActivity } from "@/lib/activity";
 import { LlmProviderError, describeLlmError } from "@/lib/ai/providers/errors";
+import { generateStructuredOutput } from "@/lib/ai/structured-output";
 import { requireUser } from "@/lib/auth";
 import { Permissions } from "@/lib/authorization";
 import { prisma } from "@/lib/prisma";
 import { computeInputHash, createAiGenerationJob, findActiveAiGenerationJob } from "@/lib/jobs/ai-generation-job-table";
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
-import { generateContentBrief } from "@/features/ai-workspace/services/content-brief.service";
+import { buildPrompt, CONTENT_BRIEF_SYSTEM_PROMPT, generateContentBrief, PROMPT_VERSION } from "@/features/ai-workspace/services/content-brief.service";
+import { faqItemSchema, type RegenerateBriefField } from "@/features/ai-workspace/schemas/content-brief-output-builder";
+import type { ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import {
   contentBriefInputSchema,
   type ContentBriefInput,
@@ -143,6 +147,8 @@ export type SaveContentBriefInput = {
   seoProjectId: string;
   keywordId?: string;
   brief: ContentBriefOutput;
+  /** Phase 21 — the settings this brief was generated with, persisted so a later regeneration/long-form session can reconstruct the same toggles. Omitted for pre-Phase-21 callers. */
+  settings?: ContentBriefSettings;
 };
 
 /**
@@ -185,6 +191,15 @@ export async function saveContentBriefAction(input: SaveContentBriefInput): Prom
         seoRecommendations: input.brief.seoRecommendations,
         geoAeoNotes: input.brief.geoAeoNotes,
         suggestedSearchIntent: input.brief.suggestedSearchIntent,
+        conclusion: input.brief.conclusion,
+        ctaPlacementSuggestion: input.brief.ctaPlacementSuggestion,
+        externalSources: input.brief.externalSources,
+        faq: input.brief.faq,
+        keyTakeaways: input.brief.keyTakeaways,
+        schemaSuggestions: input.brief.schemaSuggestions,
+        statistics: input.brief.statistics,
+        examples: input.brief.examples,
+        briefSettings: input.settings,
       },
       keywords: input.keywordId ? { connect: [{ id: input.keywordId }] } : undefined,
     },
@@ -202,4 +217,138 @@ export async function saveContentBriefAction(input: SaveContentBriefInput): Prom
   revalidatePath(`/seo/${seoProject.id}/content`);
   revalidatePath("/ai");
   return actionSuccess({ id: content.id });
+}
+
+/**
+ * Phase 21 §12 — renders the exact prompt a real generation would send,
+ * WITHOUT calling any provider (zero cost, instant). Gated behind the
+ * existing SUPER_ADMIN-only Permissions.manageCompanies check (reused, not
+ * a new permission) — same visibility pattern as Phase 19's
+ * CompanyAiLimitsForm.
+ */
+export async function previewContentBriefPromptAction(input: ContentBriefInput): Promise<ActionResult<{ prompt: string }>> {
+  const actor = await requireUser();
+  if (!Permissions.manageCompanies(actor.role)) {
+    return actionError("Only Super Admins can preview the AI prompt.");
+  }
+
+  const parsed = contentBriefInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionError(parsed.error.issues[0]?.message ?? "Invalid input");
+  }
+
+  const seoProject = await getOwnedSeoProject(parsed.data.seoProjectId, actor.companyId);
+  if (!seoProject) {
+    return actionError("SEO project not found.");
+  }
+
+  let keyword: { term: string; intent: string | null } | null = null;
+  if (parsed.data.keywordId) {
+    const owned = await getOwnedKeyword(parsed.data.keywordId, seoProject.id);
+    if (!owned) {
+      return actionError("Keyword not found for this SEO project.");
+    }
+    keyword = { term: owned.term, intent: owned.intent };
+  }
+
+  const prompt = buildPrompt({
+    seoProjectId: seoProject.id,
+    companyId: actor.companyId,
+    seoProjectName: seoProject.name,
+    domain: seoProject.domain,
+    contentType: parsed.data.contentType,
+    keyword,
+    notes: parsed.data.notes,
+    settings: parsed.data.settings,
+  });
+  return actionSuccess({ prompt });
+}
+
+/**
+ * Phase 21 §15 — deliberately a field→narrow-schema map rather than one
+ * hardcoded function per field, so a future AI Workspace tool can reuse
+ * the same "narrow dynamic schema + synchronous single call" pattern by
+ * adding its own map entry rather than a new mechanism. The model is never
+ * asked for CTA copy — see contentBriefCtaSchema's comment.
+ */
+export type { RegenerateBriefField };
+
+const REGENERATE_FIELD_SCHEMAS: Record<RegenerateBriefField, () => zv4.ZodTypeAny> = {
+  title: () => zv4.object({ title: zv4.string() }),
+  metaTitle: () => zv4.object({ metaTitle: zv4.string() }),
+  metaDescription: () => zv4.object({ metaDescription: zv4.string() }),
+  outline: () => zv4.object({ outline: zv4.array(zv4.string()) }),
+  faq: () => zv4.object({ faq: zv4.array(faqItemSchema) }),
+  cta: () => zv4.object({ ctaPlacementSuggestion: zv4.string() }),
+};
+
+export type RegenerateBriefFieldInput = {
+  seoProjectId: string;
+  keywordId?: string;
+  contentType: ContentBriefInput["contentType"];
+  notes?: string;
+  currentBrief: ContentBriefOutput;
+  field: RegenerateBriefField;
+};
+
+/**
+ * Regenerates exactly one field of an already-generated brief, in place —
+ * a materially smaller/faster call than a full brief (narrow schema,
+ * shorter prompt), so this stays synchronous rather than job-backed (no
+ * polling-UX needed for a call this fast). Reuses taskType "CONTENT_BRIEF"
+ * — this is the same underlying activity, not a new task class; AiUsageLog
+ * still tracks its cost.
+ */
+export async function regenerateBriefFieldAction(input: RegenerateBriefFieldInput): Promise<ActionResult<ContentBriefOutput>> {
+  const actor = await requireUser();
+  if (!Permissions.manageSeoProjects(actor.role)) {
+    return actionError("You do not have permission to generate AI content.");
+  }
+
+  const seoProject = await getOwnedSeoProject(input.seoProjectId, actor.companyId);
+  if (!seoProject) {
+    return actionError("SEO project not found.");
+  }
+
+  let keyword: { term: string; intent: string | null } | null = null;
+  if (input.keywordId) {
+    const owned = await getOwnedKeyword(input.keywordId, seoProject.id);
+    if (!owned) {
+      return actionError("Keyword not found for this SEO project.");
+    }
+    keyword = { term: owned.term, intent: owned.intent };
+  }
+
+  const basePrompt = buildPrompt({
+    seoProjectId: seoProject.id,
+    companyId: actor.companyId,
+    seoProjectName: seoProject.name,
+    domain: seoProject.domain,
+    contentType: input.contentType,
+    keyword,
+    notes: input.notes,
+  });
+
+  const prompt = `${basePrompt}
+
+Here is the CURRENT brief, already generated and under human review:
+${JSON.stringify(input.currentBrief, null, 2)}
+
+Regenerate ONLY the "${input.field}" field above. Keep it consistent with everything else in the current brief. Do not change or comment on any other field.`;
+
+  try {
+    const patch = await generateStructuredOutput(REGENERATE_FIELD_SCHEMAS[input.field](), {
+      system: CONTENT_BRIEF_SYSTEM_PROMPT,
+      prompt,
+      maxTokens: 800,
+      taskType: "CONTENT_BRIEF",
+      promptVersion: PROMPT_VERSION,
+      seoProjectId: seoProject.id,
+      companyId: actor.companyId,
+    });
+    return actionSuccess({ ...input.currentBrief, ...(patch as Partial<ContentBriefOutput>) });
+  } catch (error) {
+    const errorType = error instanceof LlmProviderError ? error.type : "UNKNOWN";
+    return actionError(describeLlmError(errorType).message);
+  }
 }

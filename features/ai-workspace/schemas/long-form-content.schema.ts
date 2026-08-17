@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { z as zv4 } from "zod/v4";
 
+import { faqItemSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
+import { contentBriefSettingsSchema } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { optionalString } from "@/lib/zod-helpers";
 
 /**
@@ -16,6 +18,8 @@ import { optionalString } from "@/lib/zod-helpers";
 export const generateLongFormFromBriefContextSchema = z.object({
   seoProjectId: z.string().min(1, "Select an SEO project"),
   keywordId: optionalString(),
+  /** Phase 21 — the same settings the brief was generated with; optional so a caller that omits it reproduces Phase 20's fixed-shape behavior exactly. */
+  settings: contentBriefSettingsSchema.optional(),
 });
 
 export type GenerateLongFormFromBriefContext = z.infer<typeof generateLongFormFromBriefContextSchema>;
@@ -50,6 +54,15 @@ export type LongFormSaveFields = z.infer<typeof longFormSaveFieldsSchema>;
  * grammar too large" provider error seo-audit.schema.ts's comment
  * documents for a more heavily nested schema.
  */
+/**
+ * The CANONICAL long-form output shape — a superset of whatever a single
+ * generation request actually asked for, same reasoning as
+ * content-brief.schema.ts's contentBriefOutputSchema. `conclusion`/`faq`
+ * were unconditional through Phase 20; Phase 21 gates both behind the same
+ * `sections` toggles the brief uses, so both are optional/defaulted here.
+ * The actual per-request schema is narrower — see
+ * long-form-output-builder.ts's buildLongFormOutputSchema.
+ */
 export const longFormContentOutputSchema = zv4.object({
   introduction: zv4.string(),
   sections: zv4.array(
@@ -58,16 +71,14 @@ export const longFormContentOutputSchema = zv4.object({
       body: zv4.string(),
     })
   ),
-  conclusion: zv4.string(),
-  /** Null when a FAQ section isn't a natural fit for this topic — the model decides this, not a fixed toggle. */
-  faq: zv4
-    .array(
-      zv4.object({
-        question: zv4.string(),
-        answer: zv4.string(),
-      })
-    )
-    .nullable(),
+  conclusion: zv4.string().optional(),
+  faq: zv4.array(faqItemSchema).default([]),
+  keyTakeaways: zv4.array(zv4.string()).default([]),
+  imagePlaceholders: zv4.array(zv4.string()).default([]),
+  altTextSuggestions: zv4.array(zv4.string()).default([]),
+  featuredImagePrompt: zv4.string().optional(),
+  socialSnippets: zv4.array(zv4.string()).default([]),
+  excerpt: zv4.string().optional(),
   /** Informational for the human reviewer only — never written into the saved body (see formatLongFormContentAsMarkdown). */
   internalLinkPlacementSuggestions: zv4.array(zv4.string()),
 });
@@ -75,23 +86,60 @@ export const longFormContentOutputSchema = zv4.object({
 export type LongFormContentOutput = zv4.infer<typeof longFormContentOutputSchema>;
 
 /**
+ * User-supplied CTA fields, rendered deterministically by our own code —
+ * never handed to the model to paraphrase. See contentBriefCtaSchema.
+ */
+export type LongFormCta = {
+  title?: string;
+  text?: string;
+  buttonText?: string;
+  url?: string;
+  phone?: string;
+  email?: string;
+};
+
+function formatCtaBlock(cta: LongFormCta): string | null {
+  const lines: string[] = [];
+  if (cta.title) lines.push(`### ${cta.title}`);
+  if (cta.text) lines.push(cta.text);
+  if (cta.buttonText && cta.url) lines.push(`[${cta.buttonText}](${cta.url})`);
+  else if (cta.buttonText) lines.push(`**${cta.buttonText}**`);
+  if (cta.phone) lines.push(`Call: ${cta.phone}`);
+  if (cta.email) lines.push(`Email: ${cta.email}`);
+  return lines.length > 0 ? lines.join("\n\n") : null;
+}
+
+/**
  * Flattens the structured AI output into one Markdown string — the only
  * representation ever persisted to Content.body. The structured object
  * itself lives only in memory during generation/review; storage stays a
- * single plain-text column with no new editor dependency.
+ * single plain-text column with no new editor dependency. When `cta` is
+ * provided, its literal user-supplied fields are appended verbatim — the
+ * model never writes this text itself.
  */
-export function formatLongFormContentAsMarkdown(article: LongFormContentOutput): string {
+export function formatLongFormContentAsMarkdown(article: LongFormContentOutput, cta?: LongFormCta): string {
   const parts: string[] = [article.introduction];
 
   for (const section of article.sections) {
     parts.push(`## ${section.heading}\n\n${section.body}`);
   }
 
-  parts.push(`## Conclusion\n\n${article.conclusion}`);
+  if (article.keyTakeaways.length > 0) {
+    parts.push(`## Key Takeaways\n\n${article.keyTakeaways.map((item) => `- ${item}`).join("\n")}`);
+  }
 
-  if (article.faq && article.faq.length > 0) {
+  if (article.conclusion) {
+    parts.push(`## Conclusion\n\n${article.conclusion}`);
+  }
+
+  if (article.faq.length > 0) {
     const faqBody = article.faq.map((item) => `**${item.question}**\n\n${item.answer}`).join("\n\n");
     parts.push(`## FAQ\n\n${faqBody}`);
+  }
+
+  if (cta) {
+    const ctaBlock = formatCtaBlock(cta);
+    if (ctaBlock) parts.push(ctaBlock);
   }
 
   return parts.join("\n\n");

@@ -1,4 +1,5 @@
 import { contentBriefInputSchema, contentBriefOutputSchema, type ContentBriefInput, type ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
+import type { ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { generateLongFormFromBriefContextSchema } from "@/features/ai-workspace/schemas/long-form-content.schema";
 
 /**
@@ -20,7 +21,7 @@ import { generateLongFormFromBriefContextSchema } from "@/features/ai-workspace/
 export type ContentBriefJobInput = ContentBriefInput;
 
 export type LongFormJobInput =
-  | { mode: "fromBrief"; seoProjectId: string; keywordId?: string; brief: ContentBriefOutput }
+  | { mode: "fromBrief"; seoProjectId: string; keywordId?: string; brief: ContentBriefOutput; settings?: ContentBriefSettings }
   | { mode: "fromContent"; contentId: string };
 
 export type JobInputValidationResult<T> = { success: true; data: T } | { success: false; message: string };
@@ -47,7 +48,11 @@ export function validateLongFormJobInput(input: unknown): JobInputValidationResu
   }
 
   if (raw.mode === "fromBrief") {
-    const parsedContext = generateLongFormFromBriefContextSchema.safeParse({ seoProjectId: raw.seoProjectId, keywordId: raw.keywordId });
+    const parsedContext = generateLongFormFromBriefContextSchema.safeParse({
+      seoProjectId: raw.seoProjectId,
+      keywordId: raw.keywordId,
+      settings: raw.settings,
+    });
     if (!parsedContext.success) {
       return { success: false, message: parsedContext.error.issues[0]?.message ?? "Invalid input" };
     }
@@ -62,6 +67,7 @@ export function validateLongFormJobInput(input: unknown): JobInputValidationResu
         seoProjectId: parsedContext.data.seoProjectId,
         keywordId: parsedContext.data.keywordId,
         brief: parsedBrief.data,
+        settings: parsedContext.data.settings,
       },
     };
   }

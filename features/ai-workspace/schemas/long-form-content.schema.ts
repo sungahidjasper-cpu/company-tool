@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { z as zv4 } from "zod/v4";
 
-import { faqItemSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
+import { faqItemSchema, internalLinkSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { contentBriefSettingsSchema } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { optionalString } from "@/lib/zod-helpers";
 
@@ -79,8 +79,8 @@ export const longFormContentOutputSchema = zv4.object({
   featuredImagePrompt: zv4.string().optional(),
   socialSnippets: zv4.array(zv4.string()).default([]),
   excerpt: zv4.string().optional(),
-  /** Informational for the human reviewer only — never written into the saved body (see formatLongFormContentAsMarkdown). */
-  internalLinkPlacementSuggestions: zv4.array(zv4.string()),
+  /** Informational for the human reviewer only — never written into the saved body (see formatLongFormContentAsMarkdown). Structured the same way as the brief's own internalLinkSuggestions (content-brief-output-builder.ts). */
+  internalLinkPlacementSuggestions: zv4.array(internalLinkSchema).default([]),
 });
 
 export type LongFormContentOutput = zv4.infer<typeof longFormContentOutputSchema>;

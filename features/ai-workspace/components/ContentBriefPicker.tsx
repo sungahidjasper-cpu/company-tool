@@ -21,6 +21,7 @@ import {
   WORD_COUNT_TARGETS,
   type ContentBriefSettings,
 } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
+import type { InternalLinkSuggestion } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { CONTENT_BRIEF_TYPES, contentBriefOutputSchema, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { formatLongFormContentAsMarkdown, longFormContentOutputSchema } from "@/features/ai-workspace/schemas/long-form-content.schema";
 import { formatEnumLabel } from "@/lib/utils";
@@ -96,7 +97,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
   // persisted until handleSaveLongForm; runGenerateLongForm/regenerate
   // never touch the database.
   const [longFormFields, setLongFormFields] = useState<LongFormEditableFields | null>(null);
-  const [linkSuggestions, setLinkSuggestions] = useState<string[]>([]);
+  const [linkSuggestions, setLinkSuggestions] = useState<InternalLinkSuggestion[]>([]);
   const [draftExtras, setDraftExtras] = useState<LongFormDraftExtras | undefined>(undefined);
   const [isGeneratingLongForm, setIsGeneratingLongForm] = useState(false);
   const [isSavingLongForm, setIsSavingLongForm] = useState(false);

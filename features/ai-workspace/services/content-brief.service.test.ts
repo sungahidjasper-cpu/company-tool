@@ -86,6 +86,37 @@ describe("generateContentBrief", () => {
     expect(options.prompt).toContain("150-160 characters");
   });
 
+  it("gives the meta description a concrete two-sentence structure to reach the required length, not just a character-count target", async () => {
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+    await generateContentBrief(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("one sentence stating what this content covers plus one sentence stating the concrete benefit or outcome");
+  });
+
+  it("instructs the model to count only visible reader-facing words toward the meta title/description length, never a configuration value", async () => {
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+    await generateContentBrief(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("count ONLY the visible words a reader would actually see in that field");
+  });
+
+  it("instructs the model, in the system prompt, never to invent statistics/figures (including in FAQ answers) or mischaracterize a real company as a generic category", async () => {
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+    await generateContentBrief(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.system).toContain("Never state a specific market statistic, percentage, financial figure, or industry data point");
+    expect(options.system).toContain("including inside FAQ answers and statistic angles");
+    expect(options.system).toContain("Never characterize a specific real company or brand name as a generic category, product type, or common noun");
+  });
+
+  it("instructs the model to never echo configuration values (e.g. the word-count target) into the title/meta fields", async () => {
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+    await generateContentBrief(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("Never include internal instructions, configuration labels, word-count targets");
+    expect(options.prompt).toContain("must never be appended to or quoted inside the title or meta title");
+  });
+
   it("still generates a brief from notes alone when no keyword is selected (ad-hoc topic)", async () => {
     mockGenerate.mockResolvedValue(BRIEF_RESULT);
 
@@ -140,5 +171,24 @@ describe("generateContentBrief", () => {
     const shapeKeys = Object.keys((schema as zv4.ZodObject<Record<string, zv4.ZodTypeAny>>).shape);
     expect(shapeKeys).not.toContain("faq");
     expect(shapeKeys).toContain("internalLinkSuggestions");
+  });
+
+  it("strips a leaked configuration/numbering artifact from title, metaTitle, outline, suggestedHeadings, and FAQ questions after generation", async () => {
+    mockGenerate.mockResolvedValue({
+      ...BRIEF_RESULT,
+      title: "1. 10 Ways to Improve Local SEO",
+      metaTitle: "10 Ways to Improve Local SEO | 1500 words",
+      outline: ["1.1. Introduction", "2. Tactics"],
+      suggestedHeadings: ["3) What is local SEO?"],
+      faq: [{ question: "1. What is local SEO?", answer: "It's optimizing for local search." }],
+    });
+
+    const result = await generateContentBrief(BASE_CTX);
+
+    expect(result.title).toBe("10 Ways to Improve Local SEO");
+    expect(result.metaTitle).toBe("10 Ways to Improve Local SEO");
+    expect(result.outline).toEqual(["Introduction", "Tactics"]);
+    expect(result.suggestedHeadings).toEqual(["What is local SEO?"]);
+    expect(result.faq[0].question).toBe("What is local SEO?");
   });
 });

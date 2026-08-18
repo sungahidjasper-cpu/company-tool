@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import { startLongFormGenerationAction, updateLongFormContentAction } from "@/features/ai-workspace/actions/long-form-content.actions";
 import LongFormContentReview, { type LongFormDraftExtras, type LongFormEditableFields } from "@/features/ai-workspace/components/LongFormContentReview";
+import type { InternalLinkSuggestion } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import type { ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { formatLongFormContentAsMarkdown, longFormContentOutputSchema } from "@/features/ai-workspace/schemas/long-form-content.schema";
 
@@ -41,7 +42,7 @@ export default function ExistingBriefLongFormGenerator({
 }: ExistingBriefLongFormGeneratorProps) {
   const router = useRouter();
   const [longFormFields, setLongFormFields] = useState<LongFormEditableFields | null>(null);
-  const [linkSuggestions, setLinkSuggestions] = useState<string[]>([]);
+  const [linkSuggestions, setLinkSuggestions] = useState<InternalLinkSuggestion[]>([]);
   const [draftExtras, setDraftExtras] = useState<LongFormDraftExtras | undefined>(undefined);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);

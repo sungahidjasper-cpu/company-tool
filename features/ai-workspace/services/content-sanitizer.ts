@@ -1,0 +1,79 @@
+/**
+ * Deterministic cleanup for generation-configuration artifacts that a prompt
+ * instruction alone cannot guarantee never leak into visible content (e.g.
+ * "| 1500 words" appended to a meta title, or "1.1." outline numbering
+ * leaking into a heading/FAQ question). Prompt wording measurably reduces
+ * how often this happens but cannot mathematically guarantee it against a
+ * small/weak fallback model — this pure, regex-based pass is the actual
+ * guarantee for this narrow, mechanically-detectable class of defect only.
+ * It never touches ordinary prose (only exact trailing/leading patterns),
+ * so it carries no risk of stripping real content.
+ */
+
+const TRAILING_WORD_COUNT_SUFFIX = /\s*(?:[|\-–—]\s*\d[\d,]*\s*words?\.?|\(\s*\d[\d,]*\s*words?\s*\))\s*$/i;
+
+// Only strips numbering shaped like outline numbering — a multi-level
+// "1.1." / "2.3" prefix, or a single top-level number immediately followed
+// by "." or ")" (e.g. "1. Introduction", "3) Case Studies"). Deliberately
+// does NOT match a bare number followed by a space (e.g. "10 Ways to..."),
+// which is ordinary heading content, not a numbering artifact.
+const LEADING_OUTLINE_NUMBER = /^\s*(?:\d+(?:\.\d+)+\.?\s+|\d+[.)]\s+)/;
+
+export function stripConfigurationArtifacts(text: string): string {
+  let result = text;
+  let previous: string;
+  do {
+    previous = result;
+    result = result.replace(TRAILING_WORD_COUNT_SUFFIX, "");
+  } while (result !== previous);
+  result = result.replace(LEADING_OUTLINE_NUMBER, "");
+  return result.trim();
+}
+
+// Section headings whose content is already owned by a dedicated output
+// field (conclusion/faq/keyTakeaways) and appended separately by
+// formatLongFormContentAsMarkdown, plus "resources"-style headings this
+// app has no configured section for at all. Matched only after an exact
+// normalize (trim, lowercase, drop trailing punctuation) — deliberately
+// not a substring/fuzzy match, so a real heading like "Financial Resources
+// You'll Need" is never mistaken for one of these and dropped.
+const RESERVED_SECTION_HEADINGS = new Set([
+  "conclusion",
+  "in conclusion",
+  "concluding thoughts",
+  "final thoughts",
+  "faq",
+  "faqs",
+  "frequently asked questions",
+  "key takeaways",
+  "takeaways",
+  "main takeaways",
+  "resources",
+  "additional resources",
+  "further resources",
+  "further reading",
+  "references",
+  "sources",
+  "helpful resources",
+]);
+
+function normalizeSectionHeading(heading: string): string {
+  return heading.trim().toLowerCase().replace(/[:.!?]+$/, "");
+}
+
+/**
+ * A weak fallback model sometimes writes its own free-form "Conclusion" /
+ * "FAQ" / "Key Takeaways" / "Resources"-style entry inside the open-ended
+ * sections[] array, in addition to correctly filling the dedicated
+ * conclusion/faq/keyTakeaways fields. Because formatLongFormContentAsMarkdown
+ * appends those dedicated fields unconditionally after the sections loop,
+ * an unfiltered duplicate renders the same heading twice (or, for
+ * "Resources" — a section this app has no toggle for at all — an
+ * unrequested section with an unverifiable placeholder link). The
+ * dedicated fields are the single source of truth for these regardless of
+ * which section toggles are on, so any sections[] entry matching one of
+ * these reserved names is dropped entirely, never merged or renamed.
+ */
+export function filterReservedSections<T extends { heading: string }>(sections: T[]): T[] {
+  return sections.filter((section) => !RESERVED_SECTION_HEADINGS.has(normalizeSectionHeading(section.heading)));
+}

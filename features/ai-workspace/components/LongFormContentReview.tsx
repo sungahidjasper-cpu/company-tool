@@ -5,10 +5,22 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { computeWordCount } from "@/features/ai-workspace/services/seo-checklist.service";
+import type { InternalLinkSuggestion } from "@/features/ai-workspace/schemas/content-brief-output-builder";
+import { checkMetaLengths, computeWordCount } from "@/features/ai-workspace/services/seo-checklist.service";
 
 const textareaClassName =
   "w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm";
+
+/** Same pattern as ContentBriefReview.tsx's CounterBadge — duplicated, not shared, matching this codebase's established precedent for small presentational helpers. */
+function CounterBadge({ length, min, max }: { length: number; min: number; max: number }) {
+  const status = length < min ? "TOO_SHORT" : length > max ? "TOO_LONG" : "OK";
+  const color = status === "OK" ? "text-emerald-600" : "text-amber-600";
+  return (
+    <span className={`text-xs ${color}`}>
+      {length}/{min}-{max} chars {status === "OK" ? "✅" : "⚠"}
+    </span>
+  );
+}
 
 export type LongFormEditableFields = {
   title: string;
@@ -30,7 +42,7 @@ type LongFormContentReviewProps = {
   fields: LongFormEditableFields;
   onChange: (fields: LongFormEditableFields) => void;
   /** Reviewer-only context, never saved into Content.body — see formatLongFormContentAsMarkdown. */
-  internalLinkPlacementSuggestions: string[];
+  internalLinkPlacementSuggestions: InternalLinkSuggestion[];
   draftExtras?: LongFormDraftExtras;
   /** The word-count target this article was generated for (Phase 21 §4) — purely informational, never a regenerate-until-in-range gate. */
   targetWordCount?: number;
@@ -66,6 +78,7 @@ export default function LongFormContentReview({
 }: LongFormContentReviewProps) {
   const busy = isRegenerating || isSaving;
   const actualWordCount = useMemo(() => computeWordCount(fields.body), [fields.body]);
+  const lengths = useMemo(() => checkMetaLengths(fields), [fields]);
 
   async function copyAsMarkdown() {
     await navigator.clipboard.writeText(fields.body);
@@ -88,9 +101,12 @@ export default function LongFormContentReview({
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label htmlFor="longform-meta-title" className="text-sm font-medium">
-          Meta title
-        </label>
+        <div className="flex items-center justify-between">
+          <label htmlFor="longform-meta-title" className="text-sm font-medium">
+            Meta title
+          </label>
+          <CounterBadge length={lengths.metaTitle.length} min={lengths.metaTitle.min} max={lengths.metaTitle.max} />
+        </div>
         <Input
           id="longform-meta-title"
           value={fields.metaTitle}
@@ -99,9 +115,12 @@ export default function LongFormContentReview({
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label htmlFor="longform-meta-description" className="text-sm font-medium">
-          Meta description
-        </label>
+        <div className="flex items-center justify-between">
+          <label htmlFor="longform-meta-description" className="text-sm font-medium">
+            Meta description
+          </label>
+          <CounterBadge length={lengths.metaDescription.length} min={lengths.metaDescription.min} max={lengths.metaDescription.max} />
+        </div>
         <textarea
           id="longform-meta-description"
           rows={2}
@@ -127,11 +146,16 @@ export default function LongFormContentReview({
       {internalLinkPlacementSuggestions.length > 0 && (
         <div className="flex flex-col gap-1.5 rounded-lg border border-slate-200 bg-slate-50 p-3">
           <p className="text-sm font-medium text-slate-700">Internal-link placement suggestions (for your reference — not saved into the article)</p>
-          <ul className="list-inside list-disc text-sm text-slate-600">
+          <div className="flex flex-col gap-2">
             {internalLinkPlacementSuggestions.map((suggestion, index) => (
-              <li key={index}>{suggestion}</li>
+              <div key={index} className="rounded-lg border border-slate-200 bg-white p-2 text-sm">
+                <p className="font-medium text-slate-700">{suggestion.anchorText || "(no anchor text)"}</p>
+                <p className="text-slate-500">
+                  → {suggestion.targetPage || "(page TBD)"} · {suggestion.reason} · {suggestion.placement} · priority: {suggestion.priority}
+                </p>
+              </div>
             ))}
-          </ul>
+          </div>
         </div>
       )}
 

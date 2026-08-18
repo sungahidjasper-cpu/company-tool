@@ -1,6 +1,6 @@
 import { z as zv4 } from "zod/v4";
 
-import { faqItemSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
+import { faqItemSchema, internalLinkSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import type { ContentBriefSections, ContentDraftOptions } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 
 const BASE_LONG_FORM_SHAPE = {
@@ -11,8 +11,8 @@ const BASE_LONG_FORM_SHAPE = {
       body: zv4.string(),
     })
   ),
-  /** Informational for the human reviewer only — never written into the saved body (see formatLongFormContentAsMarkdown). */
-  internalLinkPlacementSuggestions: zv4.array(zv4.string()),
+  /** Informational for the human reviewer only — never written into the saved body (see formatLongFormContentAsMarkdown). Structured the same way as the brief's own internalLinkSuggestions (content-brief-output-builder.ts). */
+  internalLinkPlacementSuggestions: zv4.array(internalLinkSchema),
 };
 
 /**

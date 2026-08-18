@@ -3,6 +3,7 @@ import type { StreamEvent } from "@/lib/ai/providers/types";
 import { buildContentBriefOutputSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { DEFAULT_CONTENT_BRIEF_SETTINGS, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { contentBriefOutputSchema, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
+import { stripConfigurationArtifacts } from "@/features/ai-workspace/services/content-sanitizer";
 
 /**
  * Bumped whenever the prompt template below changes — same convention as
@@ -11,10 +12,10 @@ import { contentBriefOutputSchema, type ContentBriefOutput, type ContentBriefTyp
  * equivalent exists for this task; every "Generate"/"Regenerate" click is
  * a fresh call).
  */
-export const PROMPT_VERSION = 2;
+export const PROMPT_VERSION = 5;
 
 export const CONTENT_BRIEF_SYSTEM_PROMPT =
-  "You are a senior SEO content strategist. Produce a practical, concrete content brief grounded strictly in the provided project/keyword context. Never invent products, services, or facts not evidenced in the input. Never invent a URL, citation, or source you cannot verify — describe what kind of source to add instead. This is a BRIEF — outlines, headings, and suggestions, not a full drafted article body.";
+  "You are a senior SEO content strategist. Produce a practical, concrete content brief grounded strictly in the provided project/keyword context. Never invent products, services, or facts not evidenced in the input. Never state a specific market statistic, percentage, financial figure, or industry data point (e.g. occupancy rates, unit pricing, market share) unless it is present in the supplied context — describe such things qualitatively instead of inventing a number, including inside FAQ answers and statistic angles. Never characterize a specific real company or brand name as a generic category, product type, or common noun — if a real company name appears in the supplied context, refer to it accurately as a company/organization, not as a type of product or service. Never invent a URL, citation, or source you cannot verify — describe what kind of source to add instead. This is a BRIEF — outlines, headings, and suggestions, not a full drafted article body.";
 
 export type ContentBriefContext = {
   /** Provenance for the AiUsageLog row — the project this brief is for. Never a WebsiteAnalysisJob, since this task has none. */
@@ -125,7 +126,7 @@ export function buildPrompt(ctx: ContentBriefContext): string {
 
   const requirements = [
     "1. A working title.",
-    "2. A meta title of EXACTLY 50-60 characters (never shorter than 50, never longer than 60) and a meta description of EXACTLY 150-160 characters (never shorter than 150, never longer than 160). Count characters carefully before finalizing these two fields — these are hard SEO display limits, not approximations.",
+    "2. A meta title of EXACTLY 50-60 characters (never shorter than 50, never longer than 60) and a meta description of EXACTLY 150-160 characters (never shorter than 150, never longer than 160). Count characters carefully before finalizing these two fields — these are hard SEO display limits, not approximations. When counting, count ONLY the visible words a reader would actually see in that field — never include the word-count target, character-count target, or any other configuration value as part of that count or as literal text within the field itself. For the meta description specifically, write one sentence stating what this content covers plus one sentence stating the concrete benefit or outcome for the reader — that two-sentence combination is what reaches 150-160 characters; a single short sentence will fall short.",
     "3. An outline (ordered list of section names) matching the outline structure below.",
     "4. A separate list of suggested subheadings within those sections.",
     "5. A short list of SEO recommendations specific to this piece (not generic advice).",
@@ -150,7 +151,9 @@ ${ctx.notes ? `Additional context/notes from the requester: ${ctx.notes}` : "No 
 ${buildSettingsClauses(settings).join("\n")}
 
 Using ONLY the information above, produce a content brief with:
-${requirements.join("\n")}`;
+${requirements.join("\n")}
+
+Never include internal instructions, configuration labels, word-count targets, character-count numbers, section-count settings, or any other generation parameter as literal text anywhere in the title, meta title, meta description, outline, or any other field — these values guide you but must never appear as visible content. For example, a target word count is information for you alone; it must never be appended to or quoted inside the title or meta title.`;
 }
 
 /**
@@ -180,5 +183,15 @@ export async function generateContentBrief(ctx: ContentBriefContext, onChunk?: (
   // ContentBriefOutput shape — reparsing through it fills in every
   // disabled-section field with its default ([] / "") so callers never see
   // an undefined array/string just because that section wasn't requested.
-  return contentBriefOutputSchema.parse(result);
+  const parsed = contentBriefOutputSchema.parse(result);
+  // Deterministic cleanup for the one class of defect a prompt instruction
+  // alone can't guarantee against — see content-sanitizer.ts.
+  return {
+    ...parsed,
+    title: stripConfigurationArtifacts(parsed.title),
+    metaTitle: stripConfigurationArtifacts(parsed.metaTitle),
+    outline: parsed.outline.map(stripConfigurationArtifacts),
+    suggestedHeadings: parsed.suggestedHeadings.map(stripConfigurationArtifacts),
+    faq: parsed.faq.map((item) => ({ ...item, question: stripConfigurationArtifacts(item.question) })),
+  };
 }

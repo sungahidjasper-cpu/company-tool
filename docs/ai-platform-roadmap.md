@@ -2,13 +2,15 @@
 
 Tracks the roadmap produced by the post-Phase-17 architectural review of the AI Workspace and surrounding AI infrastructure. That review covered current architecture, technical debt, production readiness, multi-provider strategy, observability, and scalability, and proposed Phases 18–25 below. Phases 18 and 19 were flagged as essential before a real multi-tenant launch; this file is the persistent tracker for status as each phase ships (the review itself was delivered as a point-in-time analysis, not saved as a file).
 
+Note: as actually delivered, Phase 21 diverged from this roadmap's original "Enhanced Observability" placeholder — it shipped instead as *Configurable Content Brief & Long-Form Draft Generation* (see below). Enhanced Observability was not part of what shipped under that name and remains unscoped. Phase 22 ("Streaming") matched its original placeholder.
+
 | Phase | Name | Priority | Status |
 |---|---|---|---|
 | 18 | Background Job Architecture for AI Generation | Essential | **Complete** — `6756ddb` |
 | 19 | Per-Company AI Cost Controls & Rate Limiting | Essential | **Complete** — `0dda410` |
-| 20 | Multi-Provider Production Readiness | High | Implemented, verified — awaiting commit |
-| 21 | Enhanced Observability | Medium | Not started |
-| 22 | Streaming | Medium | Not started |
+| 20 | Multi-Provider Production Readiness | High | **Complete, committed & pushed** — `420d806` |
+| 21 | Configurable Content Brief & Long-Form Draft Generation (renamed from "Enhanced Observability" — see note above) | High | **Complete, committed & pushed** — `e582f87`. Post-ship content-quality fixes: see [phase-21-content-quality-fixes.md](phase-21-content-quality-fixes.md) |
+| 22 | Streaming | Medium | **Stage 1 complete, committed & pushed** — `2d4d2d2`. Stage 2 not started |
 | 23 | UX Maturation | Medium | Not started |
 | 24 | Publishing / Distribution | Low | Not started |
 | 25 | Version History | Low | Not started |
@@ -27,11 +29,23 @@ Closed the Anthropic hardcoded-model gap (`ANTHROPIC_MODEL` is now env-configura
 
 Live-verified with two real, live providers: Gemini's key was deliberately invalidated, and a real generation request genuinely fell back to a locally-installed Ollama instance (`llama3.2:1b`) and completed successfully — confirmed via the `AiUsageLog` audit trail (a failed `gemini`/`AUTHENTICATION_ERROR` row followed by a succeeded `ollama` row). Also preceded by a full architecture review (Project vs. SEOProject data-source question, AI-tool infrastructure-sharing audit, UI/performance/security audit) that found no blockers for this phase and surfaced several pre-existing, out-of-scope backlog items tracked separately.
 
-## Phases 21–25
+## Phase 21 — Configurable Content Brief & Long-Form Draft Generation
+
+Made the previously fixed-shape Content Brief / Long-Form generation fully configurable per request: word-count target, reading level, brand voice, outline structure (H2/H3 counts, comparison table/checklist/numbered-process/pros-cons toggles), FAQ count/style, per-section toggles (FAQ, conclusion, CTA, key takeaways, internal links, external sources, schema suggestions, statistics, examples), quality controls (EEAT, featured-snippet/AI-overview/GEO/AEO/semantic-SEO optimization), and draft options (image placeholders, alt text, featured-image prompt, social snippets, excerpt). `ContentBriefSettings` schema plus `buildContentBriefOutputSchema`/`buildLongFormOutputSchema` narrow the AI structured-output schema to exactly what's enabled per request. A CTA trust boundary was established: the model is only ever asked to suggest CTA *placement*, never CTA copy — the user's literal CTA fields are spliced in deterministically by `formatLongFormContentAsMarkdown`/`formatCtaBlock`, never by the AI.
+
+Committed and pushed as `e582f87`. Live testing after ship surfaced content-quality defects in the generated output (short articles, metadata leaking configuration values, factual/structural issues) — tracked and largely fixed across two follow-up rounds, documented in full in [phase-21-content-quality-fixes.md](phase-21-content-quality-fixes.md). **One defect remains open going into the next session**: a severe form of prompt-instruction text leaking into the `metaTitle` field, found during Round 3 live verification — see that doc's "Round 4 (not started)" section for the exact repro and constraints.
+
+## Phase 22 — Streaming (Stage 1 complete)
+
+Stage 1 added live SSE-based streaming preview of in-progress AI generation, without touching the production non-streaming path (`generateStructuredOutput`) at all — a fully parallel `generateStructuredOutputStreaming` orchestrator plus a new self-contained, DB-polling SSE route (`app/api/ai-workspace/jobs/[jobId]/stream/route.ts`) with zero in-process shared state, so it's correct regardless of server process topology. Gated behind `AI_STREAMING_ENABLED`; the client always attempts `EventSource` and silently no-ops if streaming is off or the route 404s. The existing 3-second polling loop remains the only path that ever detects terminal job state — streaming is purely a presentation layer on top of it. `AiGenerationJob` gained a `partialResultText` column (ephemeral, reset before any retry/fallback) and a genuinely-used `progress` field.
+
+Live-verified with real Gemini streaming and a real Ollama fallback mid-stream; SSE auth, cross-tenant isolation, terminal-state closure, and client disconnect were all independently verified. Committed and pushed as `2d4d2d2`. Stage 2 has not been scoped or started.
+
+## Phases 23–25
 
 Not yet scoped in detail — carried forward from the architectural review's roadmap table as placeholders for future design work:
-- **21 — Enhanced Observability**: deeper structured logging/tracing across the AI pipeline beyond today's `AiUsageLog` table and console-JSON `logger`.
-- **22 — Streaming**: streaming AI responses to the client instead of waiting for a complete structured-output result.
 - **23 — UX Maturation**: polish across the AI Workspace/Website Analysis UI surfaces.
 - **24 — Publishing / Distribution**: pushing generated content to external destinations (CMS, social, etc.).
 - **25 — Version History**: revision tracking for AI-generated and edited content.
+
+Enhanced Observability (deeper structured logging/tracing across the AI pipeline beyond today's `AiUsageLog` table and console-JSON `logger`) was this roadmap's original Phase 21 placeholder; it was superseded by the configurable-generation work above and remains unscoped.

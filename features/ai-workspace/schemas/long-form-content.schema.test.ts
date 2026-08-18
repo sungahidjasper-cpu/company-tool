@@ -84,7 +84,7 @@ describe("longFormContentOutputSchema", () => {
     sections: [{ heading: "What counts as an emergency?", body: "Burst pipes, active leaks, and no hot water." }],
     conclusion: "Call Acme Plumbing any time, day or night.",
     faq: [{ question: "Do you charge extra for after-hours calls?", answer: "No, our rate is flat 24/7." }],
-    internalLinkPlacementSuggestions: ["Link to the services page in the introduction."],
+    internalLinkPlacementSuggestions: [{ anchorText: "our services page", targetPage: "/services", reason: "relevant service list", placement: "introduction", priority: "MEDIUM" }],
   };
 
   it("accepts a fully-formed article", () => {
@@ -131,7 +131,7 @@ describe("formatLongFormContentAsMarkdown", () => {
     imagePlaceholders: [] as string[],
     altTextSuggestions: [] as string[],
     socialSnippets: [] as string[],
-    internalLinkPlacementSuggestions: ["Suggestion that must NOT appear in the saved body"],
+    internalLinkPlacementSuggestions: [{ anchorText: "Suggestion that must NOT appear in the saved body", targetPage: "/services", reason: "relevant", placement: "introduction", priority: "MEDIUM" as const }],
   };
 
   it("includes the introduction, every section heading/body, and the conclusion", () => {

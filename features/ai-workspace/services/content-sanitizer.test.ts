@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { filterReservedSections, stripConfigurationArtifacts } from "@/features/ai-workspace/services/content-sanitizer";
+import { filterReservedSections, looksLikeInstructionEcho, stripConfigurationArtifacts, stripHtmlTags } from "@/features/ai-workspace/services/content-sanitizer";
 
 describe("stripConfigurationArtifacts", () => {
   it("strips a trailing pipe-separated word-count suffix", () => {
@@ -74,5 +74,53 @@ describe("filterReservedSections", () => {
 
   it("returns an empty array unchanged", () => {
     expect(filterReservedSections([])).toEqual([]);
+  });
+});
+
+describe("stripHtmlTags", () => {
+  it("strips tags wrapping a whole title, leaving the underlying text (the observed live defect)", () => {
+    expect(stripHtmlTags("<b>Self-Storage Occupancy Rates and Unit Pricing: A Closer Look</b>")).toBe("Self-Storage Occupancy Rates and Unit Pricing: A Closer Look");
+  });
+
+  it("strips a tag in the middle of text and collapses the resulting whitespace", () => {
+    expect(stripHtmlTags("Title <br> is great")).toBe("Title is great");
+  });
+
+  it("strips tags with attributes", () => {
+    expect(stripHtmlTags('<span class="x">Emergency Plumber</span>')).toBe("Emergency Plumber");
+  });
+
+  it("never touches a bare comparison operator in ordinary prose", () => {
+    expect(stripHtmlTags("Revenue grew 5 < 10 percent this year")).toBe("Revenue grew 5 < 10 percent this year");
+  });
+
+  it("leaves text with no markup completely unchanged", () => {
+    expect(stripHtmlTags("Emergency Plumber in Austin | Acme")).toBe("Emergency Plumber in Austin | Acme");
+  });
+});
+
+describe("looksLikeInstructionEcho", () => {
+  it("detects the exact observed live defect", () => {
+    expect(looksLikeInstructionEcho("EXACTLY 50-60 characters (50 words, 60 characters total), meta description:")).toBe(true);
+  });
+
+  it("detects a literal 'meta title:'/'meta description:' self-reference", () => {
+    expect(looksLikeInstructionEcho("meta description: a guide to self-storage investing")).toBe(true);
+    expect(looksLikeInstructionEcho("Meta Title: Self-Storage Investing Guide")).toBe(true);
+  });
+
+  it("detects an 'EXACTLY N-M characters/words' echo on its own", () => {
+    expect(looksLikeInstructionEcho("EXACTLY 150-160 characters for this description")).toBe(true);
+    expect(looksLikeInstructionEcho("Please write EXACTLY 1500 words on this topic")).toBe(true);
+  });
+
+  it("detects a 'characters total' echo on its own", () => {
+    expect(looksLikeInstructionEcho("60 characters total is the limit")).toBe(true);
+  });
+
+  it("never flags an ordinary, legitimate title or description", () => {
+    expect(looksLikeInstructionEcho("Self-Storage Investing for Accredited Investors")).toBe(false);
+    expect(looksLikeInstructionEcho("Discover the key factors to consider when evaluating self-storage as an asset class.")).toBe(false);
+    expect(looksLikeInstructionEcho("Emergency Plumber Austin | Acme")).toBe(false);
   });
 });

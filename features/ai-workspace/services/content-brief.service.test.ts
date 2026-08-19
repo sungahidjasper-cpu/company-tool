@@ -100,6 +100,22 @@ describe("generateContentBrief", () => {
     expect(options.prompt).toContain("count ONLY the visible words a reader would actually see in that field");
   });
 
+  it("applies the shared content-quality doctrine in the system prompt (reader-first, answer-early, distinct-section value, fact/analysis/opinion distinction)", async () => {
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+    await generateContentBrief(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.system).toContain("accuracy, clarity, and usefulness to the reader always outrank SEO formatting");
+    expect(options.system).toContain("never turn an outline point into a visible numbered fragment");
+  });
+
+  it("asks GEO/AEO notes to suggest answer-then-evidence-then-explanation framing and citation-worthy statements", async () => {
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+    await generateContentBrief(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("answer-then-evidence-then-explanation framing");
+    expect(options.prompt).toContain("independently-understandable statements");
+  });
+
   it("instructs the model, in the system prompt, never to invent statistics/figures (including in FAQ answers) or mischaracterize a real company as a generic category", async () => {
     mockGenerate.mockResolvedValue(BRIEF_RESULT);
     await generateContentBrief(BASE_CTX);
@@ -190,5 +206,59 @@ describe("generateContentBrief", () => {
     expect(result.outline).toEqual(["Introduction", "Tactics"]);
     expect(result.suggestedHeadings).toEqual(["What is local SEO?"]);
     expect(result.faq[0].question).toBe("What is local SEO?");
+  });
+
+  it("strips HTML markup wrapping title, metaTitle, outline entries, and suggested headings (Round 4 — observed live defect)", async () => {
+    mockGenerate.mockResolvedValue({
+      ...BRIEF_RESULT,
+      title: "<b>10 Ways to Improve Local SEO</b>",
+      metaTitle: '<span class="x">Self-Storage Occupancy Rates and Unit Pricing: A Closer Look</span>',
+      outline: ["<b>Introduction</b>"],
+      suggestedHeadings: ["<b>What is local SEO?</b>"],
+    });
+
+    const result = await generateContentBrief(BASE_CTX);
+
+    expect(result.title).toBe("10 Ways to Improve Local SEO");
+    expect(result.metaTitle).toBe("Self-Storage Occupancy Rates and Unit Pricing: A Closer Look");
+    expect(result.outline).toEqual(["Introduction"]);
+    expect(result.suggestedHeadings).toEqual(["What is local SEO?"]);
+  });
+
+  it("falls back metaTitle to the sanitized title when metaTitle is echoed instruction text, rather than leaving the echo in place (Round 4 — observed live defect)", async () => {
+    mockGenerate.mockResolvedValue({
+      ...BRIEF_RESULT,
+      title: "Self-Storage Investing for Accredited Investors",
+      metaTitle: "EXACTLY 50-60 characters (50 words, 60 characters total), meta description:",
+    });
+
+    const result = await generateContentBrief(BASE_CTX);
+
+    expect(result.metaTitle).toBe("Self-Storage Investing for Accredited Investors");
+  });
+
+  it("clears metaDescription to empty (rather than leaving echoed instruction text) when it matches the same high-confidence instruction-echo patterns", async () => {
+    mockGenerate.mockResolvedValue({
+      ...BRIEF_RESULT,
+      metaDescription: "EXACTLY 150-160 characters, meta description: describe the topic here",
+    });
+
+    const result = await generateContentBrief(BASE_CTX);
+
+    expect(result.metaDescription).toBe("");
+  });
+
+  it("never falls back a legitimate metaTitle or clears a legitimate metaDescription", async () => {
+    mockGenerate.mockResolvedValue({
+      ...BRIEF_RESULT,
+      title: "Self-Storage Investing for Accredited Investors",
+      metaTitle: "Self-Storage Investing Guide for Accredited Investors",
+      metaDescription: "Discover the key factors to consider when evaluating self-storage as an asset class for accredited investors today.",
+    });
+
+    const result = await generateContentBrief(BASE_CTX);
+
+    expect(result.metaTitle).toBe("Self-Storage Investing Guide for Accredited Investors");
+    expect(result.metaDescription).toBe("Discover the key factors to consider when evaluating self-storage as an asset class for accredited investors today.");
   });
 });

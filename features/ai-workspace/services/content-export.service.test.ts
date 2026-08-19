@@ -75,6 +75,18 @@ describe("markdownToHtml", () => {
     expect(html).toContain('<a href="https://example.com/contact">Get a quote</a>');
   });
 
+  it("neutralizes a javascript: link to plain text instead of rendering it as an anchor (previously identified issue)", () => {
+    const html = markdownToHtml("[Click me](javascript:alert(1))");
+    expect(html).not.toContain("<a ");
+    expect(html).not.toContain("javascript:");
+    expect(html).toContain("Click me");
+  });
+
+  it("escapes a stray quote inside an otherwise-safe href so it can't break out of the attribute", () => {
+    const html = markdownToHtml('[text](https://example.com/"onmouseover="evil)');
+    expect(html).toContain('href="https://example.com/&quot;onmouseover=&quot;evil"');
+  });
+
   it("escapes raw HTML-significant characters so injected markup can't break the page", () => {
     const html = markdownToHtml("<script>alert(1)</script>");
     expect(html).not.toContain("<script>");

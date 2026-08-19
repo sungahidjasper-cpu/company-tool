@@ -91,6 +91,27 @@ describe("describeProviderConfiguration — provider selection", () => {
     expect(status.reason).toBe("required env vars are set");
     expect(status.health).toBe("HEALTHY");
   });
+
+  it("promotes OpenRouter ahead of Ollama for CONTENT_BRIEF — task-aware order", async () => {
+    const statuses = await describeProviderConfiguration("CONTENT_BRIEF");
+    expect(statuses.map((s) => s.name)).toEqual(["gemini", "openrouter", "ollama", "openai", "anthropic"]);
+  });
+
+  it("promotes OpenRouter ahead of Ollama for CONTENT_DRAFT — task-aware order", async () => {
+    const statuses = await describeProviderConfiguration("CONTENT_DRAFT");
+    expect(statuses.map((s) => s.name)).toEqual(["gemini", "openrouter", "ollama", "openai", "anthropic"]);
+  });
+
+  it("keeps the default order for a lightweight task type — Ollama still ahead of OpenRouter", async () => {
+    const statuses = await describeProviderConfiguration("EXTRACTION");
+    expect(statuses.map((s) => s.name)).toEqual(["gemini", "ollama", "openai", "anthropic", "openrouter"]);
+  });
+
+  it("still lets LLM_PROVIDER_ORDER override the task-aware default outright", async () => {
+    process.env.LLM_PROVIDER_ORDER = "ollama,gemini";
+    const statuses = await describeProviderConfiguration("CONTENT_BRIEF");
+    expect(statuses.map((s) => s.name)).toEqual(["ollama", "gemini"]);
+  });
 });
 
 describe("getConfiguredProviders — fallback-order filtering", () => {
@@ -135,5 +156,29 @@ describe("getConfiguredProviders — fallback-order filtering", () => {
 
     const providers = await getConfiguredProviders();
     expect(providers.map((p) => p.name)).toEqual(["gemini"]);
+  });
+
+  it("tries OpenRouter before Ollama for a CONTENT_DRAFT request when both are configured and healthy", async () => {
+    mockGemini.isConfigured.mockReturnValue(true);
+    mockGemini.healthCheck.mockResolvedValue("HEALTHY");
+    mockOllama.isConfigured.mockReturnValue(true);
+    mockOllama.healthCheck.mockResolvedValue("HEALTHY");
+    mockOpenRouter.isConfigured.mockReturnValue(true);
+    mockOpenRouter.healthCheck.mockResolvedValue("HEALTHY");
+
+    const providers = await getConfiguredProviders("CONTENT_DRAFT");
+    expect(providers.map((p) => p.name)).toEqual(["gemini", "openrouter", "ollama"]);
+  });
+
+  it("tries Ollama before OpenRouter for a lightweight task when both are configured and healthy", async () => {
+    mockGemini.isConfigured.mockReturnValue(true);
+    mockGemini.healthCheck.mockResolvedValue("HEALTHY");
+    mockOllama.isConfigured.mockReturnValue(true);
+    mockOllama.healthCheck.mockResolvedValue("HEALTHY");
+    mockOpenRouter.isConfigured.mockReturnValue(true);
+    mockOpenRouter.healthCheck.mockResolvedValue("HEALTHY");
+
+    const providers = await getConfiguredProviders("SCORES");
+    expect(providers.map((p) => p.name)).toEqual(["gemini", "ollama", "openrouter"]);
   });
 });

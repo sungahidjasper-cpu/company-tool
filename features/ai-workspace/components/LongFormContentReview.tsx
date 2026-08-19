@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import ArticleMarkdownPreview from "@/features/ai-workspace/components/ArticleMarkdownPreview";
 import type { InternalLinkSuggestion } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { checkMetaLengths, computeWordCount } from "@/features/ai-workspace/services/seo-checklist.service";
 
@@ -79,6 +80,10 @@ export default function LongFormContentReview({
   const busy = isRegenerating || isSaving;
   const actualWordCount = useMemo(() => computeWordCount(fields.body), [fields.body]);
   const lengths = useMemo(() => checkMetaLengths(fields), [fields]);
+  // Defaults to the rendered preview (Phase 3) — the raw Markdown textarea
+  // ("Edit Source") is still the same field Save persists; this tab only
+  // changes which of the two is visible, never what's actually stored.
+  const [viewMode, setViewMode] = useState<"preview" | "source">("preview");
 
   async function copyAsMarkdown() {
     await navigator.clipboard.writeText(fields.body);
@@ -131,16 +136,28 @@ export default function LongFormContentReview({
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label htmlFor="longform-body" className="text-sm font-medium">
-          Article body (Markdown)
-        </label>
-        <textarea
-          id="longform-body"
-          rows={20}
-          className={textareaClassName}
-          value={fields.body}
-          onChange={(e) => onChange({ ...fields, body: e.target.value })}
-        />
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium">Article</label>
+          <div className="flex gap-1">
+            <Button type="button" size="sm" variant={viewMode === "preview" ? "default" : "outline"} onClick={() => setViewMode("preview")}>
+              Article Preview
+            </Button>
+            <Button type="button" size="sm" variant={viewMode === "source" ? "default" : "outline"} onClick={() => setViewMode("source")}>
+              Edit Source
+            </Button>
+          </div>
+        </div>
+        {viewMode === "preview" ? (
+          <ArticleMarkdownPreview title={fields.title} body={fields.body} />
+        ) : (
+          <textarea
+            id="longform-body"
+            rows={20}
+            className={textareaClassName}
+            value={fields.body}
+            onChange={(e) => onChange({ ...fields, body: e.target.value })}
+          />
+        )}
       </div>
 
       {internalLinkPlacementSuggestions.length > 0 && (

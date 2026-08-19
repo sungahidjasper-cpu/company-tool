@@ -1,4 +1,5 @@
 import type { ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
+import { isSafeHref } from "@/features/ai-workspace/services/markdown-preview.service";
 
 /**
  * Flattens a brief into Markdown for the "Copy as Markdown" export button —
@@ -51,10 +52,19 @@ function escapeHtml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/**
+ * Only http(s)/mailto (or a schemeless relative path) ever become a real
+ * `<a href>` — a `javascript:`/`data:`/etc. URL is neutralized to its plain
+ * visible text instead, since this HTML can originate from AI-generated
+ * content. Any surviving `"` in a safe-scheme URL is escaped so it can't
+ * break out of the href attribute either.
+ */
 function inlineMarkdownToHtml(line: string): string {
   return escapeHtml(line)
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2">$1</a>');
+    .replace(/\[(.+?)\]\((.+?)\)/g, (_match, text: string, href: string) =>
+      isSafeHref(href) ? `<a href="${href.replace(/"/g, "&quot;")}">${text}</a>` : text
+    );
 }
 
 /**

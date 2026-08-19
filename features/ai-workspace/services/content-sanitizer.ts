@@ -77,3 +77,39 @@ function normalizeSectionHeading(heading: string): string {
 export function filterReservedSections<T extends { heading: string }>(sections: T[]): T[] {
   return sections.filter((section) => !RESERVED_SECTION_HEADINGS.has(normalizeSectionHeading(section.heading)));
 }
+
+// Requires a letter immediately after "<" (or "</"), so this only matches
+// actually tag-shaped sequences — never a bare comparison like "5 < 10" in
+// ordinary prose. A plain-text title/heading/description should never
+// legitimately contain markup, so stripping every match carries no risk of
+// removing real content.
+const HTML_TAG = /<\/?[a-z][a-z0-9]*(?:\s[^<>]*)?>/gi;
+
+export function stripHtmlTags(text: string): string {
+  return text.replace(HTML_TAG, "").replace(/\s+/g, " ").trim();
+}
+
+// High-confidence signals that a field's entire value is echoed prompt
+// instruction text rather than actual content — phrasing a real title or
+// meta description would essentially never contain incidentally. Kept
+// deliberately small and specific (not a fuzzy/keyword filter) to avoid
+// false-positiving on legitimate content.
+const INSTRUCTION_ECHO_PATTERNS = [
+  /\bmeta\s+(?:title|description)\s*:/i,
+  /\bcharacters?\s+total\b/i,
+  /\bEXACTLY\s+\d+(?:\s*[\s-]\s*\d+)?\s+(?:characters|words)\b/i,
+  /\b\d+\s+words,\s*\d+\s+characters\b/i,
+];
+
+/**
+ * Detects the class of defect where the model's ENTIRE field value is a
+ * fragment of its own instructions (e.g. "EXACTLY 50-60 characters (50
+ * words, 60 characters total), meta description:") rather than real
+ * content. Unlike stripConfigurationArtifacts, there's no fixed
+ * trailing/leading substring to cut — the whole value is unusable — so
+ * callers respond by substituting a known-good fallback, never by
+ * re-calling the AI or rejecting the generation.
+ */
+export function looksLikeInstructionEcho(text: string): boolean {
+  return INSTRUCTION_ECHO_PATTERNS.some((pattern) => pattern.test(text));
+}

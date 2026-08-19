@@ -128,7 +128,7 @@ export async function generateStructuredOutput<T extends z.ZodType>(
   // company with no limits configured.
   await enforceCompanyAiLimits(input.companyId, input.taskType);
 
-  const allProviders = await getConfiguredProviders();
+  const allProviders = await getConfiguredProviders(input.taskType);
 
   if (allProviders.length === 0) {
     // Distinguish "nothing is configured at all" from "something IS
@@ -139,7 +139,7 @@ export async function generateStructuredOutput<T extends z.ZodType>(
     // INSUFFICIENT_CREDITS → "AI provider is out of credits") rather than
     // the generic "no providers configured" message, which wrongly implies
     // a setup problem rather than a transient availability one.
-    const statuses = await describeProviderConfiguration();
+    const statuses = await describeProviderConfiguration(input.taskType);
     const configuredButUnhealthy = statuses.find((status) => status.configured && status.health !== "HEALTHY");
 
     if (configuredButUnhealthy) {
@@ -359,10 +359,10 @@ export async function generateStructuredOutputStreaming<T extends z.ZodType>(
 ): Promise<z.infer<T>> {
   await enforceCompanyAiLimits(input.companyId, input.taskType);
 
-  const allProviders = await getConfiguredProviders();
+  const allProviders = await getConfiguredProviders(input.taskType);
 
   if (allProviders.length === 0) {
-    const statuses = await describeProviderConfiguration();
+    const statuses = await describeProviderConfiguration(input.taskType);
     const configuredButUnhealthy = statuses.find((status) => status.configured && status.health !== "HEALTHY");
 
     if (configuredButUnhealthy) {

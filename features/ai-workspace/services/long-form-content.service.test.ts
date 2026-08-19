@@ -103,16 +103,25 @@ describe("generateLongFormContent", () => {
     expect(mockGenerate).toHaveBeenCalledTimes(1);
   });
 
-  it("computes a per-section word budget from the brief's outline length and the word-count target, and states a real range", async () => {
+  it("computes a per-section word budget from the brief's outline length and the word-count target, and states a firm floor plus a real range", async () => {
     mockGenerate.mockResolvedValue(ARTICLE_RESULT);
-    // DEFAULT_CONTENT_BRIEF_SETTINGS.wordCount is 1500; BASE_BRIEF.outline has 3 sections -> 500 words/section.
+    // DEFAULT_CONTENT_BRIEF_SETTINGS.wordCount is 1500; BASE_BRIEF.outline has 3 sections -> 500 words/section, floor 375 (75%).
     await generateLongFormContent(BASE_CTX);
     const [, options] = mockGenerate.mock.calls[0];
     expect(options.prompt).toContain("approximately 1500 words in total");
     expect(options.prompt).toContain("1395-1605 words is fine");
     expect(options.prompt).toContain("outline above has 3 sections");
-    expect(options.prompt).toContain("roughly 500 words");
+    expect(options.prompt).toContain("AT LEAST 375 words");
+    expect(options.prompt).toContain("up to roughly 500 words");
     expect(options.prompt).toContain("Falling far short of the target");
+  });
+
+  it("frames the word-count target as a consequence of depth, not a goal to pad toward", async () => {
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("reaching it should be a natural consequence of genuine depth, not a goal pursued for its own sake");
+    expect(options.prompt).toContain("if the supplied context does not support reaching the target without inventing unsupported material, prioritize accuracy and write a shorter, honest article instead");
   });
 
   it("tells the model the exact outline section count, not a vague 'H2 sections'", async () => {
@@ -162,7 +171,72 @@ describe("generateLongFormContent", () => {
     const [, options] = mockGenerate.mock.calls[0];
     expect(options.prompt).toContain("never a one-word or single-phrase answer");
     expect(options.prompt).toContain("not a statement generic enough to apply to any article on this topic");
-    expect(options.prompt).toContain("synthesizes the specific points made earlier in this article");
+    expect(options.prompt).toContain("names 2-3 specific takeaways actually made earlier in this article");
+  });
+
+  it("forbids the conclusion from introducing new facts/statistics/examples not already established in the article", async () => {
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent({
+      ...BASE_CTX,
+      settings: { ...DEFAULT_CONTENT_BRIEF_SETTINGS, sections: { ...DEFAULT_CONTENT_BRIEF_SETTINGS.sections, conclusion: true } },
+    });
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("not a restatement of the section topics/headings");
+    expect(options.prompt).toContain("Do not introduce any new fact, statistic, example, or claim in the conclusion that wasn't already established earlier in the article");
+  });
+
+  it("bans generic template closing phrases in the introduction", async () => {
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain('"This comprehensive guide will walk you through..."');
+    expect(options.prompt).toContain('"In this article, we\'ll explore..."');
+    expect(options.prompt).toContain("every sentence in the introduction should add real orientation, context, or insight, not preview the article's structure");
+  });
+
+  it("forbids inventing case studies/statistics under a heading that implies real-world specifics not present in the supplied context", async () => {
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain('"Real-Life Examples", "Case Studies", "Success Stories", "Statistics", "Industry Examples"');
+    expect(options.prompt).toContain("do not invent one");
+    expect(options.prompt).toContain('explicitly label the illustration as hypothetical (e.g. "Consider a hypothetical scenario where...")');
+    expect(options.prompt).toContain("Never invent a company name, project name, case study, outcome, statistic, percentage, revenue figure, occupancy rate, or ROI number");
+    expect(options.prompt).toContain('Never use phrases like "one notable example," "a recent study," or "industry data shows"');
+  });
+
+  it("applies the shared content-quality doctrine in the system prompt (reader-first, answer-early, distinct-section value, fact/analysis/opinion distinction)", async () => {
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.system).toContain("accuracy, clarity, and usefulness to the reader always outrank SEO formatting");
+    expect(options.system).toContain("never turn an outline point into a visible numbered fragment");
+  });
+
+  it("requires the introduction to answer the reader's main question early, not just hook/restate the topic", async () => {
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("gives the reader a clear, useful answer or orientation to their main question within the first few sentences");
+  });
+
+  it("requires sections to be developed prose, not a visible numbered fragment or a bare question-and-one-line-answer echoing the outline", async () => {
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("never restate the outline point itself as a visible numbered fragment");
+    expect(options.prompt).toContain("bare question-and-one-line-answer");
+  });
+
+  it("requires each FAQ answer to stand entirely on its own, and restricts tables to genuinely useful cases", async () => {
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent({
+      ...BASE_CTX,
+      settings: { ...DEFAULT_CONTENT_BRIEF_SETTINGS, sections: { ...DEFAULT_CONTENT_BRIEF_SETTINGS.sections, faq: true } },
+    });
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("understandable entirely on its own, without requiring the reader to have read the rest of the article");
+    expect(options.prompt).toContain("never add one merely to look more structured");
   });
 
   it("instructs the model not to write its own Conclusion/FAQ/Key Takeaways/Resources section inside the sections list", async () => {
@@ -181,6 +255,27 @@ describe("generateLongFormContent", () => {
         { heading: "FAQ", body: "Duplicate filler FAQ." },
         { heading: "Key Takeaways", body: "Duplicate filler takeaways." },
         { heading: "Resources", body: "[link to a reputable resource]" },
+      ],
+    });
+    const result = await generateLongFormContent(BASE_CTX);
+    expect(result.sections).toEqual([{ heading: "What counts as an emergency?", body: "Burst pipes and active leaks." }]);
+  });
+
+  it("strips HTML markup wrapping a section heading (Round 4 — observed live defect), leaving the underlying text", async () => {
+    mockGenerate.mockResolvedValue({
+      ...ARTICLE_RESULT,
+      sections: [{ heading: "<b>What counts as an emergency?</b>", body: "Burst pipes and active leaks." }],
+    });
+    const result = await generateLongFormContent(BASE_CTX);
+    expect(result.sections).toEqual([{ heading: "What counts as an emergency?", body: "Burst pipes and active leaks." }]);
+  });
+
+  it("filters a reserved-name section even when it's wrapped in HTML markup, since headings are cleaned before the reserved-section filter runs", async () => {
+    mockGenerate.mockResolvedValue({
+      ...ARTICLE_RESULT,
+      sections: [
+        { heading: "What counts as an emergency?", body: "Burst pipes and active leaks." },
+        { heading: "<b>Conclusion</b>", body: "Duplicate filler conclusion." },
       ],
     });
     const result = await generateLongFormContent(BASE_CTX);

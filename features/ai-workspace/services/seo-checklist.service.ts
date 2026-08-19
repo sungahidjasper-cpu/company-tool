@@ -1,5 +1,6 @@
 import type { ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
 import type { ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
+import { parseMarkdownBlocks, type MarkdownBlock } from "@/features/ai-workspace/services/markdown-preview.service";
 
 export type LengthStatus = "OK" | "TOO_SHORT" | "TOO_LONG";
 
@@ -31,10 +32,44 @@ export function checkMetaLengths(brief: Pick<ContentBriefOutput, "metaTitle" | "
   };
 }
 
-/** Pure word count — used for the soft target-vs-actual display, never for a hard gate/regenerate loop. */
+// Markdown link syntax like "[Schedule a Call](https://example.com/contact)"
+// counts only the visible anchor text — a reader never sees the URL.
+const MARKDOWN_LINK = /\[([^\]]*)\]\([^)]*\)/g;
+
+// A "word" is a maximal run of letters/digits, optionally joined by an
+// internal hyphen or apostrophe so "self-storage", "don't", and
+// "co-founder" each count as one word rather than being split or dropped.
+// Bare Markdown decoration (**, _, |, #) contains no letters/digits, so it
+// never matches and needs no separate stripping step.
+const WORD_TOKEN = /[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*/gu;
+
+function extractBlockText(block: MarkdownBlock): string[] {
+  switch (block.type) {
+    case "heading":
+      return [block.text];
+    case "paragraph":
+      return block.lines;
+    case "ul":
+    case "ol":
+      return block.items;
+    case "table":
+      return [...block.headers, ...block.rows.flat()];
+  }
+}
+
+/**
+ * Word count — used for the soft target-vs-actual display, never for a hard
+ * gate/regenerate loop. Reuses parseMarkdownBlocks (the same structural
+ * parser Article Preview renders from) so heading markers, list markers,
+ * and table pipes/separator rows are excluded by construction rather than
+ * by a second, hand-maintained set of Markdown regexes.
+ */
 export function computeWordCount(text: string): number {
-  const trimmed = text.trim();
-  return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
+  const content = parseMarkdownBlocks(text)
+    .flatMap(extractBlockText)
+    .join(" ")
+    .replace(MARKDOWN_LINK, "$1");
+  return content.match(WORD_TOKEN)?.length ?? 0;
 }
 
 export type ChecklistItemStatus = "PASS" | "WARN";

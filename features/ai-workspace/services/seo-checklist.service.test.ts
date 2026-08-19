@@ -51,17 +51,82 @@ describe("checkMetaLengths", () => {
 });
 
 describe("computeWordCount", () => {
-  it("counts whitespace-separated words", () => {
-    expect(computeWordCount("one two three")).toBe(3);
-  });
-
   it("returns 0 for an empty or whitespace-only string", () => {
     expect(computeWordCount("")).toBe(0);
     expect(computeWordCount("   \n  ")).toBe(0);
   });
 
+  it("counts plain prose words", () => {
+    expect(computeWordCount("one two three")).toBe(3);
+  });
+
   it("collapses multiple whitespace/newlines between words", () => {
     expect(computeWordCount("one\n\ntwo   three")).toBe(3);
+  });
+
+  it("counts heading text but not the # markers", () => {
+    expect(computeWordCount("## Section Title")).toBe(2);
+    expect(computeWordCount("#### Sub Sub Header")).toBe(3);
+  });
+
+  it("counts unordered list item text but not the -/*/+ markers", () => {
+    expect(computeWordCount("- First item\n- Second item")).toBe(4);
+  });
+
+  it("counts ordered list item text but not the 1./2. markers", () => {
+    expect(computeWordCount("1. Step one\n2. Step two")).toBe(4);
+  });
+
+  it("counts table cell text but not the pipes", () => {
+    expect(computeWordCount("| Metric | Meaning |\n| --- | --- |\n| LCP | Load speed |")).toBe(5);
+  });
+
+  it("excludes a table separator row entirely, even a longer one", () => {
+    expect(computeWordCount("| A | B | C |\n| :--- | :---: | ---: |\n| one | two | three |")).toBe(6);
+  });
+
+  it("keeps a hyphenated word as one word", () => {
+    expect(computeWordCount("self-storage co-founder")).toBe(2);
+  });
+
+  it("keeps an apostrophe word as one word", () => {
+    expect(computeWordCount("don't can't")).toBe(2);
+  });
+
+  it("counts a Markdown link's anchor text but excludes the URL", () => {
+    expect(computeWordCount("[Schedule a Call](https://example.com/contact)")).toBe(3);
+  });
+
+  it("counts bold/italic text without the emphasis markers inflating the count", () => {
+    expect(computeWordCount("**Acquisition Costs** are *often* overlooked.")).toBe(5);
+  });
+
+  it("matches a realistic mixed-Markdown article: headings, paragraphs, lists, a table, a link, and FAQ content", () => {
+    const markdown = [
+      "This guide covers self-storage investing for new owners.",
+      "",
+      "## Getting Started",
+      "",
+      "There are several considerations, including cost and location.",
+      "",
+      "- Requires active management",
+      "- Higher potential returns",
+      "",
+      "| Metric | Meaning |",
+      "| --- | --- |",
+      "| Cap rate | Annual return on cost |",
+      "",
+      "Learn more on our [pricing page](https://example.com/pricing).",
+      "",
+      "## FAQ",
+      "",
+      "**What is self-storage investing?**",
+      "",
+      "It involves purchasing storage facilities.",
+    ].join("\n");
+
+    // 8 (intro) + 2 (heading) + 8 (paragraph) + 6 (ul) + 8 (table) + 6 (link paragraph) + 1 (FAQ heading) + 4 (bold question) + 5 (answer) = 48
+    expect(computeWordCount(markdown)).toBe(48);
   });
 });
 

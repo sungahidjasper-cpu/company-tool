@@ -24,6 +24,7 @@ import {
 import type { InternalLinkSuggestion } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { CONTENT_BRIEF_TYPES, contentBriefOutputSchema, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { formatLongFormContentAsMarkdown, longFormContentOutputSchema } from "@/features/ai-workspace/schemas/long-form-content.schema";
+import { parsePreviewFields, type JsonValue } from "@/features/ai-workspace/services/partial-json-preview.service";
 import { formatEnumLabel } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 3000;
@@ -113,6 +114,10 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
   const [streamCharCount, setStreamCharCount] = useState<number | null>(null);
   const [streamProgress, setStreamProgress] = useState<number | null>(null);
   const [isSwitchingProvider, setIsSwitchingProvider] = useState(false);
+  // Phase 22 Stage 3 — a schema-agnostic scan of the same accumulated text,
+  // exposing whichever fields are already fully written. Strictly cosmetic,
+  // layered beneath the char-count line above; never a source of truth.
+  const [previewFields, setPreviewFields] = useState<Record<string, JsonValue> | null>(null);
   const streamRef = useRef<EventSource | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -135,6 +140,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
     setStreamCharCount(null);
     setStreamProgress(null);
     setIsSwitchingProvider(false);
+    setPreviewFields(null);
 
     const source = new EventSource(`/api/ai-workspace/jobs/${jobId}/stream`);
     streamRef.current = source;
@@ -144,6 +150,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
         const { text } = JSON.parse((event as MessageEvent).data);
         setIsSwitchingProvider(false);
         setStreamCharCount(typeof text === "string" ? text.length : null);
+        setPreviewFields(typeof text === "string" ? parsePreviewFields(text) : null);
       } catch {
         // Malformed event — ignore, this is a cosmetic preview only.
       }
@@ -159,6 +166,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
     source.addEventListener("reset", () => {
       setIsSwitchingProvider(true);
       setStreamCharCount(null);
+      setPreviewFields(null);
     });
     source.addEventListener("done", () => {
       source.close();
@@ -174,6 +182,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
     setStreamCharCount(null);
     setStreamProgress(null);
     setIsSwitchingProvider(false);
+    setPreviewFields(null);
   }
 
   /**
@@ -675,6 +684,36 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
             ? "Switching to backup AI provider — restarting…"
             : `Generating… ${streamCharCount} characters so far${streamProgress !== null ? ` (~${streamProgress}%)` : ""}`}
         </p>
+      )}
+      {isGenerating && !isSwitchingProvider && previewFields && Object.keys(previewFields).length > 0 && (
+        <div className="space-y-1 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+          {typeof previewFields.title === "string" && (
+            <p>
+              <span className="font-medium text-slate-700">Title:</span> {previewFields.title}
+            </p>
+          )}
+          {typeof previewFields.metaTitle === "string" && (
+            <p>
+              <span className="font-medium text-slate-700">Meta title:</span> {previewFields.metaTitle}
+            </p>
+          )}
+          {typeof previewFields.metaDescription === "string" && (
+            <p>
+              <span className="font-medium text-slate-700">Meta description:</span> {previewFields.metaDescription}
+            </p>
+          )}
+          {Array.isArray(previewFields.outline) && previewFields.outline.length > 0 && (
+            <p>
+              <span className="font-medium text-slate-700">Outline so far ({previewFields.outline.length}):</span>{" "}
+              {previewFields.outline.filter((item): item is string => typeof item === "string").join(", ")}
+            </p>
+          )}
+          {Array.isArray(previewFields.faq) && previewFields.faq.length > 0 && (
+            <p>
+              <span className="font-medium text-slate-700">FAQ items so far:</span> {previewFields.faq.length}
+            </p>
+          )}
+        </div>
       )}
 
       <div className="flex gap-3">

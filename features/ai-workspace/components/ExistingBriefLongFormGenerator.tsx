@@ -11,6 +11,7 @@ import LongFormContentReview, { type LongFormDraftExtras, type LongFormEditableF
 import type { InternalLinkSuggestion } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import type { ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { formatLongFormContentAsMarkdown, longFormContentOutputSchema } from "@/features/ai-workspace/schemas/long-form-content.schema";
+import { parsePreviewFields, type JsonValue } from "@/features/ai-workspace/services/partial-json-preview.service";
 
 const POLL_INTERVAL_MS = 3000;
 const MAX_POLL_MS = 5 * 60 * 1000;
@@ -53,6 +54,10 @@ export default function ExistingBriefLongFormGenerator({
   const [streamCharCount, setStreamCharCount] = useState<number | null>(null);
   const [streamProgress, setStreamProgress] = useState<number | null>(null);
   const [isSwitchingProvider, setIsSwitchingProvider] = useState(false);
+  // Phase 22 Stage 3 — a schema-agnostic scan of the same accumulated text,
+  // exposing whichever fields are already fully written. Strictly cosmetic,
+  // layered beneath the char-count line above; never a source of truth.
+  const [previewFields, setPreviewFields] = useState<Record<string, JsonValue> | null>(null);
   const streamRef = useRef<EventSource | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -69,6 +74,7 @@ export default function ExistingBriefLongFormGenerator({
     setStreamCharCount(null);
     setStreamProgress(null);
     setIsSwitchingProvider(false);
+    setPreviewFields(null);
   }
 
   function openGenerationStream(jobId: string) {
@@ -76,6 +82,7 @@ export default function ExistingBriefLongFormGenerator({
     setStreamCharCount(null);
     setStreamProgress(null);
     setIsSwitchingProvider(false);
+    setPreviewFields(null);
 
     const source = new EventSource(`/api/ai-workspace/jobs/${jobId}/stream`);
     streamRef.current = source;
@@ -85,6 +92,7 @@ export default function ExistingBriefLongFormGenerator({
         const { text } = JSON.parse((event as MessageEvent).data);
         setIsSwitchingProvider(false);
         setStreamCharCount(typeof text === "string" ? text.length : null);
+        setPreviewFields(typeof text === "string" ? parsePreviewFields(text) : null);
       } catch {
         // Malformed event — ignore, this is a cosmetic preview only.
       }
@@ -100,6 +108,7 @@ export default function ExistingBriefLongFormGenerator({
     source.addEventListener("reset", () => {
       setIsSwitchingProvider(true);
       setStreamCharCount(null);
+      setPreviewFields(null);
     });
     source.addEventListener("done", () => source.close());
     source.onerror = () => source.close();
@@ -217,6 +226,34 @@ export default function ExistingBriefLongFormGenerator({
             ? "Switching to backup AI provider — restarting…"
             : `Generating… ${streamCharCount} characters so far${streamProgress !== null ? ` (~${streamProgress}%)` : ""}`}
         </p>
+      )}
+      {isGenerating && !isSwitchingProvider && previewFields && Object.keys(previewFields).length > 0 && (
+        <div className="space-y-1 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+          {typeof previewFields.introduction === "string" && (
+            <p>
+              <span className="font-medium text-slate-700">Introduction:</span> {previewFields.introduction}
+            </p>
+          )}
+          {Array.isArray(previewFields.sections) && previewFields.sections.length > 0 && (
+            <p>
+              <span className="font-medium text-slate-700">Sections so far ({previewFields.sections.length}):</span>{" "}
+              {previewFields.sections
+                .map((section) => (typeof section === "object" && section && "heading" in section ? section.heading : null))
+                .filter((heading): heading is string => typeof heading === "string")
+                .join(", ")}
+            </p>
+          )}
+          {typeof previewFields.conclusion === "string" && (
+            <p>
+              <span className="font-medium text-slate-700">Conclusion:</span> {previewFields.conclusion}
+            </p>
+          )}
+          {Array.isArray(previewFields.faq) && previewFields.faq.length > 0 && (
+            <p>
+              <span className="font-medium text-slate-700">FAQ items so far:</span> {previewFields.faq.length}
+            </p>
+          )}
+        </div>
       )}
       <Button type="button" onClick={runGenerate} disabled={isGenerating}>
         {isGenerating ? "Generating..." : "Generate Long-Form Content"}

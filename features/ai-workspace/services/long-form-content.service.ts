@@ -1,20 +1,32 @@
+import { z as zv4 } from "zod/v4";
+
 import { generateStructuredOutput, generateStructuredOutputStreaming } from "@/lib/ai/structured-output";
 import type { StreamEvent } from "@/lib/ai/providers/types";
 import type { ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { DEFAULT_CONTENT_BRIEF_SETTINGS, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { buildLongFormOutputSchema } from "@/features/ai-workspace/schemas/long-form-output-builder";
-import { longFormContentOutputSchema, type LongFormContentOutput } from "@/features/ai-workspace/schemas/long-form-content.schema";
+import { formatLongFormContentAsMarkdown, longFormContentOutputSchema, type LongFormContentOutput } from "@/features/ai-workspace/schemas/long-form-content.schema";
 import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { filterReservedSections, stripConfigurationArtifacts, stripHtmlTags } from "@/features/ai-workspace/services/content-sanitizer";
+import { computeWordCount } from "@/features/ai-workspace/services/seo-checklist.service";
 
 /**
  * Bumped whenever the prompt template below changes — own, independent
  * version from content-brief.service.ts's PROMPT_VERSION, same convention
  * as every existing AI task in this app keeping its own counter.
  */
-export const PROMPT_VERSION = 8;
+export const PROMPT_VERSION = 9;
 
 const LONG_FORM_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are a senior SEO content writer producing a DRAFT article for internal human review before anything is published. Never invent statistics, prices, dates, named clients, testimonials, certifications, or services/locations not present in the supplied context. Never state a specific market statistic, percentage, financial figure, or industry data point (e.g. typical unit sizes, utilization rates, market share) unless it is present in the supplied context — describe such things qualitatively instead of inventing a number. Never characterize a specific real company or brand name as a generic category, product type, or common noun — if a real company name appears in the supplied context, refer to it accurately as a company/provider, not as a type of product or service. Never invent a URL, citation, or source you cannot verify. Integrate the target keyword naturally — do not keyword-stuff. This is a draft; a human will fact-check it before it is ever published.`;
+
+/**
+ * Shared by buildPrompt (what the model is told) and the Phase 4 refinement
+ * controller below (what actually gates whether refinement runs) — kept as
+ * one function so the two can never drift apart.
+ */
+function computeAcceptableRange(wordCount: number): { lowWords: number; highWords: number } {
+  return { lowWords: Math.round(wordCount * 0.93), highWords: Math.round(wordCount * 1.07) };
+}
 
 export type LongFormContentContext = {
   /** Provenance for the AiUsageLog row — never a WebsiteAnalysisJob, same as content-brief.service.ts. */
@@ -55,9 +67,18 @@ export function buildPrompt(ctx: LongFormContentContext): string {
   // even from a capable model. Deliberately not 100% of perSectionWords: the
   // floor must still leave room for a section that genuinely has less to
   // say than another without that reading as a violation.
+  //
+  // Phase 3B — perSectionWords is still computed (it's the basis for the
+  // floor above) but is deliberately never surfaced to the model as an
+  // explicit "up to roughly N words" ceiling. A live comparison against an
+  // earlier prompt version that DID state that ceiling showed real output
+  // dropping when the ceiling number was lowered, even though the floor was
+  // simultaneously raised — evidence the model may anchor to a stated
+  // per-section ceiling as a practical stopping point. This version tests
+  // that hypothesis by removing the ceiling phrase, not by changing the
+  // floor's math.
   const minSectionWords = Math.round(perSectionWords * 0.75);
-  const lowWords = Math.round(settings.wordCount * 0.93);
-  const highWords = Math.round(settings.wordCount * 1.07);
+  const { lowWords, highWords } = computeAcceptableRange(settings.wordCount);
 
   const requirements = [
     `1. An introduction that gives the reader a clear, useful answer or orientation to their main question within the first few sentences — not just a hook or a restatement of what the article covers. Do not end the introduction with generic template language such as "This comprehensive guide will walk you through...", "In this article, we'll explore...", "This guide covers...", or "Let's take a look at..." — every sentence in the introduction should add real orientation, context, or insight, not preview the article's structure.`,
@@ -95,7 +116,7 @@ This article's APPROVED BRIEF (already reviewed and approved by a human — foll
 - GEO/AEO notes: ${ctx.brief.geoAeoNotes}
 - Suggested search intent: ${ctx.brief.suggestedSearchIntent}
 
-This article's target length is approximately ${settings.wordCount} words in total — a range of roughly ${lowWords}-${highWords} words is fine, and reaching it should be a natural consequence of genuine depth, not a goal pursued for its own sake. The outline above has ${outlineSectionCount} sections; each section must contain AT LEAST ${minSectionWords} words of real substance — meaningful explanation, evidence or context grounded in the information supplied above, examples, or analysis that make the section genuinely useful on its own, not a thin summary — and up to roughly ${perSectionWords} words when the supplied context actually supports going further. Falling far short of the target because sections are shallow is not acceptable. But do not pad with repetition, generic restatements, filler sentences, or invented information just to hit the number — if the supplied context does not support reaching the target without inventing unsupported material, prioritize accuracy and write a shorter, honest article instead.
+This article's target length is approximately ${settings.wordCount} words in total — a range of roughly ${lowWords}-${highWords} words is fine, and reaching it should be a natural consequence of genuine depth, not a goal pursued for its own sake. The outline above has ${outlineSectionCount} sections; each section must contain AT LEAST ${minSectionWords} words of real substance — meaningful explanation, evidence or context grounded in the information supplied above, examples, or analysis that make the section genuinely useful on its own, not a thin summary. There is no upper limit stated for a section — develop each one as fully as the supplied brief and context genuinely support, rather than stopping once the minimum is technically met. Falling far short of the target because sections are shallow is not acceptable. But do not pad with repetition, generic restatements, filler sentences, or invented information just to hit the number — if the supplied context does not support reaching the target without inventing unsupported material, prioritize accuracy and write a shorter, honest article instead.
 Reading level: ${settings.readingLevel.toLowerCase().replace("_", " ")}. Brand voice/tone: ${settings.brandVoice.toLowerCase().replace(/_/g, " ")}.
 ${settings.sections.cta ? "A call-to-action belongs near the end of this piece. Do NOT write the CTA copy, button text, phone number, or URL yourself — it will be inserted separately from the requester's own literal, pre-approved text. Only account for its presence when structuring the article." : ""}
 
@@ -103,6 +124,189 @@ Using ONLY the information above, write a complete draft article with:
 ${requirements.join("\n")}
 
 Do not restate the brief verbatim — write real prose. Do not add facts, numbers, dates, or claims that aren't already in the context above. Never include internal instructions, configuration labels, word-count targets, or any other generation parameter as literal text anywhere in the headings or body — these values guide you but must never appear as visible content. If a section would genuinely benefit from a comparison or structured breakdown, format it as a real Markdown table — never add one merely to look more structured.`;
+}
+
+/**
+ * Phase 4 — bounded, deficit-aware length-control controller. Runs after the
+ * initial generation, before the existing sanitizer cleanup, and only ever
+ * touches sections[].body — introduction/conclusion/FAQ/keyTakeaways are
+ * never read or written here. See long-form-content.service.test.ts for the
+ * behavioral contract this is validated against.
+ */
+const HARD_SAFETY_CAP = 3;
+/** A controller heuristic for section selection only — not a content-quality guarantee, and never a target the model is asked to hit. See Phase 4A's design report. */
+const PER_SECTION_GAIN_ESTIMATE = 100;
+/** A candidate must exceed the original section's word count by more than this to be accepted — filters out trivial/no-op rephrasings, not a quality bar. */
+const MIN_WORD_INCREASE = 15;
+
+const sectionExpansionSchema = zv4.object({
+  expansions: zv4.array(zv4.object({ heading: zv4.string(), body: zv4.string() })),
+});
+
+/**
+ * The expansion request's own prompt-builder, deliberately separate from
+ * buildPrompt() above: this call is scoped to a handful of EXISTING sections
+ * only, never the whole article, and must never ask for (or be able to
+ * produce) a new section, heading, or topic. Reuses the same
+ * LONG_FORM_SYSTEM_PROMPT (doctrine + anti-fabrication clauses) as the
+ * system prompt — see generateLongFormContent's expansion call below.
+ */
+function buildExpansionPrompt(ctx: LongFormContentContext, sectionsToExpand: Array<{ heading: string; body: string }>): string {
+  const keywordLine = ctx.keyword
+    ? `Target keyword: "${ctx.keyword.term}"${ctx.keyword.intent ? ` (tracked search intent: ${ctx.keyword.intent})` : ""}`
+    : "No specific tracked keyword was selected — follow the brief's suggested search intent below.";
+
+  const sectionsBlock = sectionsToExpand
+    .map((section, index) => `--- EXISTING SECTION ${index + 1} ---\nHeading: ${section.heading}\nExisting body (expand this — do not discard it):\n${section.body}`)
+    .join("\n\n");
+
+  return `Website: ${ctx.domain} (SEO project: ${ctx.seoProjectName})
+${keywordLine}
+
+This article's APPROVED BRIEF (already reviewed and approved by a human):
+- Title: ${ctx.brief.title}
+- SEO recommendations to apply: ${ctx.brief.seoRecommendations.join(" | ") || "(none)"}
+- GEO/AEO notes: ${ctx.brief.geoAeoNotes}
+
+The following ${sectionsToExpand.length} section(s) are EXISTING, already-generated parts of a longer article that is being reviewed for depth. For EACH one, return an expanded, deepened version of that exact section.
+
+${sectionsBlock}
+
+Requirements for every expansion, all of which are firm:
+- Preserve the EXACT original heading text for each section, unchanged.
+- Preserve everything useful the existing body already says — expand and deepen it, never discard or contradict correct existing content.
+- Do not simply restate the existing section in different words — add genuinely new detail: further explanation, a concrete example, a specific process or step, a decision-making criterion, or analysis, grounded only in the information supplied above and in the existing section text.
+- Use only information supported by the supplied brief/context above. Never invent a statistic, percentage, financial figure, study, case study, company name, testimonial, or other unsupported claim merely to make a section longer.
+- Do not create any new section, heading, or topic. Return exactly one expansion per section listed above, in the same order, with the same heading.
+- Do not reference or attempt to modify any other part of the article — the introduction, conclusion, FAQ, and key takeaways are not part of this request and are handled separately.
+- If the supplied context genuinely does not support meaningfully expanding a section without inventing material, return that section with only the improvement the context actually supports. A short, honest expansion is better than a padded or fabricated one — do not add filler sentences just to increase length.`;
+}
+
+type ValidatedExpansion = { index: number; newBody: string; wordDelta: number };
+
+function normalizeHeadingForMatch(heading: string): string {
+  return heading.trim().toLowerCase();
+}
+
+/**
+ * Deterministic validation — never prompt-only trust. Every rejection rule
+ * here mirrors the Phase 4A design report exactly: unexpected/new headings,
+ * duplicate headings (first occurrence wins), and any "expansion" that isn't
+ * genuinely longer are all discarded before they can ever reach the merge
+ * step, regardless of what the model's own response claims.
+ */
+function validateExpansions(
+  requestedSections: Array<{ realIndex: number; heading: string; body: string }>,
+  returnedExpansions: Array<{ heading?: unknown; body?: unknown }>
+): ValidatedExpansion[] {
+  const byNormalizedHeading = new Map<string, { realIndex: number; body: string }>();
+  for (const section of requestedSections) {
+    byNormalizedHeading.set(normalizeHeadingForMatch(section.heading), { realIndex: section.realIndex, body: section.body });
+  }
+
+  const validated: ValidatedExpansion[] = [];
+  const consumedHeadings = new Set<string>();
+
+  for (const candidate of returnedExpansions) {
+    if (typeof candidate.heading !== "string" || typeof candidate.body !== "string") continue;
+    const normalized = normalizeHeadingForMatch(candidate.heading);
+    const match = byNormalizedHeading.get(normalized); // unexpected/new heading — reject
+    if (!match) continue;
+    if (consumedHeadings.has(normalized)) continue; // duplicate heading — first valid occurrence wins
+    const wordDelta = computeWordCount(candidate.body) - computeWordCount(match.body);
+    if (wordDelta <= MIN_WORD_INCREASE) continue; // not meaningfully longer — reject
+    consumedHeadings.add(normalized);
+    validated.push({ index: match.realIndex, newBody: candidate.body, wordDelta });
+  }
+
+  return validated;
+}
+
+/**
+ * Overshoot protection: applies validated expansions smallest-increase-first,
+ * recalculating the REAL total (via the same formatter+counter production
+ * uses) after each one, and stops before any addition that would push the
+ * total past highWords. Never mutates currentArticle — every candidate is a
+ * new object; the caller only receives the result once this function
+ * returns.
+ */
+function acceptSafeExpansions(currentArticle: LongFormContentOutput, validatedExpansions: ValidatedExpansion[], highWords: number): LongFormContentOutput {
+  const sortedByDelta = [...validatedExpansions].sort((a, b) => a.wordDelta - b.wordDelta);
+  let workingSections = currentArticle.sections;
+
+  for (const expansion of sortedByDelta) {
+    const candidateSections = workingSections.map((section, i) => (i === expansion.index ? { ...section, body: expansion.newBody } : section));
+    const candidateArticle = { ...currentArticle, sections: candidateSections };
+    const candidateTotal = computeWordCount(formatLongFormContentAsMarkdown(candidateArticle));
+    if (candidateTotal > highWords) break; // sorted ascending — every remaining (larger) delta would overshoot too
+    workingSections = candidateSections;
+  }
+
+  return { ...currentArticle, sections: workingSections };
+}
+
+/**
+ * The bounded refinement loop itself. Re-measures and re-ranks sections
+ * before every round (never reuses a stale selection across rounds), stops
+ * the instant the article is already in range, and gives up gracefully —
+ * returning the last known-good article — on an expansion-call failure or a
+ * round that produces no valid expansions. Never more than
+ * HARD_SAFETY_CAP additional AI calls, regardless of how large the deficit
+ * is; the 5000-word tier is expected to still fall short of range after the
+ * cap is reached (see Phase 4A's structural assessment) rather than forcing
+ * more rounds to chase a number.
+ */
+async function refineArticleLength(ctx: LongFormContentContext, article: LongFormContentOutput, lowWords: number, highWords: number): Promise<LongFormContentOutput> {
+  let currentArticle = article;
+
+  for (let round = 0; round < HARD_SAFETY_CAP; round++) {
+    const currentTotal = computeWordCount(formatLongFormContentAsMarkdown(currentArticle));
+    if (currentTotal >= lowWords) break; // already in (or above) range — stop immediately, no further calls
+    if (currentArticle.sections.length === 0) break;
+
+    const deficit = lowWords - currentTotal;
+    const numSectionsToExpand = Math.min(currentArticle.sections.length, Math.ceil(deficit / PER_SECTION_GAIN_ESTIMATE));
+    if (numSectionsToExpand === 0) break;
+
+    const weakestFirst = currentArticle.sections
+      .map((section, index) => ({ realIndex: index, heading: section.heading, body: section.body, words: computeWordCount(section.body) }))
+      .sort((a, b) => a.words - b.words)
+      .slice(0, numSectionsToExpand);
+
+    // Both a thrown error AND a resolved-but-malformed/missing `expansions`
+    // array are treated as "this round produced nothing usable" — the whole
+    // shape check happens inside the try so neither can escape as an
+    // uncaught exception up through generateLongFormContent.
+    let expansions: Array<{ heading?: unknown; body?: unknown }>;
+    try {
+      const expansionResult = await generateStructuredOutput(sectionExpansionSchema, {
+        system: LONG_FORM_SYSTEM_PROMPT,
+        prompt: buildExpansionPrompt(ctx, weakestFirst),
+        maxTokens: 4000,
+        taskType: "CONTENT_DRAFT",
+        promptVersion: PROMPT_VERSION,
+        seoProjectId: ctx.seoProjectId,
+        companyId: ctx.companyId,
+      });
+      expansions = Array.isArray(expansionResult?.expansions) ? expansionResult.expansions : [];
+    } catch {
+      break; // expansion call failed — stop refinement, keep the last known-good article
+    }
+
+    const validated = validateExpansions(weakestFirst, expansions);
+    if (validated.length === 0) continue; // no-op round — try again next round with a fresh selection, if any remain
+
+    const candidateSections = currentArticle.sections.map((section, i) => {
+      const match = validated.find((v) => v.index === i);
+      return match ? { ...section, body: match.newBody } : section;
+    });
+    const candidateArticle = { ...currentArticle, sections: candidateSections };
+    const candidateTotal = computeWordCount(formatLongFormContentAsMarkdown(candidateArticle));
+
+    currentArticle = candidateTotal <= highWords ? candidateArticle : acceptSafeExpansions(currentArticle, validated, highWords);
+  }
+
+  return currentArticle;
 }
 
 /**
@@ -132,16 +336,24 @@ export async function generateLongFormContent(ctx: LongFormContentContext, onChu
   // gets its default rather than being undefined at runtime — see
   // content-brief.service.ts's identical comment.
   const parsed = longFormContentOutputSchema.parse(result);
+
+  // Phase 4 — bounded, deficit-aware section-depth refinement. Runs only
+  // when the initial article falls short of the configured range; a
+  // healthy or already-long article (as most short targets are) triggers
+  // zero additional calls. See refineArticleLength's own comment.
+  const { lowWords, highWords } = computeAcceptableRange(settings.wordCount);
+  const refined = await refineArticleLength(ctx, parsed, lowWords, highWords);
+
   // Deterministic cleanup for the classes of defect a prompt instruction
   // alone can't guarantee against — see content-sanitizer.ts. Headings are
   // cleaned BEFORE the reserved-section filter runs, so a leaked "1.
   // Conclusion" numbering artifact still normalizes to "conclusion" and
   // gets filtered, not left behind as a stray duplicate.
-  const cleanedSections = parsed.sections.map((section) => ({ ...section, heading: stripHtmlTags(stripConfigurationArtifacts(section.heading)) }));
+  const cleanedSections = refined.sections.map((section) => ({ ...section, heading: stripHtmlTags(stripConfigurationArtifacts(section.heading)) }));
   return {
-    ...parsed,
-    introduction: stripConfigurationArtifacts(parsed.introduction),
+    ...refined,
+    introduction: stripConfigurationArtifacts(refined.introduction),
     sections: filterReservedSections(cleanedSections),
-    faq: parsed.faq.map((item) => ({ ...item, question: stripConfigurationArtifacts(item.question) })),
+    faq: refined.faq.map((item) => ({ ...item, question: stripConfigurationArtifacts(item.question) })),
   };
 }

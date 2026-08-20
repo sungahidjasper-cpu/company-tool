@@ -4,7 +4,7 @@ import { LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
 import { getCachedHealth } from "@/lib/ai/providers/health-cache";
 import { estimateOpenRouterCostUsd } from "@/lib/ai/providers/pricing";
 import { withRetry } from "@/lib/ai/providers/retry";
-import type { GeneratedOutput, GenerateRawResult, LlmProvider, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
+import type { GeneratedOutput, GenerateRawResult, LlmProvider, StreamChunkCallback, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
 
 /**
  * OpenRouter is an OpenAI-compatible aggregator (same chat/completions
@@ -105,6 +105,60 @@ async function attemptGenerate(request: StructuredOutputRequest): Promise<Genera
   };
 }
 
+/**
+ * Phase 22 Stage 2 — OpenRouter proxies the OpenAI SDK's chat-completions
+ * shape exactly, including its streaming delta format — same
+ * manual-accumulation pattern as openai.provider.ts's streaming variant.
+ */
+async function attemptGenerateStreaming(request: StructuredOutputRequest, onChunk: StreamChunkCallback): Promise<GeneratedOutput> {
+  const client = getClient();
+  const model = process.env.OPENROUTER_MODEL!;
+
+  const stream = await client.chat.completions.create({
+    model,
+    max_completion_tokens: request.maxTokens ?? 4096,
+    messages: [
+      ...(request.system ? [{ role: "system" as const, content: request.system }] : []),
+      { role: "user" as const, content: request.prompt },
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: { name: "structured_output", schema: request.jsonSchema, strict: true },
+    },
+    stream: true,
+    stream_options: { include_usage: true },
+  });
+
+  let accumulated = "";
+  let usage: TokenUsage = { promptTokens: null, completionTokens: null };
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta?.content;
+    if (delta) {
+      accumulated += delta;
+      onChunk(accumulated);
+    }
+    if (chunk.usage) {
+      usage = {
+        promptTokens: chunk.usage.prompt_tokens ?? null,
+        completionTokens: chunk.usage.completion_tokens ?? null,
+      };
+    }
+  }
+
+  if (!accumulated) {
+    throw new LlmProviderError("AI response contained no content.", "UNKNOWN", "openrouter");
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(accumulated);
+  } catch (error) {
+    throw new LlmProviderError("AI response could not be parsed as JSON.", "UNKNOWN", "openrouter", { cause: error });
+  }
+
+  return { data, usage, model };
+}
+
 export const openrouterProvider: LlmProvider = {
   name: "openrouter",
 
@@ -123,6 +177,27 @@ export const openrouterProvider: LlmProvider = {
         {
           maxAttempts: MAX_PARSE_ATTEMPTS,
           label: "openrouter",
+          isRetryable: (error) =>
+            error instanceof LlmProviderError && error.type === "UNKNOWN" && /could not be parsed as JSON/i.test(error.message),
+        }
+      );
+      return { ...result, retried: attempts > 1 };
+    } catch (error) {
+      throw classifyError(error);
+    }
+  },
+
+  async generateRawStreaming(request: StructuredOutputRequest, onChunk: StreamChunkCallback): Promise<GenerateRawResult> {
+    let attempts = 0;
+    try {
+      const result = await withRetry(
+        () => {
+          attempts++;
+          return attemptGenerateStreaming(request, onChunk);
+        },
+        {
+          maxAttempts: MAX_PARSE_ATTEMPTS,
+          label: "openrouter-streaming",
           isRetryable: (error) =>
             error instanceof LlmProviderError && error.type === "UNKNOWN" && /could not be parsed as JSON/i.test(error.message),
         }

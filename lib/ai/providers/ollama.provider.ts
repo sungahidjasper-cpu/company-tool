@@ -4,7 +4,7 @@ import { LlmProviderError } from "@/lib/ai/providers/errors";
 import { getCachedHealth } from "@/lib/ai/providers/health-cache";
 import { estimateOllamaCostUsd } from "@/lib/ai/providers/pricing";
 import { withRetry } from "@/lib/ai/providers/retry";
-import type { GeneratedOutput, GenerateRawResult, LlmProvider, StructuredOutputRequest } from "@/lib/ai/providers/types";
+import type { GeneratedOutput, GenerateRawResult, LlmProvider, StreamChunkCallback, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
 
 const MAX_PARSE_ATTEMPTS = 3;
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -139,6 +139,78 @@ async function attemptGenerate(request: StructuredOutputRequest): Promise<Genera
   };
 }
 
+/**
+ * Phase 22 Stage 2 — ollama-js's streamed chunks each carry only their own
+ * delta (`message.content`), same manual-accumulation shape as
+ * gemini.provider.ts/openai.provider.ts; the final chunk (`done: true`)
+ * carries the count-based usage stats, matching the non-streaming call's
+ * own field names.
+ *
+ * Timeout handling mirrors attemptGenerate's raceTimeout exactly (same
+ * accepted limitation: it stops us from waiting forever on a hung local
+ * server, but can't actually cancel the in-flight request — ollama-js has
+ * no per-call abort signal, only a client-wide `abort()` that would cancel
+ * every concurrent streamed request on the shared client, not just this
+ * one, so it's deliberately not used here). The one addition streaming
+ * needs beyond that: `abandoned` stops a chunk that arrives after this
+ * attempt already lost its race from still calling onChunk into whatever
+ * new attempt the caller has since moved on to.
+ */
+async function attemptGenerateStreaming(request: StructuredOutputRequest, onChunk: StreamChunkCallback): Promise<GeneratedOutput> {
+  const client = getClient();
+  const model = process.env.OLLAMA_MODEL!;
+  let abandoned = false;
+
+  return raceTimeout(
+    (async () => {
+      const stream = await client.chat({
+        model,
+        messages: [
+          ...(request.system ? [{ role: "system", content: request.system }] : []),
+          { role: "user", content: request.prompt },
+        ],
+        format: request.jsonSchema,
+        stream: true,
+        options: { num_predict: request.maxTokens ?? 4096 },
+      });
+
+      let accumulated = "";
+      let usage: TokenUsage = { promptTokens: null, completionTokens: null };
+      for await (const chunk of stream) {
+        if (abandoned) break;
+        const delta = chunk.message?.content;
+        if (delta) {
+          accumulated += delta;
+          onChunk(accumulated);
+        }
+        if (chunk.done) {
+          usage = {
+            promptTokens: chunk.prompt_eval_count ?? null,
+            completionTokens: chunk.eval_count ?? null,
+          };
+        }
+      }
+
+      if (!accumulated) {
+        throw new LlmProviderError("AI response contained no content.", "UNKNOWN", "ollama");
+      }
+
+      let data: unknown;
+      try {
+        data = JSON.parse(accumulated);
+      } catch (error) {
+        throw new LlmProviderError("AI response could not be parsed as JSON.", "UNKNOWN", "ollama", { cause: error });
+      }
+
+      return { data, usage, model };
+    })(),
+    REQUEST_TIMEOUT_MS
+  ).catch((error) => {
+    abandoned = true;
+    throw error;
+  });
+}
+
 export const ollamaProvider: LlmProvider = {
   name: "ollama",
 
@@ -157,6 +229,27 @@ export const ollamaProvider: LlmProvider = {
         {
           maxAttempts: MAX_PARSE_ATTEMPTS,
           label: "ollama",
+          isRetryable: (error) =>
+            error instanceof LlmProviderError && error.type === "UNKNOWN" && /could not be parsed as JSON/i.test(error.message),
+        }
+      );
+      return { ...result, retried: attempts > 1 };
+    } catch (error) {
+      throw classifyError(error);
+    }
+  },
+
+  async generateRawStreaming(request: StructuredOutputRequest, onChunk: StreamChunkCallback): Promise<GenerateRawResult> {
+    let attempts = 0;
+    try {
+      const result = await withRetry(
+        () => {
+          attempts++;
+          return attemptGenerateStreaming(request, onChunk);
+        },
+        {
+          maxAttempts: MAX_PARSE_ATTEMPTS,
+          label: "ollama-streaming",
           isRetryable: (error) =>
             error instanceof LlmProviderError && error.type === "UNKNOWN" && /could not be parsed as JSON/i.test(error.message),
         }

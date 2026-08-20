@@ -85,3 +85,109 @@ describe("ollama.provider generateRaw — usage-field shape", () => {
     expect(result.usage).toEqual({ promptTokens: 12, completionTokens: 34 });
   });
 });
+
+/** Mirrors ollama-js's real streamed-chunk shape: each chunk carries only its own delta in `message.content`; the final chunk has `done: true` plus the count-based usage stats. */
+async function* chunksOf(...chunks: unknown[]) {
+  for (const chunk of chunks) yield chunk;
+}
+
+describe("ollama.provider generateRawStreaming", () => {
+  beforeEach(() => {
+    mockChat.mockReset();
+    process.env.OLLAMA_HOST = "http://localhost:11434";
+    process.env.OLLAMA_MODEL = "llama3";
+  });
+
+  afterEach(() => {
+    delete process.env.OLLAMA_HOST;
+    delete process.env.OLLAMA_MODEL;
+    vi.useRealTimers();
+  });
+
+  it("accumulates delta chunks, forwards each running total via onChunk, and reads usage from the final done chunk", async () => {
+    mockChat.mockResolvedValue(
+      chunksOf(
+        { message: { content: '{"value":' }, done: false },
+        { message: { content: '"ok"}' }, done: false },
+        { message: { content: "" }, done: true, prompt_eval_count: 6, eval_count: 9 }
+      )
+    );
+
+    const onChunk = vi.fn();
+    const result = await ollamaProvider.generateRawStreaming!({ prompt: "test", jsonSchema: {} } as never, onChunk);
+
+    expect(onChunk.mock.calls.map((call) => call[0])).toEqual(['{"value":', '{"value":"ok"}']);
+    expect(result.data).toEqual({ value: "ok" });
+    expect(result.usage).toEqual({ promptTokens: 6, completionTokens: 9 });
+  });
+
+  it("throws UNKNOWN when the stream never produces any content", async () => {
+    mockChat.mockResolvedValue(chunksOf({ message: { content: "" }, done: true, prompt_eval_count: 1, eval_count: 0 }));
+
+    await expect(ollamaProvider.generateRawStreaming!({ prompt: "test", jsonSchema: {} } as never, vi.fn())).rejects.toMatchObject({
+      type: "UNKNOWN",
+    });
+  });
+
+  it("throws UNKNOWN when the accumulated content isn't valid JSON (retried up to MAX_PARSE_ATTEMPTS, still fails every time)", async () => {
+    mockChat.mockImplementation(() => Promise.resolve(chunksOf({ message: { content: "not json" }, done: true })));
+
+    await expect(ollamaProvider.generateRawStreaming!({ prompt: "test", jsonSchema: {} } as never, vi.fn())).rejects.toMatchObject({
+      type: "UNKNOWN",
+    });
+    expect(mockChat).toHaveBeenCalledTimes(3);
+  });
+
+  it("mid-stream failure: forwards the chunks received before the failure, then rejects instead of returning a partial result", async () => {
+    async function* failsPartway() {
+      yield { message: { content: '{"partial":' }, done: false };
+      throw new Error("connection dropped mid-stream");
+    }
+    mockChat.mockResolvedValue(failsPartway());
+
+    const onChunk = vi.fn();
+    await expect(ollamaProvider.generateRawStreaming!({ prompt: "test", jsonSchema: {} } as never, onChunk)).rejects.toThrow();
+    expect(onChunk).toHaveBeenCalledTimes(1);
+    expect(onChunk).toHaveBeenCalledWith('{"partial":');
+  });
+
+  it("stops forwarding further chunks once this attempt has already timed out (the abandoned guard)", async () => {
+    vi.useFakeTimers();
+    let releaseSecondChunk: () => void = () => {};
+    const secondChunkGate = new Promise<void>((resolve) => {
+      releaseSecondChunk = resolve;
+    });
+
+    async function* hangingChunks() {
+      yield { message: { content: '{"a":1' }, done: false };
+      await secondChunkGate;
+      yield { message: { content: "}" }, done: true, prompt_eval_count: 1, eval_count: 1 };
+    }
+    mockChat.mockResolvedValue(hangingChunks());
+
+    const onChunk = vi.fn();
+    const promise = ollamaProvider.generateRawStreaming!({ prompt: "test", jsonSchema: {} } as never, onChunk);
+    // Attach a handler synchronously, in the same tick the promise is
+    // created — the real assertion is the `rejects.toMatchObject` below;
+    // this just stops Node from ever seeing an instant where no handler is
+    // attached yet, which is otherwise flagged as a (harmless, timing-only)
+    // "handled asynchronously" warning once the fake-timer advance below
+    // causes the actual rejection.
+    promise.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onChunk).toHaveBeenCalledTimes(1);
+
+    // Advance past the internal request timeout — the outer race rejects
+    // with an AbortError, which classifyError maps to TIMEOUT (not
+    // retryable via the parse-failure predicate, so no further attempts).
+    await vi.advanceTimersByTimeAsync(130_000);
+    await expect(promise).rejects.toMatchObject({ type: "TIMEOUT" });
+
+    // Now let the paused generator continue — its second chunk must be
+    // suppressed by the `abandoned` guard, never reaching onChunk.
+    releaseSecondChunk();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onChunk).toHaveBeenCalledTimes(1);
+  });
+});

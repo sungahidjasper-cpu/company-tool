@@ -4,7 +4,7 @@ import { LlmProviderError, type LlmErrorType } from "@/lib/ai/providers/errors";
 import { getCachedHealth } from "@/lib/ai/providers/health-cache";
 import { estimateOpenAiCostUsd, getOpenAiMaxContext } from "@/lib/ai/providers/pricing";
 import { withRetry } from "@/lib/ai/providers/retry";
-import type { GeneratedOutput, GenerateRawResult, LlmProvider, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
+import type { GeneratedOutput, GenerateRawResult, LlmProvider, StreamChunkCallback, StructuredOutputRequest, TokenUsage } from "@/lib/ai/providers/types";
 
 const MAX_PARSE_ATTEMPTS = 3;
 
@@ -102,6 +102,63 @@ async function attemptGenerate(request: StructuredOutputRequest): Promise<Genera
   };
 }
 
+/**
+ * Phase 22 Stage 2 — the OpenAI SDK's streamed chat-completion chunks each
+ * carry only their own delta (`choices[0].delta.content`), not a running
+ * snapshot like Anthropic's — same manual-accumulation shape gemini.provider.ts
+ * already uses. `stream_options.include_usage` asks the API to attach a
+ * final usage-only chunk (no `choices`), matching how the non-streaming call
+ * already reports usage; if a chunk has no delta and no usage, it's skipped.
+ */
+async function attemptGenerateStreaming(request: StructuredOutputRequest, onChunk: StreamChunkCallback): Promise<GeneratedOutput> {
+  const client = getClient();
+  const model = process.env.OPENAI_MODEL!;
+
+  const stream = await client.chat.completions.create({
+    model,
+    max_completion_tokens: request.maxTokens ?? 4096,
+    messages: [
+      ...(request.system ? [{ role: "system" as const, content: request.system }] : []),
+      { role: "user" as const, content: request.prompt },
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: { name: "structured_output", schema: request.jsonSchema, strict: true },
+    },
+    stream: true,
+    stream_options: { include_usage: true },
+  });
+
+  let accumulated = "";
+  let usage: TokenUsage = { promptTokens: null, completionTokens: null };
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta?.content;
+    if (delta) {
+      accumulated += delta;
+      onChunk(accumulated);
+    }
+    if (chunk.usage) {
+      usage = {
+        promptTokens: chunk.usage.prompt_tokens ?? null,
+        completionTokens: chunk.usage.completion_tokens ?? null,
+      };
+    }
+  }
+
+  if (!accumulated) {
+    throw new LlmProviderError("AI response contained no content.", "UNKNOWN", "openai");
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(accumulated);
+  } catch (error) {
+    throw new LlmProviderError("AI response could not be parsed as JSON.", "UNKNOWN", "openai", { cause: error });
+  }
+
+  return { data, usage, model };
+}
+
 export const openaiProvider: LlmProvider = {
   name: "openai",
 
@@ -120,6 +177,27 @@ export const openaiProvider: LlmProvider = {
         {
           maxAttempts: MAX_PARSE_ATTEMPTS,
           label: "openai",
+          isRetryable: (error) =>
+            error instanceof LlmProviderError && error.type === "UNKNOWN" && /could not be parsed as JSON/i.test(error.message),
+        }
+      );
+      return { ...result, retried: attempts > 1 };
+    } catch (error) {
+      throw classifyError(error);
+    }
+  },
+
+  async generateRawStreaming(request: StructuredOutputRequest, onChunk: StreamChunkCallback): Promise<GenerateRawResult> {
+    let attempts = 0;
+    try {
+      const result = await withRetry(
+        () => {
+          attempts++;
+          return attemptGenerateStreaming(request, onChunk);
+        },
+        {
+          maxAttempts: MAX_PARSE_ATTEMPTS,
+          label: "openai-streaming",
           isRetryable: (error) =>
             error instanceof LlmProviderError && error.type === "UNKNOWN" && /could not be parsed as JSON/i.test(error.message),
         }

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import { previewContentBriefPromptAction, saveContentBriefAction, startContentBriefGenerationAction } from "@/features/ai-workspace/actions/content-brief.actions";
 import { saveLongFormAsNewContentAction, startLongFormGenerationAction } from "@/features/ai-workspace/actions/long-form-content.actions";
@@ -717,6 +718,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
             : `Generating… ${streamCharCount} characters so far${streamProgress !== null ? ` (~${streamProgress}%)` : ""}`}
         </p>
       )}
+      {isGenerating && !isSwitchingProvider && streamCharCount !== null && streamProgress !== null && <Progress value={streamProgress} />}
       {isGenerating && !isSwitchingProvider && previewFields && Object.keys(previewFields).length > 0 && (
         <div className="space-y-1 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
           {typeof previewFields.title === "string" && (

@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { regenerateBriefFieldAction, type RegenerateBriefField } from "@/features/ai-workspace/actions/content-brief.actions";
 import { describeLlmError, type LlmErrorType } from "@/lib/ai/providers/errors";
 import { formatBriefAsMarkdown, markdownToHtml } from "@/features/ai-workspace/services/content-export.service";
@@ -434,6 +435,9 @@ export default function ContentBriefReview({
             ? "Switching to backup AI provider — restarting…"
             : `Generating… ${streamCharCount} characters so far${streamProgress !== null ? ` (~${streamProgress}%)` : ""}`}
         </p>
+      )}
+      {(isRegenerating || isGeneratingLongForm) && !isSwitchingProvider && streamCharCount !== null && streamProgress !== null && (
+        <Progress value={streamProgress} />
       )}
       {isRegenerating && !isSwitchingProvider && previewFields && Object.keys(previewFields).length > 0 && (
         <div className="space-y-1 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import ArticleMarkdownPreview from "@/features/ai-workspace/components/ArticleMarkdownPreview";
 import type { InternalLinkSuggestion } from "@/features/ai-workspace/schemas/content-brief-output-builder";
+import type { JsonValue } from "@/features/ai-workspace/services/partial-json-preview.service";
 import { checkMetaLengths, computeWordCount } from "@/features/ai-workspace/services/seo-checklist.service";
 
 const textareaClassName =
@@ -54,6 +55,18 @@ type LongFormContentReviewProps = {
   isRegenerating: boolean;
   isSaving: boolean;
   error?: string | null;
+  /**
+   * Phase 23 Stage 1 — the same Phase 22 streaming state the owning
+   * component (ContentBriefPicker or ExistingBriefLongFormGenerator)
+   * already holds, passed through so it stays visible during regeneration,
+   * not just on the very first generation (which never reaches this
+   * component). Purely cosmetic, same invariant as Phase 22: never read by
+   * onSave/onChange, never affects what gets persisted.
+   */
+  streamCharCount?: number | null;
+  streamProgress?: number | null;
+  isSwitchingProvider?: boolean;
+  previewFields?: Record<string, JsonValue> | null;
 };
 
 /**
@@ -76,6 +89,10 @@ export default function LongFormContentReview({
   isRegenerating,
   isSaving,
   error,
+  streamCharCount = null,
+  streamProgress = null,
+  isSwitchingProvider = false,
+  previewFields = null,
 }: LongFormContentReviewProps) {
   const busy = isRegenerating || isSaving;
   const actualWordCount = useMemo(() => computeWordCount(fields.body), [fields.body]);
@@ -223,6 +240,42 @@ export default function LongFormContentReview({
       )}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
+
+      {isRegenerating && (isSwitchingProvider || streamCharCount !== null) && (
+        <p className="text-sm text-slate-500">
+          {isSwitchingProvider
+            ? "Switching to backup AI provider — restarting…"
+            : `Generating… ${streamCharCount} characters so far${streamProgress !== null ? ` (~${streamProgress}%)` : ""}`}
+        </p>
+      )}
+      {isRegenerating && !isSwitchingProvider && previewFields && Object.keys(previewFields).length > 0 && (
+        <div className="space-y-1 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+          {typeof previewFields.introduction === "string" && (
+            <p>
+              <span className="font-medium text-slate-700">Introduction:</span> {previewFields.introduction}
+            </p>
+          )}
+          {Array.isArray(previewFields.sections) && previewFields.sections.length > 0 && (
+            <p>
+              <span className="font-medium text-slate-700">Sections so far ({previewFields.sections.length}):</span>{" "}
+              {previewFields.sections
+                .map((section) => (typeof section === "object" && section && "heading" in section ? section.heading : null))
+                .filter((heading): heading is string => typeof heading === "string")
+                .join(", ")}
+            </p>
+          )}
+          {typeof previewFields.conclusion === "string" && (
+            <p>
+              <span className="font-medium text-slate-700">Conclusion:</span> {previewFields.conclusion}
+            </p>
+          )}
+          {Array.isArray(previewFields.faq) && previewFields.faq.length > 0 && (
+            <p>
+              <span className="font-medium text-slate-700">FAQ items so far:</span> {previewFields.faq.length}
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-3">
         {onBackToBrief && (

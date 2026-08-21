@@ -10,6 +10,7 @@ import { formatBriefAsMarkdown, markdownToHtml } from "@/features/ai-workspace/s
 import { checkMetaLengths, computeSeoChecklist } from "@/features/ai-workspace/services/seo-checklist.service";
 import type { ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import type { ContentBriefOutput, ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
+import type { JsonValue } from "@/features/ai-workspace/services/partial-json-preview.service";
 
 const textareaClassName =
   "w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm";
@@ -50,6 +51,18 @@ type ContentBriefReviewProps = {
   error?: string | null;
   /** Phase 21 §15 — context regenerateBriefFieldAction needs to rebuild the same prompt for a single-field regeneration. */
   regenerateFieldContext: RegenerateFieldContext;
+  /**
+   * Phase 23 Stage 1 — the same Phase 22 streaming state ContentBriefPicker
+   * already owns, passed through so it stays visible during brief
+   * regeneration and long-form generation, not just on the very first
+   * brief generation (which never reaches this component). Purely
+   * cosmetic, same invariant as Phase 22: never read by onSave/onChange,
+   * never affects what gets persisted.
+   */
+  streamCharCount?: number | null;
+  streamProgress?: number | null;
+  isSwitchingProvider?: boolean;
+  previewFields?: Record<string, JsonValue> | null;
 };
 
 function CounterBadge({ length, min, max }: { length: number; min: number; max: number }) {
@@ -103,6 +116,10 @@ export default function ContentBriefReview({
   isSaving,
   error,
   regenerateFieldContext,
+  streamCharCount = null,
+  streamProgress = null,
+  isSwitchingProvider = false,
+  previewFields = null,
 }: ContentBriefReviewProps) {
   const busy = isRegenerating || isSaving || isGeneratingLongForm;
   const [regeneratingField, setRegeneratingField] = useState<RegenerateBriefField | null>(null);
@@ -382,6 +399,72 @@ export default function ContentBriefReview({
       </div>
 
       {(error || fieldError) && <p className="text-sm text-destructive">{error || fieldError}</p>}
+
+      {(isRegenerating || isGeneratingLongForm) && (isSwitchingProvider || streamCharCount !== null) && (
+        <p className="text-sm text-slate-500">
+          {isSwitchingProvider
+            ? "Switching to backup AI provider — restarting…"
+            : `Generating… ${streamCharCount} characters so far${streamProgress !== null ? ` (~${streamProgress}%)` : ""}`}
+        </p>
+      )}
+      {isRegenerating && !isSwitchingProvider && previewFields && Object.keys(previewFields).length > 0 && (
+        <div className="space-y-1 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+          {typeof previewFields.title === "string" && (
+            <p>
+              <span className="font-medium text-slate-700">Title:</span> {previewFields.title}
+            </p>
+          )}
+          {typeof previewFields.metaTitle === "string" && (
+            <p>
+              <span className="font-medium text-slate-700">Meta title:</span> {previewFields.metaTitle}
+            </p>
+          )}
+          {typeof previewFields.metaDescription === "string" && (
+            <p>
+              <span className="font-medium text-slate-700">Meta description:</span> {previewFields.metaDescription}
+            </p>
+          )}
+          {Array.isArray(previewFields.outline) && previewFields.outline.length > 0 && (
+            <p>
+              <span className="font-medium text-slate-700">Outline so far ({previewFields.outline.length}):</span>{" "}
+              {previewFields.outline.filter((item): item is string => typeof item === "string").join(", ")}
+            </p>
+          )}
+          {Array.isArray(previewFields.faq) && previewFields.faq.length > 0 && (
+            <p>
+              <span className="font-medium text-slate-700">FAQ items so far:</span> {previewFields.faq.length}
+            </p>
+          )}
+        </div>
+      )}
+      {isGeneratingLongForm && !isSwitchingProvider && previewFields && Object.keys(previewFields).length > 0 && (
+        <div className="space-y-1 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+          {typeof previewFields.introduction === "string" && (
+            <p>
+              <span className="font-medium text-slate-700">Introduction:</span> {previewFields.introduction}
+            </p>
+          )}
+          {Array.isArray(previewFields.sections) && previewFields.sections.length > 0 && (
+            <p>
+              <span className="font-medium text-slate-700">Sections so far ({previewFields.sections.length}):</span>{" "}
+              {previewFields.sections
+                .map((section) => (typeof section === "object" && section && "heading" in section ? section.heading : null))
+                .filter((heading): heading is string => typeof heading === "string")
+                .join(", ")}
+            </p>
+          )}
+          {typeof previewFields.conclusion === "string" && (
+            <p>
+              <span className="font-medium text-slate-700">Conclusion:</span> {previewFields.conclusion}
+            </p>
+          )}
+          {Array.isArray(previewFields.faq) && previewFields.faq.length > 0 && (
+            <p>
+              <span className="font-medium text-slate-700">FAQ items so far:</span> {previewFields.faq.length}
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-3">
         <Button type="button" variant="outline" onClick={onRegenerate} disabled={busy}>

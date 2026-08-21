@@ -389,6 +389,10 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
         isRegenerating={isGeneratingLongForm}
         isSaving={isSavingLongForm}
         error={error}
+        streamCharCount={streamCharCount}
+        streamProgress={streamProgress}
+        isSwitchingProvider={isSwitchingProvider}
+        previewFields={previewFields}
       />
     );
   }
@@ -408,6 +412,10 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
         isSaving={isSaving}
         error={error}
         regenerateFieldContext={{ seoProjectId, keywordId: keywordId || undefined, contentType, notes: notes || undefined }}
+        streamCharCount={streamCharCount}
+        streamProgress={streamProgress}
+        isSwitchingProvider={isSwitchingProvider}
+        previewFields={previewFields}
       />
     );
   }

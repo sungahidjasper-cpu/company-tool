@@ -210,6 +210,10 @@ export default function ExistingBriefLongFormGenerator({
         isRegenerating={isGenerating}
         isSaving={isSaving}
         error={error}
+        streamCharCount={streamCharCount}
+        streamProgress={streamProgress}
+        isSwitchingProvider={isSwitchingProvider}
+        previewFields={previewFields}
       />
     );
   }

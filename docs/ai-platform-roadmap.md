@@ -10,7 +10,7 @@ Note: as actually delivered, Phase 21 diverged from this roadmap's original "Enh
 | 19 | Per-Company AI Cost Controls & Rate Limiting | Essential | **Complete** — `0dda410` |
 | 20 | Multi-Provider Production Readiness | High | **Complete, committed & pushed** — `420d806` |
 | 21 | Configurable Content Brief & Long-Form Draft Generation (renamed from "Enhanced Observability" — see note above) | High | **Complete, committed & pushed** — `e582f87`. Post-ship content-quality fixes: see [phase-21-content-quality-fixes.md](phase-21-content-quality-fixes.md) |
-| 22 | Streaming | Medium | **Stage 1 complete, committed & pushed** — `2d4d2d2`. Stage 2 not started |
+| 22 | Streaming | Medium | **Complete, committed & pushed** — Stages 1–4: `2d4d2d2`, `0ce088a`, `270566b`, `b5e104b` |
 | 23 | UX Maturation | Medium | Not started |
 | 24 | Publishing / Distribution | Low | Not started |
 | 25 | Version History | Low | Not started |
@@ -35,11 +35,19 @@ Made the previously fixed-shape Content Brief / Long-Form generation fully confi
 
 Committed and pushed as `e582f87`. Live testing after ship surfaced content-quality defects in the generated output (short articles, metadata leaking configuration values, factual/structural issues) — tracked and largely fixed across two follow-up rounds, documented in full in [phase-21-content-quality-fixes.md](phase-21-content-quality-fixes.md). **One defect remains open going into the next session**: a severe form of prompt-instruction text leaking into the `metaTitle` field, found during Round 3 live verification — see that doc's "Round 4 (not started)" section for the exact repro and constraints.
 
-## Phase 22 — Streaming (Stage 1 complete)
+## Phase 22 — Streaming (Complete)
 
 Stage 1 added live SSE-based streaming preview of in-progress AI generation, without touching the production non-streaming path (`generateStructuredOutput`) at all — a fully parallel `generateStructuredOutputStreaming` orchestrator plus a new self-contained, DB-polling SSE route (`app/api/ai-workspace/jobs/[jobId]/stream/route.ts`) with zero in-process shared state, so it's correct regardless of server process topology. Gated behind `AI_STREAMING_ENABLED`; the client always attempts `EventSource` and silently no-ops if streaming is off or the route 404s. The existing 3-second polling loop remains the only path that ever detects terminal job state — streaming is purely a presentation layer on top of it. `AiGenerationJob` gained a `partialResultText` column (ephemeral, reset before any retry/fallback) and a genuinely-used `progress` field.
 
-Live-verified with real Gemini streaming and a real Ollama fallback mid-stream; SSE auth, cross-tenant isolation, terminal-state closure, and client disconnect were all independently verified. Committed and pushed as `2d4d2d2`. Stage 2 has not been scoped or started.
+Live-verified with real Gemini streaming and a real Ollama fallback mid-stream; SSE auth, cross-tenant isolation, terminal-state closure, and client disconnect were all independently verified. Committed and pushed as `2d4d2d2`.
+
+Stage 2 closed the remaining provider gap: `generateRawStreaming` was added to `openai.provider.ts`, `openrouter.provider.ts`, and `ollama.provider.ts` (which previously only had the non-streaming `generateRaw`), bringing every configured provider to streaming parity with Anthropic and Gemini from Stage 1. Live-verified with real OpenRouter and Ollama generations, a Gemini regression check, and a genuine organic Gemini→OpenRouter fallback captured mid-stream. Committed and pushed as `0ce088a`.
+
+Stage 3 added a field-level live preview beneath the existing character/progress indicator: a schema-agnostic, structural-boundary JSON parser (`partial-json-preview.service.ts`) that safely exposes already-complete top-level fields — and already-complete elements of top-level arrays such as `sections`/`faq` — from the still-accumulating streamed text, never repairing or guessing an incomplete value. Wired into `ContentBriefPicker.tsx` and `ExistingBriefLongFormGenerator.tsx`, cleared on stream open/reset/close exactly like the existing indicator; strictly cosmetic and never a source of truth for the saved result. Live-verified across Gemini, OpenRouter, and Ollama, including a genuine mid-stream provider fallback with correct preview reset. Committed and pushed as `270566b`.
+
+Stage 4 closed the one remaining test-coverage gap: `anthropic.provider.ts` and `gemini.provider.ts` had implemented `generateRawStreaming` since Stage 1 but had no dedicated unit tests, unlike the coverage Stage 2 added for the other three providers. New `anthropic.provider.test.ts` / `gemini.provider.test.ts` mirror those same test patterns against each provider's real event shape (Anthropic's snapshot-based `MessageStream.on("text")`, Gemini's delta-accumulated async generator), verified directly against the installed SDK types rather than assumed. Committed and pushed as `b5e104b`.
+
+All five providers (Anthropic, Gemini, OpenAI, OpenRouter, Ollama) now implement `generateRawStreaming` with dedicated unit test coverage, and the client-side field-level preview is live-verified across every configured provider. Phase 22 is complete.
 
 ## Phases 23–25
 

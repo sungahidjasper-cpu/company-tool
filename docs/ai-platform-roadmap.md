@@ -11,7 +11,7 @@ Note: as actually delivered, Phase 21 diverged from this roadmap's original "Enh
 | 20 | Multi-Provider Production Readiness | High | **Complete, committed & pushed** — `420d806` |
 | 21 | Configurable Content Brief & Long-Form Draft Generation (renamed from "Enhanced Observability" — see note above) | High | **Complete, committed & pushed** — `e582f87`. Post-ship content-quality fixes: see [phase-21-content-quality-fixes.md](phase-21-content-quality-fixes.md) |
 | 22 | Streaming | Medium | **Complete, committed & pushed** — Stages 1–4: `2d4d2d2`, `0ce088a`, `270566b`, `b5e104b` |
-| 23 | UX Maturation | Medium | Not started |
+| 23 | UX Maturation | Medium | **Complete, committed & pushed** — Stages 1–5: `f311ab8`, `d5b7b43`, `207ec67`, `cc3c79a`, `5b0c998` |
 | 24 | Publishing / Distribution | Low | Not started |
 | 25 | Version History | Low | Not started |
 
@@ -49,10 +49,23 @@ Stage 4 closed the one remaining test-coverage gap: `anthropic.provider.ts` and 
 
 All five providers (Anthropic, Gemini, OpenAI, OpenRouter, Ollama) now implement `generateRawStreaming` with dedicated unit test coverage, and the client-side field-level preview is live-verified across every configured provider. Phase 22 is complete.
 
-## Phases 23–25
+## Phase 23 — UX Maturation (Complete)
+
+Stage 1 restored streaming-status and field-preview visibility across the AI Workspace's job-based generation/regeneration entry points — the Phase 22 streaming indicators only rendered in each component's pre-result branch, so a result already being on screen (regenerating a brief, or generating/regenerating long-form content) silently lost that feedback even though the same streaming-capable functions were still running. Committed and pushed as `f311ab8`.
+
+Stage 2 added structured LLM job-failure presentation using the existing `errorType`/`describeLlmError` taxonomy already used by Website Analysis, showing a title/message/recommended-action block when a failed job's `errorType` is known, while preserving the original flat-error string as the fallback when it isn't. Committed and pushed as `d5b7b43`.
+
+Stage 3 added a real generation progress bar (`components/ui/progress.tsx`) driven by the existing, already-computed `streamProgress` value — never a fabricated percentage — with lifecycle behavior verified to match the existing status text exactly, after live testing caught and fixed a brief bar/text desync. Committed and pushed as `207ec67`.
+
+Stage 4 broadened the Recent Generations widget to show both `CONTENT_BRIEF` and `CONTENT_DRAFT` activity instead of briefs only, while explicitly preventing Website Analysis's own task types (which share the same `AiUsageLog` table) from leaking into the AI Workspace view. Committed and pushed as `cc3c79a`.
+
+Stage 5 closed the two remaining polish items found during final audit: an accessible name on the Stage 3 progress bar, and a visible in-progress affordance for per-field regeneration (previously only a button-label change). Committed and pushed as `5b0c998`.
+
+All five stages were delivered as presentation-only changes to five AI Workspace component files, without reopening the protected AI-generation architecture (`lib/ai/`, the SSE route, the job runner/table), the Prisma schema, the shared `ActionResult`/`actionError` layer, or the Website Analysis implementation. Phase 23 is complete.
+
+## Phases 24–25
 
 Not yet scoped in detail — carried forward from the architectural review's roadmap table as placeholders for future design work:
-- **23 — UX Maturation**: polish across the AI Workspace/Website Analysis UI surfaces.
 - **24 — Publishing / Distribution**: pushing generated content to external destinations (CMS, social, etc.).
 - **25 — Version History**: revision tracking for AI-generated and edited content.
 

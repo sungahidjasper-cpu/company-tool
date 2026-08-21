@@ -276,7 +276,9 @@ export default function LongFormContentReview({
             : `Generating… ${streamCharCount} characters so far${streamProgress !== null ? ` (~${streamProgress}%)` : ""}`}
         </p>
       )}
-      {isRegenerating && !isSwitchingProvider && streamCharCount !== null && streamProgress !== null && <Progress value={streamProgress} />}
+      {isRegenerating && !isSwitchingProvider && streamCharCount !== null && streamProgress !== null && (
+        <Progress value={streamProgress} aria-label="Generation progress" />
+      )}
       {isRegenerating && !isSwitchingProvider && previewFields && Object.keys(previewFields).length > 0 && (
         <div className="space-y-1 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
           {typeof previewFields.introduction === "string" && (

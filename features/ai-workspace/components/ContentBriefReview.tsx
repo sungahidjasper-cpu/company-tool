@@ -99,10 +99,14 @@ function RegenerateFieldButton({
   regeneratingField: RegenerateBriefField | null;
   onRegenerate: (field: RegenerateBriefField) => void;
 }) {
+  const isRegeneratingThisField = regeneratingField === field;
   return (
-    <Button type="button" variant="ghost" size="sm" onClick={() => onRegenerate(field)} disabled={disabled}>
-      {regeneratingField === field ? "Regenerating..." : "Regenerate this field"}
-    </Button>
+    <div className="flex flex-col items-end gap-1">
+      <Button type="button" variant="ghost" size="sm" onClick={() => onRegenerate(field)} disabled={disabled}>
+        {isRegeneratingThisField ? "Regenerating..." : "Regenerate this field"}
+      </Button>
+      {isRegeneratingThisField && <p className="text-xs text-slate-500">Regenerating — this can take a few seconds…</p>}
+    </div>
   );
 }
 
@@ -437,7 +441,7 @@ export default function ContentBriefReview({
         </p>
       )}
       {(isRegenerating || isGeneratingLongForm) && !isSwitchingProvider && streamCharCount !== null && streamProgress !== null && (
-        <Progress value={streamProgress} />
+        <Progress value={streamProgress} aria-label="Generation progress" />
       )}
       {isRegenerating && !isSwitchingProvider && previewFields && Object.keys(previewFields).length > 0 && (
         <div className="space-y-1 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">

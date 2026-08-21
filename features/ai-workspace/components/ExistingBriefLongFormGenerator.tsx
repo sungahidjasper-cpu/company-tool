@@ -12,6 +12,7 @@ import type { InternalLinkSuggestion } from "@/features/ai-workspace/schemas/con
 import type { ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { formatLongFormContentAsMarkdown, longFormContentOutputSchema } from "@/features/ai-workspace/schemas/long-form-content.schema";
 import { parsePreviewFields, type JsonValue } from "@/features/ai-workspace/services/partial-json-preview.service";
+import { type LlmErrorType } from "@/lib/ai/providers/errors";
 
 const POLL_INTERVAL_MS = 3000;
 const MAX_POLL_MS = 5 * 60 * 1000;
@@ -48,6 +49,13 @@ export default function ExistingBriefLongFormGenerator({
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Phase 23 Stage 2 — set alongside `error` only when a job's own poll
+   * result carries a classified `errorType`; cleared to null everywhere
+   * `error` is cleared or set from a non-job source, so it never lingers
+   * stale across a fresh attempt.
+   */
+  const [errorType, setErrorType] = useState<LlmErrorType | null>(null);
 
   // Phase 22 — same best-effort live preview as ContentBriefPicker.tsx; see
   // that file's openGenerationStream comment for the full rationale.
@@ -116,11 +124,13 @@ export default function ExistingBriefLongFormGenerator({
 
   async function runGenerate() {
     setError(null);
+    setErrorType(null);
     setIsGenerating(true);
     const result = await startLongFormGenerationAction({ mode: "fromContent", contentId });
 
     if (!result.success) {
       setIsGenerating(false);
+      setErrorType(null);
       setError(result.message);
       return;
     }
@@ -133,6 +143,7 @@ export default function ExistingBriefLongFormGenerator({
         if (pollRef.current) clearInterval(pollRef.current);
         setIsGenerating(false);
         closeGenerationStream();
+        setErrorType(null);
         setError("This is taking longer than expected. Please check back shortly or try again.");
         return;
       }
@@ -142,6 +153,7 @@ export default function ExistingBriefLongFormGenerator({
         if (pollRef.current) clearInterval(pollRef.current);
         setIsGenerating(false);
         closeGenerationStream();
+        setErrorType(null);
         setError(poll.message);
         return;
       }
@@ -151,6 +163,7 @@ export default function ExistingBriefLongFormGenerator({
         if (pollRef.current) clearInterval(pollRef.current);
         setIsGenerating(false);
         closeGenerationStream();
+        setErrorType(poll.data.errorType);
         setError(poll.data.errorMessage ?? "Generation failed.");
         return;
       }
@@ -161,6 +174,7 @@ export default function ExistingBriefLongFormGenerator({
         closeGenerationStream();
         const parsed = longFormContentOutputSchema.safeParse(poll.data.resultJson);
         if (!parsed.success) {
+          setErrorType(null);
           setError("Received an unexpected result — please try regenerating.");
           return;
         }
@@ -185,6 +199,7 @@ export default function ExistingBriefLongFormGenerator({
   async function handleSave() {
     if (!longFormFields) return;
     setError(null);
+    setErrorType(null);
     setIsSaving(true);
     const result = await updateLongFormContentAction({ contentId, ...longFormFields });
     setIsSaving(false);
@@ -210,6 +225,7 @@ export default function ExistingBriefLongFormGenerator({
         isRegenerating={isGenerating}
         isSaving={isSaving}
         error={error}
+        errorType={errorType}
         streamCharCount={streamCharCount}
         streamProgress={streamProgress}
         isSwitchingProvider={isSwitchingProvider}

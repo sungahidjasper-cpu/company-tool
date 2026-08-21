@@ -1,11 +1,13 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { regenerateBriefFieldAction, type RegenerateBriefField } from "@/features/ai-workspace/actions/content-brief.actions";
+import { describeLlmError, type LlmErrorType } from "@/lib/ai/providers/errors";
 import { formatBriefAsMarkdown, markdownToHtml } from "@/features/ai-workspace/services/content-export.service";
 import { checkMetaLengths, computeSeoChecklist } from "@/features/ai-workspace/services/seo-checklist.service";
 import type { ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
@@ -49,6 +51,15 @@ type ContentBriefReviewProps = {
   isRegenerating: boolean;
   isSaving: boolean;
   error?: string | null;
+  /**
+   * Phase 23 Stage 2 — when the failed job's own `errorType` is known,
+   * ContentBriefPicker passes it through so the structured
+   * describeLlmError() description (title/message/recommendedAction) can
+   * be shown instead of the flat `error` string. `error` is always kept in
+   * sync as the fallback for failures that never reach provider-error
+   * classification (a client-side timeout, "job not found," etc.).
+   */
+  errorType?: LlmErrorType | null;
   /** Phase 21 §15 — context regenerateBriefFieldAction needs to rebuild the same prompt for a single-field regeneration. */
   regenerateFieldContext: RegenerateFieldContext;
   /**
@@ -115,6 +126,7 @@ export default function ContentBriefReview({
   isRegenerating,
   isSaving,
   error,
+  errorType = null,
   regenerateFieldContext,
   streamCharCount = null,
   streamProgress = null,
@@ -398,7 +410,23 @@ export default function ContentBriefReview({
         </ul>
       </div>
 
-      {(error || fieldError) && <p className="text-sm text-destructive">{error || fieldError}</p>}
+      {errorType ? (
+        (() => {
+          const description = describeLlmError(errorType);
+          return (
+            <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3">
+              <AlertTriangle size={18} className="mt-0.5 shrink-0 text-destructive" />
+              <div className="flex flex-col gap-1">
+                <p className="font-medium text-destructive">{description.title}</p>
+                <p className="text-sm text-destructive/80">{description.message}</p>
+                <p className="text-sm text-destructive/80">{description.recommendedAction}</p>
+              </div>
+            </div>
+          );
+        })()
+      ) : (
+        (error || fieldError) && <p className="text-sm text-destructive">{error || fieldError}</p>
+      )}
 
       {(isRegenerating || isGeneratingLongForm) && (isSwitchingProvider || streamCharCount !== null) && (
         <p className="text-sm text-slate-500">

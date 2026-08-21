@@ -25,6 +25,7 @@ import type { InternalLinkSuggestion } from "@/features/ai-workspace/schemas/con
 import { CONTENT_BRIEF_TYPES, contentBriefOutputSchema, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { formatLongFormContentAsMarkdown, longFormContentOutputSchema } from "@/features/ai-workspace/schemas/long-form-content.schema";
 import { parsePreviewFields, type JsonValue } from "@/features/ai-workspace/services/partial-json-preview.service";
+import { type LlmErrorType } from "@/lib/ai/providers/errors";
 import { formatEnumLabel } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 3000;
@@ -89,6 +90,14 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Phase 23 Stage 2 — set alongside `error` only when a job's own poll
+   * result carries a classified `errorType`; cleared to null everywhere
+   * `error` is cleared or set from a non-job source (an action-level
+   * failure, a client-side poll timeout, or an unexpected-result parse
+   * failure), so it never lingers stale across a fresh attempt.
+   */
+  const [errorType, setErrorType] = useState<LlmErrorType | null>(null);
 
   const [promptPreview, setPromptPreview] = useState<string | null>(null);
   const [isPreviewingPrompt, setIsPreviewingPrompt] = useState(false);
@@ -199,6 +208,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
       if (Date.now() - startedAt > MAX_POLL_MS) {
         if (pollRef.current) clearInterval(pollRef.current);
         onSettled();
+        setErrorType(null);
         setError("This is taking longer than expected. Please check back shortly or try again.");
         return;
       }
@@ -207,6 +217,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
       if (!poll.success) {
         if (pollRef.current) clearInterval(pollRef.current);
         onSettled();
+        setErrorType(null);
         setError(poll.message);
         return;
       }
@@ -215,6 +226,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
       if (poll.data.status === "FAILED") {
         if (pollRef.current) clearInterval(pollRef.current);
         onSettled();
+        setErrorType(poll.data.errorType);
         setError(poll.data.errorMessage ?? "Generation failed.");
         return;
       }
@@ -229,6 +241,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
 
   async function runGenerate() {
     setError(null);
+    setErrorType(null);
     setIsGenerating(true);
     const result = await startContentBriefGenerationAction({
       seoProjectId,
@@ -240,6 +253,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
 
     if (!result.success) {
       setIsGenerating(false);
+      setErrorType(null);
       setError(result.message);
       return;
     }
@@ -250,6 +264,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
       (resultJson) => {
         const parsed = contentBriefOutputSchema.safeParse(resultJson);
         if (!parsed.success) {
+          setErrorType(null);
           setError("Received an unexpected result — please try regenerating.");
           return;
         }
@@ -264,6 +279,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
 
   async function handlePreviewPrompt() {
     setError(null);
+    setErrorType(null);
     setIsPreviewingPrompt(true);
     const result = await previewContentBriefPromptAction({
       seoProjectId,
@@ -283,6 +299,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
   async function handleSave() {
     if (!brief) return;
     setError(null);
+    setErrorType(null);
     setIsSaving(true);
     const result = await saveContentBriefAction({
       seoProjectId,
@@ -303,6 +320,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
   async function runGenerateLongForm() {
     if (!brief) return;
     setError(null);
+    setErrorType(null);
     setIsGeneratingLongForm(true);
     const result = await startLongFormGenerationAction({
       mode: "fromBrief",
@@ -314,6 +332,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
 
     if (!result.success) {
       setIsGeneratingLongForm(false);
+      setErrorType(null);
       setError(result.message);
       return;
     }
@@ -324,6 +343,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
       (resultJson) => {
         const parsed = longFormContentOutputSchema.safeParse(resultJson);
         if (!parsed.success) {
+          setErrorType(null);
           setError("Received an unexpected result — please try regenerating.");
           return;
         }
@@ -352,6 +372,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
   async function handleSaveLongForm() {
     if (!longFormFields || !brief) return;
     setError(null);
+    setErrorType(null);
     setIsSavingLongForm(true);
     const result = await saveLongFormAsNewContentAction({
       seoProjectId,
@@ -373,6 +394,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
   function backToBrief() {
     setLongFormFields(null);
     setError(null);
+    setErrorType(null);
   }
 
   if (longFormFields) {
@@ -389,6 +411,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
         isRegenerating={isGeneratingLongForm}
         isSaving={isSavingLongForm}
         error={error}
+        errorType={errorType}
         streamCharCount={streamCharCount}
         streamProgress={streamProgress}
         isSwitchingProvider={isSwitchingProvider}
@@ -411,6 +434,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
         isRegenerating={isGenerating}
         isSaving={isSaving}
         error={error}
+        errorType={errorType}
         regenerateFieldContext={{ seoProjectId, keywordId: keywordId || undefined, contentType, notes: notes || undefined }}
         streamCharCount={streamCharCount}
         streamProgress={streamProgress}

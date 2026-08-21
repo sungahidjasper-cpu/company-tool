@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -9,6 +10,7 @@ import ArticleMarkdownPreview from "@/features/ai-workspace/components/ArticleMa
 import type { InternalLinkSuggestion } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import type { JsonValue } from "@/features/ai-workspace/services/partial-json-preview.service";
 import { checkMetaLengths, computeWordCount } from "@/features/ai-workspace/services/seo-checklist.service";
+import { describeLlmError, type LlmErrorType } from "@/lib/ai/providers/errors";
 
 const textareaClassName =
   "w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm";
@@ -56,6 +58,14 @@ type LongFormContentReviewProps = {
   isSaving: boolean;
   error?: string | null;
   /**
+   * Phase 23 Stage 2 — when the failed job's own `errorType` is known, the
+   * owning component passes it through so the structured describeLlmError()
+   * description (title/message/recommendedAction) can be shown instead of
+   * the flat `error` string. `error` is always kept in sync as the
+   * fallback for failures that never reach provider-error classification.
+   */
+  errorType?: LlmErrorType | null;
+  /**
    * Phase 23 Stage 1 — the same Phase 22 streaming state the owning
    * component (ContentBriefPicker or ExistingBriefLongFormGenerator)
    * already holds, passed through so it stays visible during regeneration,
@@ -89,6 +99,7 @@ export default function LongFormContentReview({
   isRegenerating,
   isSaving,
   error,
+  errorType = null,
   streamCharCount = null,
   streamProgress = null,
   isSwitchingProvider = false,
@@ -239,7 +250,23 @@ export default function LongFormContentReview({
         </div>
       )}
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {errorType ? (
+        (() => {
+          const description = describeLlmError(errorType);
+          return (
+            <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3">
+              <AlertTriangle size={18} className="mt-0.5 shrink-0 text-destructive" />
+              <div className="flex flex-col gap-1">
+                <p className="font-medium text-destructive">{description.title}</p>
+                <p className="text-sm text-destructive/80">{description.message}</p>
+                <p className="text-sm text-destructive/80">{description.recommendedAction}</p>
+              </div>
+            </div>
+          );
+        })()
+      ) : (
+        error && <p className="text-sm text-destructive">{error}</p>
+      )}
 
       {isRegenerating && (isSwitchingProvider || streamCharCount !== null) && (
         <p className="text-sm text-slate-500">

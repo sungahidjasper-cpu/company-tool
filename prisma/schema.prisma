@@ -209,20 +209,21 @@ model Company {
   updatedAt            DateTime  @updatedAt
   deletedAt            DateTime?
 
-  users               User[]
-  roles               Role[]
-  clients             Client[]
-  leads               Lead[]
-  projects            Project[]
-  tags                Tag[]
-  seoProjects         SEOProject[]
-  reports             Report[]
-  aiConversations     AIConversation[]
-  files               File[]
-  activities          Activity[]
-  websiteAnalysisJobs WebsiteAnalysisJob[]
-  aiGenerationJobs    AiGenerationJob[]
-  aiUsageLogs         AiUsageLog[]
+  users                 User[]
+  roles                 Role[]
+  clients               Client[]
+  leads                 Lead[]
+  projects              Project[]
+  tags                  Tag[]
+  seoProjects           SEOProject[]
+  reports               Report[]
+  aiConversations       AIConversation[]
+  files                 File[]
+  activities            Activity[]
+  websiteAnalysisJobs   WebsiteAnalysisJob[]
+  aiGenerationJobs      AiGenerationJob[]
+  aiUsageLogs           AiUsageLog[]
+  publishingConnections PublishingConnection[]
 
   @@index([deletedAt])
 }
@@ -280,27 +281,28 @@ model User {
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   roles   Role[]
 
-  ownedClients            Client[]          @relation("ClientOwner")
-  ownedProjects           Project[]         @relation("ProjectOwner")
-  assignedProjects        Project[]         @relation("ProjectAssignees")
-  assignedTasks           Task[]            @relation("TaskAssignee")
-  createdTasks            Task[]            @relation("TaskCreatedBy")
-  assignedLeads           Lead[]            @relation("LeadAssignee")
-  createdLeads            Lead[]            @relation("LeadCreatedBy")
-  assignedLeadTasks       LeadTask[]        @relation("LeadTaskAssignee")
-  createdLeadTasks        LeadTask[]        @relation("LeadTaskCreatedBy")
-  authoredNotes           Note[]            @relation("NoteAuthor")
-  performedActivities     Activity[]        @relation("ActivityActor")
-  targetedActivities      Activity[]        @relation("ActivityUser")
-  uploadedFiles           File[]            @relation("FileUploadedBy")
-  attachedFiles           File[]            @relation("FileUser")
-  notifications           Notification[]
-  ownedSeoProjects        SEOProject[]      @relation("SeoProjectOwner")
-  ownedKeywords           Keyword[]         @relation("KeywordOwner")
-  authoredContent         Content[]         @relation("ContentAuthor")
-  aiConversations         AIConversation[]
-  generatedReports        Report[]          @relation("ReportGeneratedBy")
-  startedAiGenerationJobs AiGenerationJob[] @relation("AiGenerationJobCreatedBy")
+  ownedClients                 Client[]               @relation("ClientOwner")
+  ownedProjects                Project[]              @relation("ProjectOwner")
+  assignedProjects             Project[]              @relation("ProjectAssignees")
+  assignedTasks                Task[]                 @relation("TaskAssignee")
+  createdTasks                 Task[]                 @relation("TaskCreatedBy")
+  assignedLeads                Lead[]                 @relation("LeadAssignee")
+  createdLeads                 Lead[]                 @relation("LeadCreatedBy")
+  assignedLeadTasks            LeadTask[]             @relation("LeadTaskAssignee")
+  createdLeadTasks             LeadTask[]             @relation("LeadTaskCreatedBy")
+  authoredNotes                Note[]                 @relation("NoteAuthor")
+  performedActivities          Activity[]             @relation("ActivityActor")
+  targetedActivities           Activity[]             @relation("ActivityUser")
+  uploadedFiles                File[]                 @relation("FileUploadedBy")
+  attachedFiles                File[]                 @relation("FileUser")
+  notifications                Notification[]
+  ownedSeoProjects             SEOProject[]           @relation("SeoProjectOwner")
+  ownedKeywords                Keyword[]              @relation("KeywordOwner")
+  authoredContent              Content[]              @relation("ContentAuthor")
+  aiConversations              AIConversation[]
+  generatedReports             Report[]               @relation("ReportGeneratedBy")
+  startedAiGenerationJobs      AiGenerationJob[]      @relation("AiGenerationJobCreatedBy")
+  createdPublishingConnections PublishingConnection[] @relation("PublishingConnectionCreatedBy")
 
   @@index([companyId, status])
   @@index([deletedAt])
@@ -1082,6 +1084,73 @@ model AiGenerationJob {
   @@index([status])
   @@index([createdById])
   @@index([companyId, taskType, inputHash, status])
+}
+
+enum PublishingProviderType {
+  WORDPRESS
+}
+
+enum PublishingConnectionStatus {
+  ACTIVE
+  INVALID
+  REVOKED
+}
+
+enum PublishingCredentialType {
+  API_KEY
+  BASIC_AUTH
+  OAUTH2
+}
+
+/// Phase 24 Stage 1 — a company's link to one external publishing
+/// destination. Deliberately separate from PublishingCredential (below):
+/// this model is safe to list/display in full, the credential model never
+/// is. providerType is WORDPRESS-only for now; extending the enum later
+/// needs no migration of existing rows.
+model PublishingConnection {
+  id              String                     @id @default(uuid(7)) @db.Uuid
+  companyId       String                     @db.Uuid
+  providerType    PublishingProviderType
+  label           String
+  baseUrl         String
+  status          PublishingConnectionStatus @default(ACTIVE)
+  /// Nullable + SetNull on delete, same convention as
+  /// AiGenerationJob.createdById — attribution only, never an ownership
+  /// gate (ownership is companyId).
+  createdByUserId String?                    @db.Uuid
+  lastVerifiedAt  DateTime?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+
+  company    Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy  User?                 @relation("PublishingConnectionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  credential PublishingCredential?
+
+  @@index([companyId])
+}
+
+/// Phase 24 Stage 1 — isolated secret storage, split from
+/// PublishingConnection so every other query in the app can list/display
+/// connections without ever selecting this model. encryptedPayload is
+/// never selected outside lib/crypto/publishing-credential-crypto.ts's own
+/// narrow read path.
+model PublishingCredential {
+  id                   String                   @id @default(uuid(7)) @db.Uuid
+  connectionId         String                   @unique @db.Uuid
+  companyId            String                   @db.Uuid
+  credentialType       PublishingCredentialType
+  encryptedPayload     String
+  encryptionKeyVersion Int                      @default(1)
+  /// Unused until an OAuth-based destination exists (WordPress Application
+  /// Passwords never expire) — reserved now so adding one later needs no
+  /// migration.
+  expiresAt            DateTime?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+
+  connection PublishingConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
 }
 
 /// Messages are stored as a JSON transcript rather than a normalized

@@ -90,6 +90,8 @@ export async function logActivity(input: LogActivityInput) {
       projectId: input.projectId,
       taskId: input.taskId,
       leadId: input.leadId,
+      seoProjectId: input.seoProjectId,
+      contentId: input.contentId,
       metadata: input.metadata,
     },
   });

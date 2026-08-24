@@ -103,6 +103,35 @@ async function reapStaleAiGenerationJobs(): Promise<number> {
   return result.count;
 }
 
+/**
+ * Phase 24 Stage 3 — same structural reasoning as reapStaleAiGenerationJobs
+ * above (RUNNING is always orphaned; PENDING is swept only past the same
+ * PENDING_GRACE_MS), but with a deliberately different classification.
+ * Unlike a stuck AiGenerationJob (an LLM call has no external side
+ * effect), a stuck PublishingJob may have already sent — and WordPress may
+ * have already processed — the POST before this process died. This reaper
+ * cannot know whether the request never reached WordPress, reached it but
+ * wasn't processed, or was processed and the response was simply never
+ * recorded. AMBIGUOUS_RESPONSE is therefore the only safe classification:
+ * isRetryableErrorType() (publishing-errors.ts) only ever allows
+ * NETWORK_TIMEOUT, so a reaped job can never be picked up by
+ * retryPublishAction automatically — a human must confirm the real
+ * outcome (e.g. by checking WordPress directly) before anything retries.
+ */
+export async function reapStalePublishingJobs(): Promise<number> {
+  const result = await prisma.publishingJob.updateMany({
+    where: {
+      OR: [{ status: "RUNNING" }, { status: "PENDING", createdAt: { lt: new Date(Date.now() - PENDING_GRACE_MS) } }],
+    },
+    data: {
+      status: "FAILED",
+      errorType: "AMBIGUOUS_RESPONSE",
+      errorMessage: "The server restarted while this publish was in progress. The external publication outcome could not be confirmed.",
+    },
+  });
+  return result.count;
+}
+
 export async function runStartupChecks(): Promise<void> {
   const missingEnvVars = checkRequiredEnvVars();
   if (missingEnvVars.length > 0) {
@@ -140,6 +169,11 @@ export async function runStartupChecks(): Promise<void> {
   const reapedAiGenerationJobCount = await reapStaleAiGenerationJobs();
   if (reapedAiGenerationJobCount > 0) {
     logger.warn("Startup: reaped stale AI generation jobs", { count: reapedAiGenerationJobCount });
+  }
+
+  const reapedPublishingJobCount = await reapStalePublishingJobs();
+  if (reapedPublishingJobCount > 0) {
+    logger.warn("Startup: reaped stale publishing jobs", { count: reapedPublishingJobCount });
   }
 
   const warnings: string[] = [];

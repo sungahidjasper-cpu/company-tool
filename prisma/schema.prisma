@@ -224,6 +224,8 @@ model Company {
   aiGenerationJobs      AiGenerationJob[]
   aiUsageLogs           AiUsageLog[]
   publishingConnections PublishingConnection[]
+  publishingJobs        PublishingJob[]
+  contentPublications   ContentPublication[]
 
   @@index([deletedAt])
 }
@@ -303,6 +305,7 @@ model User {
   generatedReports             Report[]               @relation("ReportGeneratedBy")
   startedAiGenerationJobs      AiGenerationJob[]      @relation("AiGenerationJobCreatedBy")
   createdPublishingConnections PublishingConnection[] @relation("PublishingConnectionCreatedBy")
+  requestedPublishingJobs      PublishingJob[]        @relation("PublishingJobRequestedBy")
 
   @@index([companyId, status])
   @@index([deletedAt])
@@ -810,11 +813,13 @@ model Content {
   author     User?      @relation("ContentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
   keywords   Keyword[]
 
-  notes            Note[]
-  activities       Activity[]
-  files            File[]
-  tags             Tag[]
-  aiGenerationJobs AiGenerationJob[]
+  notes               Note[]
+  activities          Activity[]
+  files               File[]
+  tags                Tag[]
+  aiGenerationJobs    AiGenerationJob[]
+  publishingJobs      PublishingJob[]
+  contentPublications ContentPublication[]
 
   @@index([seoProjectId, status])
   @@index([deletedAt])
@@ -1126,6 +1131,9 @@ model PublishingConnection {
   createdBy  User?                 @relation("PublishingConnectionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   credential PublishingCredential?
 
+  publishingJobs      PublishingJob[]
+  contentPublications ContentPublication[]
+
   @@index([companyId])
 }
 
@@ -1150,6 +1158,119 @@ model PublishingCredential {
 
   connection PublishingConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
 
+  @@index([companyId])
+}
+
+enum PublishingJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+/// Phase 24 Stage 2A — a new, separate taxonomy from WebsiteAnalysisErrorType/
+/// LlmErrorType: publishing failures have different causes (a destination's
+/// HTTP API, not an LLM provider) and shouldn't be forced into either
+/// existing vocabulary. AMBIGUOUS_RESPONSE exists specifically for the
+/// documented duplicate-publish failure boundary — see ContentPublication's
+/// comment below — and must never be auto-retried.
+enum PublishingErrorType {
+  AUTHENTICATION_FAILED
+  INSUFFICIENT_PERMISSIONS
+  RATE_LIMITED
+  VALIDATION_FAILED
+  NETWORK_TIMEOUT
+  DESTINATION_UNAVAILABLE
+  DUPLICATE_RESOURCE
+  AMBIGUOUS_RESPONSE
+  UNSAFE_URL
+  UNKNOWN
+}
+
+enum PublishingAttemptOutcome {
+  SUCCESS
+  FAILURE
+}
+
+/// Phase 24 Stage 2A — the async unit of work: "publish this Content row via
+/// this PublishingConnection," modeled on AiGenerationJob's shape as a new,
+/// separate table (not shared rows) — publishing failure modes differ from
+/// LLM generation and shouldn't be reaped/classified by AI-specific logic.
+/// onDelete: Restrict on both content and connection is deliberate — a job
+/// record referencing already-deleted content or a deleted connection would
+/// be a silently meaningless historical record, which this schema would
+/// rather block at the database level than allow.
+model PublishingJob {
+  id            String               @id @default(uuid(7)) @db.Uuid
+  companyId     String               @db.Uuid
+  contentId     String               @db.Uuid
+  connectionId  String               @db.Uuid
+  status        PublishingJobStatus  @default(PENDING)
+  /// Attribution only, same convention as AiGenerationJob.createdById —
+  /// never an ownership gate (ownership is companyId).
+  requestedById String?              @db.Uuid
+  errorType     PublishingErrorType?
+  errorMessage  String?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  company     Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  content     Content              @relation(fields: [contentId], references: [id], onDelete: Restrict)
+  connection  PublishingConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  requestedBy User?                @relation("PublishingJobRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  attempts    PublishingAttempt[]
+
+  @@index([companyId, status])
+  @@index([contentId])
+  @@index([connectionId])
+}
+
+/// Phase 24 Stage 2A — one concrete try at executing a PublishingJob.
+/// Cascades with its job (unlike PublishingJob's own Restrict relations) —
+/// an attempt with no job is meaningless in a way a job with no content
+/// never should be, so there's no equivalent "silent orphan" risk to guard
+/// against here.
+model PublishingAttempt {
+  id            String                   @id @default(uuid(7)) @db.Uuid
+  jobId         String                   @db.Uuid
+  attemptNumber Int
+  outcome       PublishingAttemptOutcome
+  httpStatus    Int?
+  errorType     PublishingErrorType?
+  errorMessage  String?
+  startedAt     DateTime                 @default(now())
+  finishedAt    DateTime?
+
+  job PublishingJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, attemptNumber])
+}
+
+/// Phase 24 Stage 2A — the durable record of a successful external publish:
+/// the result, distinct from the process (PublishingJob/PublishingAttempt
+/// above). @@unique([contentId, connectionId]) is the DB-level idempotency
+/// backstop, but it only prevents a duplicate ROW — it cannot by itself
+/// prevent WordPress actually receiving two POST requests if the first
+/// one's response is lost before this row is ever written (a genuine,
+/// undocumented-away failure boundary; see the Stage 2 architecture audit).
+/// onDelete: Restrict for the same silent-orphan reasoning as PublishingJob
+/// above.
+model ContentPublication {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  companyId    String   @db.Uuid
+  contentId    String   @db.Uuid
+  connectionId String   @db.Uuid
+  externalId   String
+  externalUrl  String?
+  publishedAt  DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  company    Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  content    Content              @relation(fields: [contentId], references: [id], onDelete: Restrict)
+  connection PublishingConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+
+  @@unique([contentId, connectionId])
   @@index([companyId])
 }
 

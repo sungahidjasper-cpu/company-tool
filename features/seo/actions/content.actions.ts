@@ -14,6 +14,7 @@ import { parseCsv } from "@/lib/csv";
 import { prisma } from "@/lib/prisma";
 import { extractMentionedUserIds } from "@/features/notifications/services/mention.service";
 import { createNotification } from "@/features/notifications/services/notification.service";
+import { createContentRevisionSnapshot } from "@/features/seo/services/content-revision.service";
 import {
   CONTENT_STATUS_ORDER,
   contentImportRowSchema,
@@ -97,18 +98,59 @@ export async function updateContent(
     return actionError(parsed.error.issues[0]?.message ?? "Invalid input");
   }
 
-  const content = await prisma.content.update({
-    where: { id },
-    data: {
-      authorId: parsed.data.authorId || null,
-      title: parsed.data.title,
-      url: parsed.data.url || null,
-      status: parsed.data.status,
-      publishedAt: parsed.data.publishedAt ? new Date(parsed.data.publishedAt) : null,
-      body: parsed.data.body || null,
-      keywords: { set: (parsed.data.keywordIds ?? []).map((keywordId) => ({ id: keywordId })) },
-    },
+  const newTitle = parsed.data.title;
+  const newBody = parsed.data.body || null;
+
+  // Phase 25 Stage 2 — snapshot the pre-change state before overwriting it,
+  // in the same transaction as the write, so a rollback of one rolls back
+  // the other. The row lock is taken explicitly here (not left to
+  // createContentRevisionSnapshot's own internal lock alone) because this
+  // function needs to READ the current title/body under that lock to decide
+  // whether anything tracked actually changed, before it can even call
+  // createContentRevisionSnapshot — reading `existing` from before this
+  // transaction opened would risk snapshotting a value a concurrent edit
+  // has already superseded. createContentRevisionSnapshot's own lock
+  // acquisition immediately after is therefore a harmless re-lock of a row
+  // this same transaction already holds, not a second real lock.
+  const preflight = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Content" WHERE id = ${id} FOR UPDATE`;
+    const current = await tx.content.findUnique({ where: { id } });
+    if (!current) {
+      return { kind: "not_found" as const };
+    }
+
+    if (current.title !== newTitle || current.body !== newBody) {
+      await createContentRevisionSnapshot(tx, {
+        contentId: id,
+        companyId: actor.companyId,
+        title: current.title,
+        metaTitle: current.metaTitle,
+        metaDescription: current.metaDescription,
+        body: current.body,
+        changeSource: "MANUAL_EDIT",
+        createdByUserId: actor.id,
+      });
+    }
+
+    const updated = await tx.content.update({
+      where: { id },
+      data: {
+        authorId: parsed.data.authorId || null,
+        title: newTitle,
+        url: parsed.data.url || null,
+        status: parsed.data.status,
+        publishedAt: parsed.data.publishedAt ? new Date(parsed.data.publishedAt) : null,
+        body: newBody,
+        keywords: { set: (parsed.data.keywordIds ?? []).map((keywordId) => ({ id: keywordId })) },
+      },
+    });
+    return { kind: "updated" as const, content: updated };
   });
+
+  if (preflight.kind === "not_found") {
+    return actionError("Content not found.");
+  }
+  const content = preflight.content;
 
   await logActivity({
     actorId: actor.id,

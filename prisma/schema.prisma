@@ -226,6 +226,7 @@ model Company {
   publishingConnections PublishingConnection[]
   publishingJobs        PublishingJob[]
   contentPublications   ContentPublication[]
+  contentRevisions      ContentRevision[]
 
   @@index([deletedAt])
 }
@@ -306,6 +307,7 @@ model User {
   startedAiGenerationJobs      AiGenerationJob[]      @relation("AiGenerationJobCreatedBy")
   createdPublishingConnections PublishingConnection[] @relation("PublishingConnectionCreatedBy")
   requestedPublishingJobs      PublishingJob[]        @relation("PublishingJobRequestedBy")
+  createdContentRevisions      ContentRevision[]      @relation("ContentRevisionCreatedBy")
 
   @@index([companyId, status])
   @@index([deletedAt])
@@ -820,9 +822,63 @@ model Content {
   aiGenerationJobs    AiGenerationJob[]
   publishingJobs      PublishingJob[]
   contentPublications ContentPublication[]
+  revisions           ContentRevision[]
 
   @@index([seoProjectId, status])
   @@index([deletedAt])
+}
+
+/// Phase 25 Stage 1 — a snapshot of Content's versioned fields taken
+/// immediately before an overwrite (see content-revision.service.ts),
+/// always inside the same transaction as the write that follows it. Scope
+/// is deliberately narrow: exactly the four fields Stage 3 will ever
+/// restore (title, metaTitle, metaDescription, body) — status, publishedAt,
+/// keywords, and authorId are never captured here. Status changes have
+/// their own existing Activity audit trail (advanceContentStatus,
+/// updateContent's own log) and are explicitly out of scope for this
+/// feature; capturing a field this model can never restore would create a
+/// confusing asymmetry. onDelete: Restrict on contentId for the same
+/// silent-orphan reasoning as PublishingJob/ContentPublication above.
+model ContentRevision {
+  id              String                @id @default(uuid(7)) @db.Uuid
+  contentId       String                @db.Uuid
+  companyId       String                @db.Uuid
+  /// Per-content sequence, starting at 1. See content-revision.service.ts
+  /// for why this is safe under concurrent edits despite not being a DB
+  /// identity/sequence column.
+  revisionNumber  Int
+  title           String
+  metaTitle       String?
+  metaDescription String?
+  body            String?
+  changeSource    ContentRevisionSource
+  /// Attribution only, same convention as every other *CreatedBy /
+  /// *RequestedBy field in this schema — never an ownership gate.
+  createdByUserId String?               @db.Uuid
+  createdAt       DateTime              @default(now())
+
+  content   Content @relation(fields: [contentId], references: [id], onDelete: Restrict)
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy User?   @relation("ContentRevisionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([contentId, revisionNumber])
+  @@index([contentId])
+  @@index([companyId])
+}
+
+/// A manual edit (updateContent), an AI regeneration overwriting existing
+/// content (updateLongFormContentAction), or a restore reverting to a prior
+/// revision (restoreContentRevisionAction) — the three destructive-write
+/// paths Stage 2/3 wrap. RESTORE was added deliberately rather than
+/// reusing MANUAL_EDIT: a restore is not a human hand-authoring new
+/// content, and collapsing the two would make the revision history unable
+/// to distinguish "the user typed this" from "the user reverted to this,"
+/// undermining the audit trail this model exists for (see the Stage 3
+/// audit).
+enum ContentRevisionSource {
+  MANUAL_EDIT
+  AI_REGENERATION
+  RESTORE
 }
 
 /// Backs the automated website-analysis crawl (Phase 10.5a). Nullable

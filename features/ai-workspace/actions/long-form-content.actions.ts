@@ -12,6 +12,7 @@ import { computeInputHash, createAiGenerationJob, findActiveAiGenerationJob } fr
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
 import type { LongFormJobInput } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 import { generateLongFormContent } from "@/features/ai-workspace/services/long-form-content.service";
+import { createContentRevisionSnapshot } from "@/features/seo/services/content-revision.service";
 import { contentBriefOutputSchema, type ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { externalSourceSchema, faqItemSchema, normalizeArray, normalizeInternalLinkSuggestions } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { contentBriefSettingsSchema, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
@@ -413,16 +414,59 @@ export async function updateLongFormContentAction(input: UpdateLongFormContentIn
     return actionError("Content not found.");
   }
 
-  await prisma.content.update({
-    where: { id: content.id },
-    data: {
-      title: parsedFields.data.title,
-      metaTitle: parsedFields.data.metaTitle,
-      metaDescription: parsedFields.data.metaDescription,
-      generatedByAi: true,
-      body: parsedFields.data.body,
-    },
+  const newTitle = parsedFields.data.title;
+  const newMetaTitle = parsedFields.data.metaTitle;
+  const newMetaDescription = parsedFields.data.metaDescription;
+  const newBody = parsedFields.data.body;
+
+  // Phase 25 Stage 2 — same snapshot-before-overwrite discipline as
+  // content.actions.ts's updateContent, with changeSource: AI_REGENERATION
+  // since this is the AI-regeneration write-back path, not a manual edit.
+  // See updateContent's comment for why the explicit lock-then-read here is
+  // necessary (not just createContentRevisionSnapshot's own internal lock)
+  // and why its subsequent re-lock is a harmless no-op, not a second real
+  // lock.
+  const preflight = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Content" WHERE id = ${content.id} FOR UPDATE`;
+    const current = await tx.content.findUnique({ where: { id: content.id } });
+    if (!current) {
+      return { kind: "not_found" as const };
+    }
+
+    if (
+      current.title !== newTitle ||
+      current.metaTitle !== newMetaTitle ||
+      current.metaDescription !== newMetaDescription ||
+      current.body !== newBody
+    ) {
+      await createContentRevisionSnapshot(tx, {
+        contentId: content.id,
+        companyId: actor.companyId,
+        title: current.title,
+        metaTitle: current.metaTitle,
+        metaDescription: current.metaDescription,
+        body: current.body,
+        changeSource: "AI_REGENERATION",
+        createdByUserId: actor.id,
+      });
+    }
+
+    await tx.content.update({
+      where: { id: content.id },
+      data: {
+        title: newTitle,
+        metaTitle: newMetaTitle,
+        metaDescription: newMetaDescription,
+        generatedByAi: true,
+        body: newBody,
+      },
+    });
+    return { kind: "updated" as const };
   });
+
+  if (preflight.kind === "not_found") {
+    return actionError("Content not found.");
+  }
 
   await logActivity({
     actorId: actor.id,

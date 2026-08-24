@@ -140,35 +140,65 @@ async function executeAttempt(
   const finishedAt = new Date();
 
   if (result.ok) {
-    const publication = await prisma.$transaction(async (tx) => {
-      await tx.publishingAttempt.create({
-        data: { jobId, attemptNumber, outcome: "SUCCESS", httpStatus: 201, startedAt, finishedAt },
+    // The WordPress POST already succeeded at this point — if persisting
+    // that fact fails, we must NOT retry the persistence or the POST (the
+    // external post may already exist), and we must NOT let the exception
+    // escape uncaught. The job is left exactly as it was (RUNNING) so the
+    // existing Stage 3 startup reaper resolves it to FAILED/
+    // AMBIGUOUS_RESPONSE on the next restart, the same safe, non-retryable
+    // outcome as any other unconfirmed external result.
+    let publication;
+    try {
+      publication = await prisma.$transaction(async (tx) => {
+        await tx.publishingAttempt.create({
+          data: { jobId, attemptNumber, outcome: "SUCCESS", httpStatus: 201, startedAt, finishedAt },
+        });
+        await tx.publishingJob.update({ where: { id: jobId }, data: { status: "SUCCEEDED", errorType: null, errorMessage: null } });
+        return tx.contentPublication.create({
+          data: {
+            companyId: actor.companyId,
+            contentId: content.id,
+            connectionId: connection.id,
+            externalId: result.externalId,
+            externalUrl: result.externalUrl,
+          },
+        });
       });
-      await tx.publishingJob.update({ where: { id: jobId }, data: { status: "SUCCEEDED", errorType: null, errorMessage: null } });
-      return tx.contentPublication.create({
-        data: {
-          companyId: actor.companyId,
-          contentId: content.id,
+    } catch (err) {
+      console.error("Publishing: failed to persist a confirmed successful WordPress publish", {
+        jobId,
+        connectionId: connection.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return actionError(
+        "The content was published, but Compass could not record the result. This will be reviewed automatically."
+      );
+    }
+
+    // Best-effort only — Activity is an audit trail, not the source of
+    // truth for the publish result. A failure here must never change what
+    // was already correctly determined and durably persisted above.
+    try {
+      await logActivity({
+        actorId: actor.id,
+        companyId: actor.companyId,
+        contentId: content.id,
+        action: isRetry ? "content_publication.retry_succeeded" : "content_publication.succeeded",
+        metadata: {
           connectionId: connection.id,
-          externalId: result.externalId,
-          externalUrl: result.externalUrl,
+          externalId: publication.externalId,
+          externalUrl: publication.externalUrl,
+          publishingJobId: jobId,
+          attemptNumber,
         },
       });
-    });
-
-    await logActivity({
-      actorId: actor.id,
-      companyId: actor.companyId,
-      contentId: content.id,
-      action: isRetry ? "content_publication.retry_succeeded" : "content_publication.succeeded",
-      metadata: {
+    } catch (err) {
+      console.error("Publishing: failed to record the activity log for a successful publish", {
+        jobId,
         connectionId: connection.id,
-        externalId: publication.externalId,
-        externalUrl: publication.externalUrl,
-        publishingJobId: jobId,
-        attemptNumber,
-      },
-    });
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     return actionSuccess({
       externalId: publication.externalId,
@@ -179,38 +209,59 @@ async function executeAttempt(
   }
 
   const sanitizedMessage = sanitizeErrorMessage(result.message);
-  await prisma.$transaction([
-    prisma.publishingAttempt.create({
-      data: {
-        jobId,
-        attemptNumber,
-        outcome: "FAILURE",
-        errorType: result.errorType,
-        errorMessage: sanitizedMessage,
-        startedAt,
-        finishedAt,
-      },
-    }),
-    prisma.publishingJob.update({
-      where: { id: jobId },
-      data: { status: "FAILED", errorType: result.errorType, errorMessage: sanitizedMessage },
-    }),
-  ]);
+  try {
+    await prisma.$transaction([
+      prisma.publishingAttempt.create({
+        data: {
+          jobId,
+          attemptNumber,
+          outcome: "FAILURE",
+          errorType: result.errorType,
+          errorMessage: sanitizedMessage,
+          startedAt,
+          finishedAt,
+        },
+      }),
+      prisma.publishingJob.update({
+        where: { id: jobId },
+        data: { status: "FAILED", errorType: result.errorType, errorMessage: sanitizedMessage },
+      }),
+    ]);
+  } catch (err) {
+    // No external resource was created on this path (the WordPress call
+    // itself failed/was ambiguous), so the only consequence of a
+    // persistence failure here is a delayed record — again safely resolved
+    // by the Stage 3 reaper rather than by any retry from this function.
+    console.error("Publishing: failed to persist a failed publish attempt", {
+      jobId,
+      connectionId: connection.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return actionError(sanitizedMessage);
+  }
 
   const isAmbiguous = result.errorType === "AMBIGUOUS_RESPONSE";
-  await logActivity({
-    actorId: actor.id,
-    companyId: actor.companyId,
-    contentId: content.id,
-    action: isAmbiguous
-      ? isRetry
-        ? "content_publication.retry_ambiguous"
-        : "content_publication.ambiguous"
-      : isRetry
-        ? "content_publication.retry_failed"
-        : "content_publication.failed",
-    metadata: { connectionId: connection.id, publishingJobId: jobId, attemptNumber, errorType: result.errorType },
-  });
+  try {
+    await logActivity({
+      actorId: actor.id,
+      companyId: actor.companyId,
+      contentId: content.id,
+      action: isAmbiguous
+        ? isRetry
+          ? "content_publication.retry_ambiguous"
+          : "content_publication.ambiguous"
+        : isRetry
+          ? "content_publication.retry_failed"
+          : "content_publication.failed",
+      metadata: { connectionId: connection.id, publishingJobId: jobId, attemptNumber, errorType: result.errorType },
+    });
+  } catch (err) {
+    console.error("Publishing: failed to record the activity log for a failed publish", {
+      jobId,
+      connectionId: connection.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   // No ContentPublication is ever created here — including for
   // AMBIGUOUS_RESPONSE. WordPress may or may not have actually created the

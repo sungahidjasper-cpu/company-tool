@@ -401,3 +401,133 @@ describe("retryPublishAction", () => {
     expect(mockedPublish).not.toHaveBeenCalled();
   });
 });
+
+describe("executeAttempt error handling (post-external-call persistence / Activity failures)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(MANAGER);
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent());
+    mockedPrisma.publishingConnection.findUnique.mockResolvedValue(makeConnection());
+    mockedPrisma.contentPublication.findUnique.mockResolvedValue(null);
+    mockedPrisma.publishingJob.findFirst.mockResolvedValue(null);
+    mockedPrisma.publishingJob.create.mockResolvedValue({ id: "job-1" });
+    mockedDecrypt.mockReturnValue(JSON.stringify({ username: "admin", applicationPassword: "abcd 1234 EFGH 5678" }));
+  });
+
+  /**
+   * publishContentAction calls $transaction twice: once for the pre-flight
+   * (idempotency check + job creation) and once inside executeAttempt for
+   * the post-WordPress-call persistence. Queues the first call through to
+   * the real default mock behavior (so the pre-flight succeeds normally)
+   * and only the SECOND call throws — i.e. the persistence transaction
+   * executeAttempt runs after a confirmed WordPress result.
+   */
+  function makeExecuteAttemptPersistenceTransactionThrow() {
+    mockedPrisma.$transaction.mockImplementationOnce(async (arg: unknown) => {
+      if (typeof arg === "function") return (arg as (tx: MockPrisma) => unknown)(mockedPrisma);
+      return Promise.all(arg as Promise<unknown>[]);
+    });
+    mockedPrisma.$transaction.mockImplementationOnce(async () => {
+      throw new Error("connection terminated unexpectedly");
+    });
+  }
+
+  it("1. success + persistence succeeds + Activity succeeds -> existing success result unchanged", async () => {
+    mockedPublish.mockResolvedValue({ ok: true, externalId: "1", externalUrl: "https://x/?p=1", externalStatus: "publish" });
+    mockedPrisma.contentPublication.create.mockResolvedValue({ externalId: "1", externalUrl: "https://x/?p=1", publishedAt: new Date() });
+
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data).toEqual({ externalId: "1", externalUrl: "https://x/?p=1", publishedAt: expect.any(Date), alreadyPublished: false });
+    expect(logActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it("2. success but the persistence transaction throws -> returns a safe actionError, never throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockedPublish.mockResolvedValue({ ok: true, externalId: "1", externalUrl: "https://x/?p=1", externalStatus: "publish" });
+    makeExecuteAttemptPersistenceTransactionThrow();
+
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.message).not.toContain("connection terminated");
+      expect(result.message.toLowerCase()).toContain("could not record");
+    }
+    expect(mockedPrisma.contentPublication.create).not.toHaveBeenCalled();
+    expect(mockedPublish).toHaveBeenCalledTimes(1); // no automatic second WordPress call
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("3. success + persistence succeeds + Activity logging throws -> still returns actionSuccess", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockedPublish.mockResolvedValue({ ok: true, externalId: "1", externalUrl: "https://x/?p=1", externalStatus: "publish" });
+    mockedPrisma.contentPublication.create.mockResolvedValue({ externalId: "1", externalUrl: "https://x/?p=1", publishedAt: new Date() });
+    (logActivity as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("activity db down"));
+
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.externalId).toBe("1");
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("4. confirmed WordPress failure + Activity logging throws -> still returns the expected actionError", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockedPublish.mockResolvedValue({ ok: false, errorType: "AUTHENTICATION_FAILED", message: "The destination rejected these credentials." });
+    (logActivity as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("activity db down"));
+
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("The destination rejected these credentials.");
+    expect(mockedPrisma.contentPublication.create).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("5. ambiguous/network failure + Activity logging throws -> existing ambiguous result remains unchanged", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockedPublish.mockResolvedValue({ ok: false, errorType: "AMBIGUOUS_RESPONSE", message: "Could not confirm the outcome." });
+    (logActivity as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("activity db down"));
+
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Could not confirm the outcome.");
+    expect(mockedPrisma.contentPublication.create).not.toHaveBeenCalled();
+    expect(mockedPublish).toHaveBeenCalledTimes(1); // no automatic retry
+    errorSpy.mockRestore();
+  });
+
+  it("6. no credential/Authorization/raw-response data appears in any returned error or console logging", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    mockedPublish.mockResolvedValue({ ok: true, externalId: "1", externalUrl: "https://x/?p=1", externalStatus: "publish" });
+    makeExecuteAttemptPersistenceTransactionThrow();
+
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+
+    const allOutput = JSON.stringify(result) + JSON.stringify(errorSpy.mock.calls) + JSON.stringify(logSpy.mock.calls);
+    expect(allOutput).not.toContain("abcd 1234 EFGH 5678");
+    expect(allOutput).not.toContain("admin");
+    expect(allOutput).not.toMatch(/Basic [A-Za-z0-9+/=]{10,}/);
+
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  it("7. persistence failure never triggers a second automatic WordPress call", async () => {
+    mockedPublish.mockResolvedValue({ ok: true, externalId: "1", externalUrl: "https://x/?p=1", externalStatus: "publish" });
+    makeExecuteAttemptPersistenceTransactionThrow();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+
+    expect(mockedPublish).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
+  });
+});

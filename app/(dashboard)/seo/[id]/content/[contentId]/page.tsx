@@ -19,8 +19,10 @@ import {
   restoreContent,
 } from "@/features/seo/actions/content.actions";
 import AdvanceContentStatusButton from "@/features/seo/components/AdvanceContentStatusButton";
+import ContentVersionHistory from "@/features/seo/components/ContentVersionHistory";
 import { CONTENT_STATUS_ORDER } from "@/features/seo/schemas/content.schema";
 import { getContentById } from "@/features/seo/services/content.service";
+import { getContentRevisions } from "@/features/seo/services/content-revision.service";
 import { listFilesFor } from "@/features/files/services/file.service";
 import PublishContentPanel from "@/features/publishing/components/PublishContentPanel";
 import { getContentPublicationState, isContentStatusPublishable } from "@/features/publishing/services/content-publication-state.service";
@@ -48,6 +50,7 @@ export default async function ContentDetailPage({ params }: ContentDetailPagePro
   const files = await listFilesFor("content", content.id);
   const canPublish = canManage && !content.deletedAt && !!content.body && isContentStatusPublishable(content.status);
   const publicationState = canPublish ? await getContentPublicationState(content.id, content.seoProject.companyId) : [];
+  const revisions = canManage ? await getContentRevisions(content.id, content.seoProject.companyId) : [];
 
   const currentIndex = CONTENT_STATUS_ORDER.indexOf(content.status);
   const nextStatus = CONTENT_STATUS_ORDER[currentIndex + 1];
@@ -201,6 +204,21 @@ export default async function ContentDetailPage({ params }: ContentDetailPagePro
           )}
         </CardContent>
       </Card>
+
+      {canManage && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Version History</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ContentVersionHistory
+              contentId={content.id}
+              current={{ title: content.title, metaTitle: content.metaTitle, metaDescription: content.metaDescription, body: content.body }}
+              revisions={revisions}
+            />
+          </CardContent>
+        </Card>
+      )}
 
       {canPublish && (
         <Card>

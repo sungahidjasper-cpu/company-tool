@@ -44,8 +44,15 @@ describe("getContentRevisions", () => {
 
     const [args] = mockedPrisma.contentRevision.findMany.mock.calls[0];
     expect(Object.keys(args.select).sort()).toEqual(
-      ["body", "changeSource", "createdAt", "createdByUserId", "id", "metaDescription", "metaTitle", "revisionNumber", "title"].sort()
+      ["body", "changeSource", "createdAt", "createdBy", "createdByUserId", "id", "metaDescription", "metaTitle", "revisionNumber", "title"].sort()
     );
+  });
+
+  it("selects only firstName/lastName from the createdBy relation — never email, role, or any other User field", async () => {
+    await getContentRevisions("content-1", "company-a");
+
+    const [args] = mockedPrisma.contentRevision.findMany.mock.calls[0];
+    expect(args.select.createdBy).toEqual({ select: { firstName: true, lastName: true } });
   });
 });
 

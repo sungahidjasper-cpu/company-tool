@@ -3,10 +3,11 @@ import type { ContentRevisionSource } from "@/lib/generated/prisma/enums";
 import { prisma } from "@/lib/prisma";
 
 /**
- * Phase 25 Stage 1 — read-only, company-scoped listing plus the
- * concurrency-safe snapshot primitive Stage 2 will call from
- * updateContent/saveLongFormContent. No write call sites exist yet — this
- * file only defines the mechanism.
+ * Phase 25 — read-only, company-scoped listing plus the concurrency-safe
+ * snapshot primitive updateContent/updateLongFormContentAction/
+ * restoreContentRevisionAction all call (Stages 2/3). getContentRevisions
+ * is this file's only read path, consumed by the Content detail page's
+ * Version History card (Stage 4).
  */
 
 export type ContentRevisionSummary = {
@@ -18,6 +19,8 @@ export type ContentRevisionSummary = {
   body: string | null;
   changeSource: ContentRevisionSource;
   createdByUserId: string | null;
+  /** Null when createdByUserId is null (system-originated, unlikely today) or the user has since been deleted (SetNull) — the UI must render a graceful fallback, never the raw id. */
+  createdBy: { firstName: string; lastName: string } | null;
   createdAt: Date;
 };
 
@@ -35,6 +38,7 @@ export async function getContentRevisions(contentId: string, companyId: string):
       body: true,
       changeSource: true,
       createdByUserId: true,
+      createdBy: { select: { firstName: true, lastName: true } },
       createdAt: true,
     },
   });

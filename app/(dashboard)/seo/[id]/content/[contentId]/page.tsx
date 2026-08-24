@@ -22,6 +22,8 @@ import AdvanceContentStatusButton from "@/features/seo/components/AdvanceContent
 import { CONTENT_STATUS_ORDER } from "@/features/seo/schemas/content.schema";
 import { getContentById } from "@/features/seo/services/content.service";
 import { listFilesFor } from "@/features/files/services/file.service";
+import PublishContentPanel from "@/features/publishing/components/PublishContentPanel";
+import { getContentPublicationState, isContentStatusPublishable } from "@/features/publishing/services/content-publication-state.service";
 import { requireUser } from "@/lib/auth";
 import { assertCompanyAccess, Permissions } from "@/lib/authorization";
 import { cn, formatEnumLabel } from "@/lib/utils";
@@ -44,6 +46,8 @@ export default async function ContentDetailPage({ params }: ContentDetailPagePro
   const canManage = Permissions.manageSeoProjects(user.role);
   const canAct = canManage || content.authorId === user.id;
   const files = await listFilesFor("content", content.id);
+  const canPublish = canManage && !content.deletedAt && !!content.body && isContentStatusPublishable(content.status);
+  const publicationState = canPublish ? await getContentPublicationState(content.id, content.seoProject.companyId) : [];
 
   const currentIndex = CONTENT_STATUS_ORDER.indexOf(content.status);
   const nextStatus = CONTENT_STATUS_ORDER[currentIndex + 1];
@@ -197,6 +201,17 @@ export default async function ContentDetailPage({ params }: ContentDetailPagePro
           )}
         </CardContent>
       </Card>
+
+      {canPublish && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Publishing</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <PublishContentPanel contentId={content.id} connections={publicationState.map((state) => ({ id: state.connectionId, label: state.connectionLabel }))} publicationState={publicationState} />
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card>

@@ -15,6 +15,7 @@ import {
   Gauge,
   Settings,
   FileBarChart,
+  Trash2,
 } from "lucide-react";
 
 import { hasMinimumRole } from "@/lib/authorization";
@@ -42,6 +43,7 @@ const menuItems = [
   { name: "AI Workspace", icon: Bot, href: "/ai" },
   { name: "AI Usage", icon: Gauge, href: "/ai-usage" },
   { name: "Reports", icon: FileBarChart, href: "/reports" },
+  { name: "Trash", icon: Trash2, href: "/trash" },
   { name: "Settings", icon: Settings, href: "/settings" },
 ];
 

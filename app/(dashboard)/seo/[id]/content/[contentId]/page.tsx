@@ -113,7 +113,7 @@ export default async function ContentDetailPage({ params }: ContentDetailPagePro
           <CardContent className="flex flex-col gap-3 text-sm">
             <div className="flex justify-between">
               <span className="text-slate-500">Status</span>
-              <StatusBadge status={content.deletedAt ? "ARCHIVED" : content.status} />
+              <StatusBadge status={content.deletedAt ? "TRASHED" : content.status} />
             </div>
             <div className="flex justify-between">
               <span className="text-slate-500">Author</span>

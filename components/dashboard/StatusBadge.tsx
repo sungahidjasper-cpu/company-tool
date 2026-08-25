@@ -16,6 +16,13 @@ const STATUS_VARIANTS: Record<string, BadgeVariant> = {
   COMPLETED: "default",
   CANCELLED: "destructive",
   ARCHIVED: "outline",
+  // Phase 27 Stage 3 — a soft-deleted Content row's synthetic status label.
+  // Distinct from ARCHIVED, which is also a real, independent ContentStatus
+  // enum value (a live, still-active publishing stage) — reusing "ARCHIVED"
+  // for both made a deleted row indistinguishable from a merely-archived
+  // one. Content-only; every other entity's "Archived" has no such
+  // collision and is left unchanged.
+  TRASHED: "outline",
   NEW: "secondary",
   CONTACTED: "outline",
   QUALIFIED: "default",

@@ -163,3 +163,50 @@ export async function deleteFile(id: string): Promise<ActionResult> {
   context.paths.forEach((path) => revalidatePath(path));
   return actionSuccess();
 }
+
+/**
+ * Phase 27 Stage 3 — restore only: clears deletedAt and never touches
+ * storage, mirroring deleteFile's own restraint in reverse. The physical
+ * object was never removed on delete, so restore never needs to recreate
+ * or verify it — it's simply still there.
+ */
+export async function restoreFile(id: string): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const file = await prisma.file.findUnique({ where: { id } });
+  if (!file) {
+    return actionError("File not found.");
+  }
+
+  const entityType = resolveEntityTypeFromFile(file);
+  if (!entityType) {
+    return actionError("This file's target is not supported here.");
+  }
+  const entityId = getEntityIdFromFile(file, entityType);
+
+  const context = await resolveEntityContext(entityType, entityId, actor.id);
+  if (!context || context.companyId !== actor.companyId) {
+    return actionError("You do not have access to this file.");
+  }
+
+  const canManage =
+    canManageEntityFiles(entityType, actor.role) ||
+    (["task", "lead", "seoProject", "content"].includes(entityType) && context.isAssignee) ||
+    file.uploadedById === actor.id;
+  if (!canManage) {
+    return actionError("You do not have permission to restore this file.");
+  }
+
+  await prisma.file.update({ where: { id }, data: { deletedAt: null } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "file.restored",
+    companyId: context.companyId,
+    metadata: { fileId: file.id, fileName: file.fileName, entityType },
+    ...buildActivityRefs(entityType, entityId),
+  });
+
+  context.paths.forEach((path) => revalidatePath(path));
+  return actionSuccess();
+}

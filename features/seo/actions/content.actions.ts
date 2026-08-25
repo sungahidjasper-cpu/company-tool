@@ -395,6 +395,43 @@ export async function deleteContentNote(input: { noteId: string }): Promise<Acti
   return actionSuccess();
 }
 
+/**
+ * Phase 27 Stage 3 — manager-or-author restore. Same ownership
+ * re-derivation as updateContentNote/deleteContentNote. Touches only Note's
+ * own deletedAt — never calls createContentRevisionSnapshot, never touches
+ * the Content row itself.
+ */
+export async function restoreContentNote(input: { noteId: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedContentNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (!note.deletedAt) {
+    return actionError("This note is not deleted.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageSeoProjects(actor.role)) {
+    return actionError("You do not have permission to restore this note.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { deletedAt: null } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "content.note_restored",
+    companyId: actor.companyId,
+    seoProjectId: note.content.seoProject.id,
+    contentId: note.content.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(`/seo/${note.content.seoProject.id}/content/${note.content.id}`);
+  return actionSuccess();
+}
+
 async function getOwnedContentIds(seoProjectId: string, companyId: string, ids: string[]) {
   const seoProject = await prisma.sEOProject.findUnique({ where: { id: seoProjectId } });
   if (!seoProject || seoProject.companyId !== companyId) return [];
@@ -491,6 +528,53 @@ export async function bulkPublishContent(
 
   revalidatePath(`/seo/${seoProjectId}/content`);
   return actionSuccess({ count: result.count });
+}
+
+/**
+ * Phase 27 Stage 3 — read-only preflight for the Trash permanent-delete
+ * confirmation. Computes exactly what bulkDeleteContent would do, without
+ * doing it: which ids are revision-blocked (reusing the identical query
+ * bulkDeleteContent itself runs) and, for the ids that would actually be
+ * deleted, how many Notes/Files/Activity rows would cascade away with them
+ * (Note/File/Activity all have onDelete: Cascade on contentId — confirmed
+ * in schema). Never mutates anything; bulkDeleteContent remains the only
+ * function that actually deletes.
+ */
+export async function getContentDeletionImpact(
+  seoProjectId: string,
+  ids: string[]
+): Promise<ActionResult<{ eligibleCount: number; blockedCount: number; noteCount: number; fileCount: number; activityCount: number }>> {
+  const actor = await requireUser();
+  if (!Permissions.manageSeoProjects(actor.role)) {
+    return actionError("You do not have permission to delete content.");
+  }
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: seoProjectId } });
+  if (!seoProject || seoProject.companyId !== actor.companyId) {
+    return actionError("SEO project not found.");
+  }
+
+  const blocked = await prisma.contentRevision.findMany({
+    where: { contentId: { in: ids } },
+    select: { contentId: true },
+    distinct: ["contentId"],
+  });
+  const blockedIds = new Set(blocked.map((revision) => revision.contentId));
+  const eligibleIds = ids.filter((id) => !blockedIds.has(id));
+
+  const [noteCount, fileCount, activityCount] = await Promise.all([
+    prisma.note.count({ where: { contentId: { in: eligibleIds } } }),
+    prisma.file.count({ where: { contentId: { in: eligibleIds } } }),
+    prisma.activity.count({ where: { contentId: { in: eligibleIds } } }),
+  ]);
+
+  return actionSuccess({
+    eligibleCount: eligibleIds.length,
+    blockedCount: blockedIds.size,
+    noteCount,
+    fileCount,
+    activityCount,
+  });
 }
 
 /**

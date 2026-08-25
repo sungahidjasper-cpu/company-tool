@@ -274,3 +274,37 @@ export async function deleteSeoProjectNote(input: { noteId: string }): Promise<A
   revalidatePath(`/seo/${note.seoProject.id}`);
   return actionSuccess();
 }
+
+/**
+ * Phase 27 Stage 3 — manager-or-author restore. Same ownership
+ * re-derivation as updateSeoProjectNote/deleteSeoProjectNote. Touches only deletedAt.
+ */
+export async function restoreSeoProjectNote(input: { noteId: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedSeoProjectNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (!note.deletedAt) {
+    return actionError("This note is not deleted.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageSeoProjects(actor.role)) {
+    return actionError("You do not have permission to restore this note.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { deletedAt: null } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "seo_project.note_restored",
+    companyId: actor.companyId,
+    seoProjectId: note.seoProject.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(`/seo/${note.seoProject.id}`);
+  return actionSuccess();
+}

@@ -177,7 +177,7 @@ export default function ContentListTable({
                 </TableCell>
                 <TableCell className="text-slate-500">{item._count.keywords}</TableCell>
                 <TableCell>
-                  <StatusBadge status={item.deletedAt ? "ARCHIVED" : item.status} />
+                  <StatusBadge status={item.deletedAt ? "TRASHED" : item.status} />
                 </TableCell>
                 {canManage && (
                   <TableCell className="text-right">

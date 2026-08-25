@@ -20,7 +20,7 @@ import { requireUser } from "@/lib/auth";
 import { logActivity } from "@/lib/activity";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { deleteTaskComment, updateTaskComment } from "@/features/tasks/actions/task.actions";
+import { deleteTaskComment, restoreTaskComment, updateTaskComment } from "@/features/tasks/actions/task.actions";
 
 const mockedRequireUser = requireUser as unknown as ReturnType<typeof vi.fn>;
 const mockedLogActivity = logActivity as unknown as ReturnType<typeof vi.fn>;
@@ -283,6 +283,104 @@ describe("deleteTaskComment", () => {
 
   it("19b. correct revalidatePath is called", async () => {
     await deleteTaskComment({ noteId: "note-1" });
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/projects/project-1/tasks/task-1");
+  });
+});
+
+describe("restoreTaskComment", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(AUTHOR);
+    mockedPrisma.note.findUnique.mockResolvedValue(makeTaskNote({ deletedAt: new Date("2026-02-01") }));
+    mockedPrisma.note.update.mockResolvedValue(makeTaskNote({ deletedAt: null }));
+  });
+
+  it("author successfully restores own note", async () => {
+    const result = await restoreTaskComment({ noteId: "note-1" });
+    expect(result.success).toBe(true);
+  });
+
+  it("manager successfully restores another user's note", async () => {
+    mockedRequireUser.mockResolvedValue(MANAGER);
+    const result = await restoreTaskComment({ noteId: "note-1" });
+    expect(result.success).toBe(true);
+  });
+
+  it("unauthorized employee cannot restore another user's note", async () => {
+    mockedRequireUser.mockResolvedValue(OTHER_EMPLOYEE);
+    const result = await restoreTaskComment({ noteId: "note-1" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/permission/i);
+    expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+  });
+
+  it("the Task's own assignee (task.assigneeId) is NOT sufficient to restore someone else's note — only note.authorId or a manager", async () => {
+    mockedRequireUser.mockResolvedValue(TASK_ASSIGNEE_NOT_AUTHOR);
+    const result = await restoreTaskComment({ noteId: "note-1" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/permission/i);
+    expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+  });
+
+  it("wrong-tenant note is rejected", async () => {
+    mockedPrisma.note.findUnique.mockResolvedValue(
+      makeTaskNote({ deletedAt: new Date(), task: { id: "task-1", projectId: "project-1", project: { companyId: COMPANY_B } } })
+    );
+    const result = await restoreTaskComment({ noteId: "note-1" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Note not found.");
+    expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+  });
+
+  it("missing note is rejected", async () => {
+    mockedPrisma.note.findUnique.mockResolvedValue(null);
+    const result = await restoreTaskComment({ noteId: "missing" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects restoring a note that isn't deleted", async () => {
+    mockedPrisma.note.findUnique.mockResolvedValue(makeTaskNote({ deletedAt: null }));
+    const result = await restoreTaskComment({ noteId: "note-1" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/not deleted/i);
+    expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+  });
+
+  it("restore changes only deletedAt, to null", async () => {
+    await restoreTaskComment({ noteId: "note-1" });
+    const [{ data }] = mockedPrisma.note.update.mock.calls[0];
+    expect(data).toEqual({ deletedAt: null });
+  });
+
+  it("Activity action is correct, with projectId and taskId set", async () => {
+    await restoreTaskComment({ noteId: "note-1" });
+    expect(mockedLogActivity).toHaveBeenCalledWith({
+      actorId: AUTHOR.id,
+      action: "task.comment_restored",
+      companyId: COMPANY_A,
+      projectId: "project-1",
+      taskId: "task-1",
+      metadata: { noteId: "note-1" },
+    });
+  });
+
+  it("Activity metadata is exactly { noteId }", async () => {
+    await restoreTaskComment({ noteId: "note-1" });
+    const [call] = mockedLogActivity.mock.calls[0];
+    expect(Object.keys(call.metadata)).toEqual(["noteId"]);
+  });
+
+  it("note body is not included in Activity metadata", async () => {
+    mockedPrisma.note.findUnique.mockResolvedValue(
+      makeTaskNote({ deletedAt: new Date(), body: "Sensitive text that must not leak" })
+    );
+    await restoreTaskComment({ noteId: "note-1" });
+    const [call] = mockedLogActivity.mock.calls[0];
+    expect(JSON.stringify(call)).not.toContain("Sensitive text");
+  });
+
+  it("correct revalidatePath is called", async () => {
+    await restoreTaskComment({ noteId: "note-1" });
     expect(mockedRevalidatePath).toHaveBeenCalledWith("/projects/project-1/tasks/task-1");
   });
 });

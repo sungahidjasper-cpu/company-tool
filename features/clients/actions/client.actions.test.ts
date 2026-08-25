@@ -20,7 +20,7 @@ import { requireUser } from "@/lib/auth";
 import { logActivity } from "@/lib/activity";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { deleteClientNote, updateClientNote } from "@/features/clients/actions/client.actions";
+import { deleteClientNote, restoreClientNote, updateClientNote } from "@/features/clients/actions/client.actions";
 
 const mockedRequireUser = requireUser as unknown as ReturnType<typeof vi.fn>;
 const mockedLogActivity = logActivity as unknown as ReturnType<typeof vi.fn>;
@@ -332,6 +332,105 @@ describe("deleteClientNote", () => {
       await deleteClientNote({ noteId: "note-1" });
       const [{ data }] = mockedPrisma.note.update.mock.calls[0];
       expect(data).not.toHaveProperty("authorId");
+    });
+  });
+});
+
+describe("restoreClientNote", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(AUTHOR);
+    mockedPrisma.note.findUnique.mockResolvedValue(makeNote({ deletedAt: new Date("2026-02-01") }));
+    mockedPrisma.note.update.mockResolvedValue(makeNote({ deletedAt: null }));
+  });
+
+  describe("1. successful restore by note author", () => {
+    it("succeeds for the author", async () => {
+      const result = await restoreClientNote({ noteId: "note-1" });
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe("2. successful restore by manager", () => {
+    it("succeeds for a manager on someone else's note", async () => {
+      mockedRequireUser.mockResolvedValue(MANAGER);
+      const result = await restoreClientNote({ noteId: "note-1" });
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe("3. unauthorized restore", () => {
+    it("rejects a different EMPLOYEE who neither wrote the note nor manages clients", async () => {
+      mockedRequireUser.mockResolvedValue(OTHER_EMPLOYEE);
+      const result = await restoreClientNote({ noteId: "note-1" });
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.message).toMatch(/permission/i);
+      expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("4. cross-tenant restore rejection", () => {
+    it("rejects when the note's client belongs to a different company", async () => {
+      mockedPrisma.note.findUnique.mockResolvedValue(
+        makeNote({ deletedAt: new Date(), client: { id: "client-1", companyId: COMPANY_B } })
+      );
+      const result = await restoreClientNote({ noteId: "note-1" });
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.message).toBe("Note not found.");
+      expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects when the note doesn't exist", async () => {
+      mockedPrisma.note.findUnique.mockResolvedValue(null);
+      const result = await restoreClientNote({ noteId: "missing" });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe("5. rejects restoring a note that isn't deleted", () => {
+    it("returns an error when deletedAt is already null", async () => {
+      mockedPrisma.note.findUnique.mockResolvedValue(makeNote({ deletedAt: null }));
+      const result = await restoreClientNote({ noteId: "note-1" });
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.message).toMatch(/not deleted/i);
+      expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("6. restore sets deletedAt to null, nothing else", () => {
+    it("update data is exactly { deletedAt: null }", async () => {
+      await restoreClientNote({ noteId: "note-1" });
+      const [{ data }] = mockedPrisma.note.update.mock.calls[0];
+      expect(data).toEqual({ deletedAt: null });
+    });
+  });
+
+  describe("7. Activity action/reference/metadata for restore", () => {
+    it("logs client.note_restored with clientId and metadata: { noteId } only", async () => {
+      await restoreClientNote({ noteId: "note-1" });
+      expect(mockedLogActivity).toHaveBeenCalledWith({
+        actorId: AUTHOR.id,
+        action: "client.note_restored",
+        companyId: COMPANY_A,
+        clientId: "client-1",
+        metadata: { noteId: "note-1" },
+      });
+    });
+
+    it("never logs the note body in Activity metadata", async () => {
+      mockedPrisma.note.findUnique.mockResolvedValue(
+        makeNote({ deletedAt: new Date(), body: "Sensitive text that must not leak" })
+      );
+      await restoreClientNote({ noteId: "note-1" });
+      const [call] = mockedLogActivity.mock.calls[0];
+      expect(JSON.stringify(call)).not.toContain("Sensitive text");
+    });
+  });
+
+  describe("8. correct revalidatePath is called", () => {
+    it("revalidates the client detail path", async () => {
+      await restoreClientNote({ noteId: "note-1" });
+      expect(mockedRevalidatePath).toHaveBeenCalledWith("/clients/client-1");
     });
   });
 });

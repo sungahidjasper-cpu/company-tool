@@ -350,3 +350,37 @@ export async function deleteProjectNote(input: { noteId: string }): Promise<Acti
   revalidatePath(`/projects/${note.project.id}`);
   return actionSuccess();
 }
+
+/**
+ * Phase 27 Stage 3 — manager-or-author restore. Same ownership
+ * re-derivation as updateProjectNote/deleteProjectNote. Touches only deletedAt.
+ */
+export async function restoreProjectNote(input: { noteId: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedProjectNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (!note.deletedAt) {
+    return actionError("This note is not deleted.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageProjects(actor.role)) {
+    return actionError("You do not have permission to restore this note.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { deletedAt: null } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "project.note_restored",
+    companyId: actor.companyId,
+    projectId: note.project.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(`/projects/${note.project.id}`);
+  return actionSuccess();
+}

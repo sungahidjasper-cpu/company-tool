@@ -36,7 +36,7 @@ import {
   canManageEntityFiles,
   buildActivityRefs,
 } from "@/features/files/services/entity-target";
-import { deleteFile } from "@/features/files/actions/file.actions";
+import { deleteFile, restoreFile } from "@/features/files/actions/file.actions";
 
 const mockedRequireUser = requireUser as unknown as ReturnType<typeof vi.fn>;
 const mockedLogActivity = logActivity as unknown as ReturnType<typeof vi.fn>;
@@ -214,6 +214,158 @@ describe("deleteFile", () => {
       const result = await deleteFile("file-1");
 
       expect(result.success).toBe(true);
+    });
+  });
+});
+
+describe("restoreFile", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(MANAGER);
+    mockedPrisma.file.findUnique.mockResolvedValue(makeFile({ deletedAt: new Date() }));
+    mockedResolveEntityTypeFromFile.mockReturnValue("content");
+    mockedGetEntityIdFromFile.mockReturnValue("content-1");
+    mockedResolveEntityContext.mockResolvedValue({ companyId: COMPANY_A, paths: ["/seo/seo-1/content/content-1"], isAssignee: false });
+    mockedCanManageEntityFiles.mockReturnValue(true);
+    mockedBuildActivityRefs.mockReturnValue({ contentId: "content-1" });
+    mockedPrisma.file.update.mockResolvedValue({ ...makeFile(), deletedAt: null });
+  });
+
+  describe("1. successful restore", () => {
+    it("returns a successful ActionResult", async () => {
+      const result = await restoreFile("file-1");
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe("2. sets deletedAt to null, nothing else", () => {
+    it("calls file.update with deletedAt: null only", async () => {
+      await restoreFile("file-1");
+      const [{ data }] = mockedPrisma.file.update.mock.calls[0];
+      expect(data).toEqual({ deletedAt: null });
+    });
+
+    it("targets the correct file id", async () => {
+      await restoreFile("file-1");
+      expect(mockedPrisma.file.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "file-1" } })
+      );
+    });
+  });
+
+  describe("3. never touches storage", () => {
+    it("does not call storage.delete()", async () => {
+      await restoreFile("file-1");
+      expect(mockedStorage.delete).not.toHaveBeenCalled();
+    });
+
+    it("does not call storage.save()", async () => {
+      await restoreFile("file-1");
+      expect(mockedStorage.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("4. never hard-deletes or re-parents the row", () => {
+    it("never calls prisma.file.delete()", async () => {
+      await restoreFile("file-1");
+      expect(mockedPrisma.file.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("5. Activity is logged with the correct entity references", () => {
+    it("logs file.restored with the resolved entity refs and safe metadata", async () => {
+      await restoreFile("file-1");
+      expect(mockedLogActivity).toHaveBeenCalledWith({
+        actorId: "user-1",
+        action: "file.restored",
+        companyId: COMPANY_A,
+        metadata: { fileId: "file-1", fileName: "report.pdf", entityType: "content" },
+        contentId: "content-1",
+      });
+    });
+
+    it("reuses buildActivityRefs rather than duplicating entity-ref logic", async () => {
+      await restoreFile("file-1");
+      expect(mockedBuildActivityRefs).toHaveBeenCalledWith("content", "content-1");
+    });
+  });
+
+  describe("6. permission — mirrors deleteFile's authorization exactly", () => {
+    it("denies when canManageEntityFiles is false and the actor isn't the uploader or an assignee", async () => {
+      mockedCanManageEntityFiles.mockReturnValue(false);
+      mockedResolveEntityContext.mockResolvedValue({ companyId: COMPANY_A, paths: [], isAssignee: false });
+      mockedPrisma.file.findUnique.mockResolvedValue(makeFile({ uploadedById: "someone-else", deletedAt: new Date() }));
+
+      const result = await restoreFile("file-1");
+
+      expect(result.success).toBe(false);
+      expect(mockedPrisma.file.update).not.toHaveBeenCalled();
+      expect(mockedLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("allows the original uploader even without manage permission", async () => {
+      mockedCanManageEntityFiles.mockReturnValue(false);
+      mockedResolveEntityContext.mockResolvedValue({ companyId: COMPANY_A, paths: [], isAssignee: false });
+      mockedPrisma.file.findUnique.mockResolvedValue(makeFile({ uploadedById: "user-1", deletedAt: new Date() }));
+
+      const result = await restoreFile("file-1");
+
+      expect(result.success).toBe(true);
+    });
+
+    it("allows an assignee (task/lead/seoProject/content) to restore even without manage permission", async () => {
+      mockedCanManageEntityFiles.mockReturnValue(false);
+      mockedResolveEntityContext.mockResolvedValue({ companyId: COMPANY_A, paths: [], isAssignee: true });
+      mockedPrisma.file.findUnique.mockResolvedValue(makeFile({ uploadedById: "someone-else", deletedAt: new Date() }));
+
+      const result = await restoreFile("file-1");
+
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe("7. tenant/ownership rejection", () => {
+    it("rejects when the file's entity belongs to a different company", async () => {
+      mockedResolveEntityContext.mockResolvedValue({ companyId: COMPANY_B, paths: [], isAssignee: false });
+
+      const result = await restoreFile("file-1");
+
+      expect(result.success).toBe(false);
+      expect(mockedPrisma.file.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects when the file doesn't exist", async () => {
+      mockedPrisma.file.findUnique.mockResolvedValue(null);
+
+      const result = await restoreFile("file-1");
+
+      expect(result.success).toBe(false);
+      expect(mockedPrisma.file.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects when the file's target entity type can't be resolved", async () => {
+      mockedResolveEntityTypeFromFile.mockReturnValue(null);
+
+      const result = await restoreFile("file-1");
+
+      expect(result.success).toBe(false);
+      expect(mockedPrisma.file.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("8. revalidation", () => {
+    it("revalidates every path from the resolved entity context", async () => {
+      const { revalidatePath } = await import("next/cache");
+      mockedResolveEntityContext.mockResolvedValue({
+        companyId: COMPANY_A,
+        paths: ["/seo/seo-1/content/content-1", "/seo/seo-1/content"],
+        isAssignee: false,
+      });
+
+      await restoreFile("file-1");
+
+      expect(revalidatePath).toHaveBeenCalledWith("/seo/seo-1/content/content-1");
+      expect(revalidatePath).toHaveBeenCalledWith("/seo/seo-1/content");
     });
   });
 });

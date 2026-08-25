@@ -20,7 +20,7 @@ import { requireUser } from "@/lib/auth";
 import { logActivity } from "@/lib/activity";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { deleteSeoProjectNote, updateSeoProjectNote } from "@/features/seo/actions/seo-project.actions";
+import { deleteSeoProjectNote, restoreSeoProjectNote, updateSeoProjectNote } from "@/features/seo/actions/seo-project.actions";
 
 const mockedRequireUser = requireUser as unknown as ReturnType<typeof vi.fn>;
 const mockedLogActivity = logActivity as unknown as ReturnType<typeof vi.fn>;
@@ -240,6 +240,89 @@ describe("deleteSeoProjectNote", () => {
 
   it("revalidatePath is called correctly", async () => {
     await deleteSeoProjectNote({ noteId: "note-1" });
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/seo/seo-project-1");
+  });
+});
+
+describe("restoreSeoProjectNote", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(AUTHOR);
+    mockedPrisma.note.findUnique.mockResolvedValue(makeNote({ deletedAt: new Date("2026-02-01") }));
+    mockedPrisma.note.update.mockResolvedValue(makeNote({ deletedAt: null }));
+  });
+
+  it("succeeds for the author", async () => {
+    const result = await restoreSeoProjectNote({ noteId: "note-1" });
+    expect(result.success).toBe(true);
+  });
+
+  it("succeeds for a manager on someone else's note", async () => {
+    mockedRequireUser.mockResolvedValue(MANAGER);
+    const result = await restoreSeoProjectNote({ noteId: "note-1" });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a different EMPLOYEE who neither wrote the note nor manages SEO projects", async () => {
+    mockedRequireUser.mockResolvedValue(OTHER_EMPLOYEE);
+    const result = await restoreSeoProjectNote({ noteId: "note-1" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/permission/i);
+    expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the note's SEO project belongs to a different company", async () => {
+    mockedPrisma.note.findUnique.mockResolvedValue(
+      makeNote({ deletedAt: new Date(), seoProject: { id: "seo-project-1", companyId: COMPANY_B } })
+    );
+    const result = await restoreSeoProjectNote({ noteId: "note-1" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Note not found.");
+    expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the note doesn't exist", async () => {
+    mockedPrisma.note.findUnique.mockResolvedValue(null);
+    const result = await restoreSeoProjectNote({ noteId: "missing" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects restoring a note that isn't deleted", async () => {
+    mockedPrisma.note.findUnique.mockResolvedValue(makeNote({ deletedAt: null }));
+    const result = await restoreSeoProjectNote({ noteId: "note-1" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/not deleted/i);
+    expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+  });
+
+  it("update data is exactly { deletedAt: null }", async () => {
+    await restoreSeoProjectNote({ noteId: "note-1" });
+    const [{ data }] = mockedPrisma.note.update.mock.calls[0];
+    expect(data).toEqual({ deletedAt: null });
+  });
+
+  it("logs seo_project.note_restored with seoProjectId and metadata: { noteId } only", async () => {
+    await restoreSeoProjectNote({ noteId: "note-1" });
+    expect(mockedLogActivity).toHaveBeenCalledWith({
+      actorId: AUTHOR.id,
+      action: "seo_project.note_restored",
+      companyId: COMPANY_A,
+      seoProjectId: "seo-project-1",
+      metadata: { noteId: "note-1" },
+    });
+  });
+
+  it("note body is not included in Activity metadata", async () => {
+    mockedPrisma.note.findUnique.mockResolvedValue(
+      makeNote({ deletedAt: new Date(), body: "Sensitive text that must not leak" })
+    );
+    await restoreSeoProjectNote({ noteId: "note-1" });
+    const [call] = mockedLogActivity.mock.calls[0];
+    expect(JSON.stringify(call)).not.toContain("Sensitive text");
+  });
+
+  it("revalidatePath is called correctly", async () => {
+    await restoreSeoProjectNote({ noteId: "note-1" });
     expect(mockedRevalidatePath).toHaveBeenCalledWith("/seo/seo-project-1");
   });
 });

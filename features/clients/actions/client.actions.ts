@@ -284,3 +284,37 @@ export async function deleteClientNote(input: { noteId: string }): Promise<Actio
   revalidatePath(`/clients/${note.client.id}`);
   return actionSuccess();
 }
+
+/**
+ * Phase 27 Stage 3 — manager-or-author restore. Same ownership
+ * re-derivation as updateClientNote/deleteClientNote. Touches only deletedAt.
+ */
+export async function restoreClientNote(input: { noteId: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedClientNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (!note.deletedAt) {
+    return actionError("This note is not deleted.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageClients(actor.role)) {
+    return actionError("You do not have permission to restore this note.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { deletedAt: null } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "client.note_restored",
+    companyId: actor.companyId,
+    clientId: note.client.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(`/clients/${note.client.id}`);
+  return actionSuccess();
+}

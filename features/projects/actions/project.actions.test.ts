@@ -20,7 +20,7 @@ import { requireUser } from "@/lib/auth";
 import { logActivity } from "@/lib/activity";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { deleteProjectNote, updateProjectNote } from "@/features/projects/actions/project.actions";
+import { deleteProjectNote, restoreProjectNote, updateProjectNote } from "@/features/projects/actions/project.actions";
 
 const mockedRequireUser = requireUser as unknown as ReturnType<typeof vi.fn>;
 const mockedLogActivity = logActivity as unknown as ReturnType<typeof vi.fn>;
@@ -285,6 +285,105 @@ describe("deleteProjectNote", () => {
   describe("18. correct revalidatePath is called for delete", () => {
     it("revalidates the project detail path", async () => {
       await deleteProjectNote({ noteId: "note-1" });
+      expect(mockedRevalidatePath).toHaveBeenCalledWith("/projects/project-1");
+    });
+  });
+});
+
+describe("restoreProjectNote", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(AUTHOR);
+    mockedPrisma.note.findUnique.mockResolvedValue(makeNote({ deletedAt: new Date("2026-02-01") }));
+    mockedPrisma.note.update.mockResolvedValue(makeNote({ deletedAt: null }));
+  });
+
+  describe("1. successful restore by note author", () => {
+    it("succeeds for the author", async () => {
+      const result = await restoreProjectNote({ noteId: "note-1" });
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe("2. successful restore by manager", () => {
+    it("succeeds for a manager on someone else's note", async () => {
+      mockedRequireUser.mockResolvedValue(MANAGER);
+      const result = await restoreProjectNote({ noteId: "note-1" });
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe("3. unauthorized restore", () => {
+    it("rejects a different EMPLOYEE who neither wrote the note nor manages projects", async () => {
+      mockedRequireUser.mockResolvedValue(OTHER_EMPLOYEE);
+      const result = await restoreProjectNote({ noteId: "note-1" });
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.message).toMatch(/permission/i);
+      expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("4. cross-tenant restore rejection", () => {
+    it("rejects when the note's project belongs to a different company", async () => {
+      mockedPrisma.note.findUnique.mockResolvedValue(
+        makeNote({ deletedAt: new Date(), project: { id: "project-1", companyId: COMPANY_B } })
+      );
+      const result = await restoreProjectNote({ noteId: "note-1" });
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.message).toBe("Note not found.");
+      expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects when the note doesn't exist", async () => {
+      mockedPrisma.note.findUnique.mockResolvedValue(null);
+      const result = await restoreProjectNote({ noteId: "missing" });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe("5. rejects restoring a note that isn't deleted", () => {
+    it("returns an error when deletedAt is already null", async () => {
+      mockedPrisma.note.findUnique.mockResolvedValue(makeNote({ deletedAt: null }));
+      const result = await restoreProjectNote({ noteId: "note-1" });
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.message).toMatch(/not deleted/i);
+      expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("6. restore sets deletedAt to null, nothing else", () => {
+    it("update data is exactly { deletedAt: null }", async () => {
+      await restoreProjectNote({ noteId: "note-1" });
+      const [{ data }] = mockedPrisma.note.update.mock.calls[0];
+      expect(data).toEqual({ deletedAt: null });
+    });
+  });
+
+  describe("7. Activity action/reference/metadata for restore", () => {
+    it("logs project.note_restored with projectId and metadata: { noteId } only", async () => {
+      await restoreProjectNote({ noteId: "note-1" });
+      expect(mockedLogActivity).toHaveBeenCalledWith({
+        actorId: AUTHOR.id,
+        action: "project.note_restored",
+        companyId: COMPANY_A,
+        projectId: "project-1",
+        metadata: { noteId: "note-1" },
+      });
+    });
+
+    it("never logs the note body in Activity metadata", async () => {
+      mockedPrisma.note.findUnique.mockResolvedValue(
+        makeNote({ deletedAt: new Date(), body: "Sensitive text that must not leak" })
+      );
+      await restoreProjectNote({ noteId: "note-1" });
+      const [call] = mockedLogActivity.mock.calls[0];
+      expect(JSON.stringify(call)).not.toContain("Sensitive text");
+    });
+  });
+
+  describe("8. correct revalidatePath is called", () => {
+    it("revalidates the project detail path", async () => {
+      await restoreProjectNote({ noteId: "note-1" });
       expect(mockedRevalidatePath).toHaveBeenCalledWith("/projects/project-1");
     });
   });

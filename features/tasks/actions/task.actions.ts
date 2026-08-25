@@ -399,6 +399,42 @@ export async function deleteTaskComment(input: { noteId: string }): Promise<Acti
   return actionSuccess();
 }
 
+/**
+ * Phase 27 Stage 3 — manager-or-author restore. Same ownership
+ * re-derivation as updateTaskComment/deleteTaskComment. Touches only
+ * deletedAt — never task.assigneeId.
+ */
+export async function restoreTaskComment(input: { noteId: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedTaskNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (!note.deletedAt) {
+    return actionError("This note is not deleted.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageProjects(actor.role)) {
+    return actionError("You do not have permission to restore this note.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { deletedAt: null } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "task.comment_restored",
+    companyId: actor.companyId,
+    projectId: note.task.projectId,
+    taskId: note.task.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(taskDetailPath(note.task.projectId, note.task.id));
+  return actionSuccess();
+}
+
 export async function createSubtask(
   parentTaskId: string,
   title: string

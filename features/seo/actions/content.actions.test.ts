@@ -9,7 +9,9 @@ vi.mock("@/features/notifications/services/notification.service", () => ({ creat
 type MockPrisma = {
   content: { findUnique: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; deleteMany: ReturnType<typeof vi.fn> };
   contentRevision: { count: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
-  note: { findUnique: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+  note: { findUnique: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; count: ReturnType<typeof vi.fn> };
+  file: { count: ReturnType<typeof vi.fn> };
+  activity: { count: ReturnType<typeof vi.fn> };
   sEOProject: { findUnique: ReturnType<typeof vi.fn> };
   $queryRaw: ReturnType<typeof vi.fn>;
   $transaction: ReturnType<typeof vi.fn>;
@@ -23,7 +25,9 @@ function createMockPrisma(): MockPrisma {
       create: vi.fn().mockResolvedValue({ id: "revision-1" }),
       findMany: vi.fn().mockResolvedValue([]),
     },
-    note: { findUnique: vi.fn(), update: vi.fn() },
+    note: { findUnique: vi.fn(), update: vi.fn(), count: vi.fn().mockResolvedValue(0) },
+    file: { count: vi.fn().mockResolvedValue(0) },
+    activity: { count: vi.fn().mockResolvedValue(0) },
     sEOProject: { findUnique: vi.fn() },
     $queryRaw: vi.fn().mockResolvedValue(undefined),
   } as unknown as MockPrisma;
@@ -40,7 +44,7 @@ import { requireUser } from "@/lib/auth";
 import { logActivity } from "@/lib/activity";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { bulkDeleteContent, deleteContentNote, updateContent, updateContentNote } from "@/features/seo/actions/content.actions";
+import { bulkDeleteContent, deleteContentNote, getContentDeletionImpact, restoreContentNote, updateContent, updateContentNote } from "@/features/seo/actions/content.actions";
 import type { ContentInput } from "@/features/seo/schemas/content.schema";
 
 const mockedRequireUser = requireUser as unknown as ReturnType<typeof vi.fn>;
@@ -234,6 +238,73 @@ describe("updateContent", () => {
         expect.objectContaining({ data: expect.objectContaining({ status: "APPROVED", publishedAt: new Date("2026-01-01") }) })
       );
     });
+  });
+});
+
+describe("getContentDeletionImpact", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(MANAGER);
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ id: "seo-1", companyId: COMPANY_A });
+    mockedPrisma.contentRevision.findMany.mockResolvedValue([]);
+    mockedPrisma.note.count.mockResolvedValue(0);
+    mockedPrisma.file.count.mockResolvedValue(0);
+    mockedPrisma.activity.count.mockResolvedValue(0);
+  });
+
+  it("denies a non-manager before any DB call", async () => {
+    mockedRequireUser.mockResolvedValue(EMPLOYEE);
+    await getContentDeletionImpact("seo-1", ["content-1"]);
+    expect(mockedPrisma.sEOProject.findUnique).not.toHaveBeenCalled();
+    expect(mockedPrisma.note.count).not.toHaveBeenCalled();
+  });
+
+  it("rejects a cross-company SEO project", async () => {
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ id: "seo-1", companyId: COMPANY_B });
+    const result = await getContentDeletionImpact("seo-1", ["content-1"]);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/not found/i);
+  });
+
+  it("never mutates anything — no deleteMany, no update, no create", async () => {
+    await getContentDeletionImpact("seo-1", ["content-1", "content-2"]);
+    expect(mockedPrisma.content.deleteMany).not.toHaveBeenCalled();
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+    expect(mockedPrisma.contentRevision.create).not.toHaveBeenCalled();
+  });
+
+  it("counts eligible vs. blocked ids using the same query bulkDeleteContent uses", async () => {
+    mockedPrisma.contentRevision.findMany.mockResolvedValue([{ contentId: "content-2" }]);
+
+    const result = await getContentDeletionImpact("seo-1", ["content-1", "content-2", "content-3"]);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.eligibleCount).toBe(2);
+      expect(result.data.blockedCount).toBe(1);
+    }
+    expect(mockedPrisma.contentRevision.findMany).toHaveBeenCalledWith({
+      where: { contentId: { in: ["content-1", "content-2", "content-3"] } },
+      select: { contentId: true },
+      distinct: ["contentId"],
+    });
+  });
+
+  it("counts Notes/Files/Activity scoped to the eligible ids only, excluding blocked ids", async () => {
+    mockedPrisma.contentRevision.findMany.mockResolvedValue([{ contentId: "content-2" }]);
+    mockedPrisma.note.count.mockResolvedValue(3);
+    mockedPrisma.file.count.mockResolvedValue(1);
+    mockedPrisma.activity.count.mockResolvedValue(7);
+
+    const result = await getContentDeletionImpact("seo-1", ["content-1", "content-2"]);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual({ eligibleCount: 1, blockedCount: 1, noteCount: 3, fileCount: 1, activityCount: 7 });
+    }
+    expect(mockedPrisma.note.count).toHaveBeenCalledWith({ where: { contentId: { in: ["content-1"] } } });
+    expect(mockedPrisma.file.count).toHaveBeenCalledWith({ where: { contentId: { in: ["content-1"] } } });
+    expect(mockedPrisma.activity.count).toHaveBeenCalledWith({ where: { contentId: { in: ["content-1"] } } });
   });
 });
 
@@ -617,6 +688,120 @@ describe("deleteContentNote", () => {
 
   it("22b. never touches the Content row at all", async () => {
     await deleteContentNote({ noteId: "note-1" });
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+    expect(mockedPrisma.content.findUnique).not.toHaveBeenCalled();
+  });
+});
+
+describe("restoreContentNote", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(MANAGER);
+    mockedPrisma.note.findUnique.mockResolvedValue(makeContentNote({ deletedAt: new Date("2026-02-01") }));
+    mockedPrisma.note.update.mockResolvedValue(makeContentNote({ deletedAt: null }));
+  });
+
+  it("author successfully restores own note", async () => {
+    mockedRequireUser.mockResolvedValue({ id: AUTHOR_ID, role: "EMPLOYEE", companyId: COMPANY_A });
+    const result = await restoreContentNote({ noteId: "note-1" });
+    expect(result.success).toBe(true);
+  });
+
+  it("manager successfully restores another user's note", async () => {
+    mockedRequireUser.mockResolvedValue(MANAGER_NOTE);
+    const result = await restoreContentNote({ noteId: "note-1" });
+    expect(result.success).toBe(true);
+  });
+
+  it("unauthorized employee cannot restore another user's note", async () => {
+    mockedRequireUser.mockResolvedValue(OTHER_EMPLOYEE_NOTE);
+    const result = await restoreContentNote({ noteId: "note-1" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/permission/i);
+    expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+  });
+
+  it("wrong-tenant note is rejected", async () => {
+    mockedPrisma.note.findUnique.mockResolvedValue(
+      makeContentNote({ deletedAt: new Date(), content: { id: CONTENT_ID, seoProject: { id: SEO_PROJECT_ID, companyId: COMPANY_B } } })
+    );
+    const result = await restoreContentNote({ noteId: "note-1" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Note not found.");
+    expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+  });
+
+  it("missing note is rejected", async () => {
+    mockedPrisma.note.findUnique.mockResolvedValue(null);
+    const result = await restoreContentNote({ noteId: "missing" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects restoring a note that isn't deleted", async () => {
+    mockedPrisma.note.findUnique.mockResolvedValue(makeContentNote({ deletedAt: null }));
+    const result = await restoreContentNote({ noteId: "note-1" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/not deleted/i);
+    expect(mockedPrisma.note.update).not.toHaveBeenCalled();
+  });
+
+  it("restore changes only deletedAt, to null", async () => {
+    await restoreContentNote({ noteId: "note-1" });
+    const [{ data }] = mockedPrisma.note.update.mock.calls[0];
+    expect(data).toEqual({ deletedAt: null });
+  });
+
+  it("authorId remains unchanged (never included in the update)", async () => {
+    await restoreContentNote({ noteId: "note-1" });
+    const [{ data }] = mockedPrisma.note.update.mock.calls[0];
+    expect(data).not.toHaveProperty("authorId");
+  });
+
+  it("contentId remains unchanged (never included in the update)", async () => {
+    await restoreContentNote({ noteId: "note-1" });
+    const [{ data }] = mockedPrisma.note.update.mock.calls[0];
+    expect(data).not.toHaveProperty("contentId");
+  });
+
+  it("Activity action is correct, with seoProjectId and contentId set", async () => {
+    await restoreContentNote({ noteId: "note-1" });
+    expect(mockedLogActivity).toHaveBeenCalledWith({
+      actorId: MANAGER.id,
+      action: "content.note_restored",
+      companyId: COMPANY_A,
+      seoProjectId: SEO_PROJECT_ID,
+      contentId: CONTENT_ID,
+      metadata: { noteId: "note-1" },
+    });
+  });
+
+  it("Activity metadata is exactly { noteId }", async () => {
+    await restoreContentNote({ noteId: "note-1" });
+    const [call] = mockedLogActivity.mock.calls[0];
+    expect(Object.keys(call.metadata)).toEqual(["noteId"]);
+  });
+
+  it("note body is not included in Activity metadata", async () => {
+    mockedPrisma.note.findUnique.mockResolvedValue(
+      makeContentNote({ deletedAt: new Date(), body: "Sensitive text that must not leak" })
+    );
+    await restoreContentNote({ noteId: "note-1" });
+    const [call] = mockedLogActivity.mock.calls[0];
+    expect(JSON.stringify(call)).not.toContain("Sensitive text");
+  });
+
+  it("correct revalidatePath is called", async () => {
+    await restoreContentNote({ noteId: "note-1" });
+    expect(mockedRevalidatePath).toHaveBeenCalledWith(`/seo/${SEO_PROJECT_ID}/content/${CONTENT_ID}`);
+  });
+
+  it("does not create a ContentRevision", async () => {
+    await restoreContentNote({ noteId: "note-1" });
+    expect(mockedPrisma.contentRevision.create).not.toHaveBeenCalled();
+  });
+
+  it("never touches the Content row at all", async () => {
+    await restoreContentNote({ noteId: "note-1" });
     expect(mockedPrisma.content.update).not.toHaveBeenCalled();
     expect(mockedPrisma.content.findUnique).not.toHaveBeenCalled();
   });

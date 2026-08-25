@@ -406,6 +406,40 @@ export async function deleteLeadNote(input: { noteId: string }): Promise<ActionR
   return actionSuccess();
 }
 
+/**
+ * Phase 27 Stage 3 — manager-or-author restore. Same ownership
+ * re-derivation as updateLeadNote/deleteLeadNote. Touches only deletedAt.
+ */
+export async function restoreLeadNote(input: { noteId: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedLeadNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (!note.deletedAt) {
+    return actionError("This note is not deleted.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageLeads(actor.role)) {
+    return actionError("You do not have permission to restore this note.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { deletedAt: null } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "lead.note_restored",
+    companyId: actor.companyId,
+    leadId: note.lead.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(leadDetailPath(note.lead.id));
+  return actionSuccess();
+}
+
 export async function createLeadTask(
   leadId: string,
   title: string

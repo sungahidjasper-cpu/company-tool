@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Pencil } from "lucide-react";
 
+import ActivityTimeline from "@/components/dashboard/ActivityTimeline";
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
 import FileList from "@/components/dashboard/FileList";
 import FileUploadForm from "@/components/dashboard/FileUploadForm";
@@ -177,6 +178,15 @@ export default async function UserDetailPage({
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Activity timeline</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ActivityTimeline activities={targetUser.targetedActivities} />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

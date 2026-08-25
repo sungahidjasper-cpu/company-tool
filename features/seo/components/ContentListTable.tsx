@@ -111,7 +111,7 @@ export default function ContentListTable({
                     variant: "destructive",
                     isPending,
                     onClick: () => {
-                      if (window.confirm(`Permanently delete ${selected.size} item(s)? This cannot be undone.`)) {
+                      if (window.confirm(`Permanently delete ${selected.size} content item(s)? This cannot be undone.`)) {
                         runBulk(bulkDeleteContent, "deleted");
                       }
                     },

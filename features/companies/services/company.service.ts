@@ -94,3 +94,23 @@ export function getCompanyProjects(companyId: string) {
     take: 5,
   });
 }
+
+/**
+ * Phase 28 — Activity.companyId is the tenant-scoping field set on nearly
+ * every activity row app-wide, not a "belongs to this record" FK the way
+ * it is for every other entity's own `activities` relation. A plain
+ * `where: {companyId}` would return the whole tenant's activity, not this
+ * Company record's own history. Scoping to the `company.*` action prefix
+ * (created/updated/archived/restored/ai_limits_updated — the only
+ * activities actually about the Company record itself) keeps this
+ * genuinely equivalent to what every other detail page's Activity
+ * Timeline shows.
+ */
+export function getCompanyActivities(companyId: string) {
+  return prisma.activity.findMany({
+    where: { companyId, action: { startsWith: "company." } },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+    include: { actor: { select: { firstName: true, lastName: true } } },
+  });
+}

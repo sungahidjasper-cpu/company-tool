@@ -2,11 +2,13 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Pencil, Users, Briefcase, Building2 } from "lucide-react";
 
+import ActivityTimeline from "@/components/dashboard/ActivityTimeline";
 import DashboardGrid from "@/components/dashboard/DashboardGrid";
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
 import FileList from "@/components/dashboard/FileList";
 import FileUploadForm from "@/components/dashboard/FileUploadForm";
 import PageContainer from "@/components/dashboard/PageContainer";
+import RecordActionButton from "@/components/dashboard/RecordActionButton";
 import StatsCard from "@/components/dashboard/StatsCard";
 import { buttonVariants } from "@/components/ui/button";
 import {
@@ -17,6 +19,11 @@ import {
 } from "@/components/ui/card";
 import CompanyAiLimitsForm from "@/features/companies/components/CompanyAiLimitsForm";
 import {
+  archiveCompany,
+  restoreCompany,
+} from "@/features/companies/actions/company.actions";
+import {
+  getCompanyActivities,
   getCompanyById,
   getCompanyClients,
   getCompanyCounts,
@@ -47,8 +54,9 @@ export default async function CompanyDetailPage({
   assertCompanyAccess(user, company.id);
   const canManageFiles = Permissions.manageCompanies(user.role);
   const canManageAiLimits = Permissions.manageCompanies(user.role);
+  const canManage = Permissions.manageCompanies(user.role);
 
-  const [counts, recentUsers, recentClients, recentProjects, files, currentPeriodSpendUsd] =
+  const [counts, recentUsers, recentClients, recentProjects, files, currentPeriodSpendUsd, activities] =
     await Promise.all([
       getCompanyCounts(company.id),
       getCompanyUsers(company.id),
@@ -56,6 +64,7 @@ export default async function CompanyDetailPage({
       getCompanyProjects(company.id),
       listFilesFor("company", company.id),
       canManageAiLimits ? getCurrentPeriodSpendUsd(company.id) : Promise.resolve(0),
+      getCompanyActivities(company.id),
     ]);
 
   return (
@@ -64,12 +73,32 @@ export default async function CompanyDetailPage({
         title={company.name}
         description={company.industry ?? "No industry set"}
         actions={
-          <Link
-            href={`/companies/${company.id}/edit`}
-            className={cn(buttonVariants({ variant: "outline" }))}
-          >
-            <Pencil size={16} /> Edit
-          </Link>
+          <div className="flex gap-2">
+            <Link
+              href={`/companies/${company.id}/edit`}
+              className={cn(buttonVariants({ variant: "outline" }))}
+            >
+              <Pencil size={16} /> Edit
+            </Link>
+            {canManage &&
+              (company.deletedAt ? (
+                <RecordActionButton
+                  id={company.id}
+                  action={restoreCompany}
+                  label="Restore"
+                  successMessage="Company restored"
+                />
+              ) : (
+                <RecordActionButton
+                  id={company.id}
+                  action={archiveCompany}
+                  label="Archive"
+                  variant="destructive"
+                  confirmMessage="Archive this company?"
+                  successMessage="Company archived"
+                />
+              ))}
+          </div>
         }
       />
 
@@ -154,6 +183,15 @@ export default async function CompanyDetailPage({
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Activity timeline</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ActivityTimeline activities={activities} />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

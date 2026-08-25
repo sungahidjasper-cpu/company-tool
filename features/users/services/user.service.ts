@@ -44,6 +44,15 @@ export function getUserById(id: string) {
     include: {
       ownedProjects: { where: { deletedAt: null }, take: 5 },
       assignedProjects: { where: { deletedAt: null }, take: 5 },
+      // Phase 28 — targetedActivities is Activity's real "this activity is
+      // about this User" relation (distinct from performedActivities,
+      // which is everything this user did as an actor across the whole
+      // app) — already correctly scoped by the FK, no filtering needed.
+      targetedActivities: {
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        include: { actor: { select: { firstName: true, lastName: true } } },
+      },
     },
   });
 }

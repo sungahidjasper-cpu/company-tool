@@ -21,7 +21,9 @@ import {
 import {
   addProjectNote,
   archiveProject,
+  deleteProjectNote,
   restoreProject,
+  updateProjectNote,
 } from "@/features/projects/actions/project.actions";
 import { listFilesFor } from "@/features/files/services/file.service";
 import { getProjectById } from "@/features/projects/services/project.service";
@@ -190,7 +192,13 @@ export default async function ProjectDetailPage({
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <NoteForm action={addProjectNote.bind(null, project.id)} />
-            <NotesList notes={project.notes} />
+            <NotesList
+              notes={project.notes}
+              currentUserId={user.id}
+              canManage={canManage}
+              onEdit={updateProjectNote}
+              onDelete={deleteProjectNote}
+            />
           </CardContent>
         </Card>
 

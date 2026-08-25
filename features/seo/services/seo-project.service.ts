@@ -70,8 +70,9 @@ export async function getSeoProjectById(id: string) {
         take: 5,
       },
       notes: {
+        where: { deletedAt: null },
         orderBy: { createdAt: "desc" },
-        include: { author: { select: { firstName: true, lastName: true } } },
+        include: { author: { select: { id: true, firstName: true, lastName: true } } },
       },
       activities: {
         orderBy: { createdAt: "desc" },

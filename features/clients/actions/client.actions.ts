@@ -203,3 +203,84 @@ export async function addClientNote(
   revalidatePath(`/clients/${clientId}`);
   return actionSuccess();
 }
+
+/** Fetch-then-compare, matching addClientNote's own tenant-check idiom, extended to the Note's parent relation rather than the Client directly. */
+async function getOwnedClientNote(noteId: string, companyId: string) {
+  const note = await prisma.note.findUnique({
+    where: { id: noteId },
+    include: { client: { select: { id: true, companyId: true } } },
+  });
+  if (!note || !note.client || note.client.companyId !== companyId) return null;
+  return { ...note, client: note.client };
+}
+
+/**
+ * Phase 26 Stage 3 — manager-or-author edit. Tenant ownership is re-derived
+ * from the Note's own client relation, never from a client-supplied id.
+ * Rejects editing an already-deleted note. Never substitutes the Client's
+ * own ownership/assignment fields for note.authorId.
+ */
+export async function updateClientNote(input: { noteId: string; body: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedClientNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (note.deletedAt) {
+    return actionError("This note has already been deleted.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageClients(actor.role)) {
+    return actionError("You do not have permission to edit this note.");
+  }
+
+  const trimmed = input.body.trim();
+  if (trimmed.length === 0) {
+    return actionError("Note cannot be empty.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { body: trimmed } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "client.note_updated",
+    companyId: actor.companyId,
+    clientId: note.client.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(`/clients/${note.client.id}`);
+  return actionSuccess();
+}
+
+/**
+ * Phase 26 Stage 3 — manager-or-author soft delete. Same ownership
+ * re-derivation as updateClientNote. Never hard-deletes.
+ */
+export async function deleteClientNote(input: { noteId: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedClientNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageClients(actor.role)) {
+    return actionError("You do not have permission to delete this note.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { deletedAt: new Date() } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "client.note_deleted",
+    companyId: actor.companyId,
+    clientId: note.client.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(`/clients/${note.client.id}`);
+  return actionSuccess();
+}

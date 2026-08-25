@@ -269,3 +269,84 @@ export async function addProjectNote(
   revalidatePath(`/projects/${projectId}`);
   return actionSuccess();
 }
+
+/** Fetch-then-compare, matching addProjectNote's own tenant-check idiom, extended to the Note's parent relation rather than the Project directly. */
+async function getOwnedProjectNote(noteId: string, companyId: string) {
+  const note = await prisma.note.findUnique({
+    where: { id: noteId },
+    include: { project: { select: { id: true, companyId: true } } },
+  });
+  if (!note || !note.project || note.project.companyId !== companyId) return null;
+  return { ...note, project: note.project };
+}
+
+/**
+ * Phase 26 Stage 3 — manager-or-author edit. Tenant ownership is re-derived
+ * from the Note's own project relation, never from a client-supplied id.
+ * Rejects editing an already-deleted note. Never substitutes the Project's
+ * own ownership/assignment fields for note.authorId.
+ */
+export async function updateProjectNote(input: { noteId: string; body: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedProjectNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (note.deletedAt) {
+    return actionError("This note has already been deleted.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageProjects(actor.role)) {
+    return actionError("You do not have permission to edit this note.");
+  }
+
+  const trimmed = input.body.trim();
+  if (trimmed.length === 0) {
+    return actionError("Note cannot be empty.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { body: trimmed } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "project.note_updated",
+    companyId: actor.companyId,
+    projectId: note.project.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(`/projects/${note.project.id}`);
+  return actionSuccess();
+}
+
+/**
+ * Phase 26 Stage 3 — manager-or-author soft delete. Same ownership
+ * re-derivation as updateProjectNote. Never hard-deletes.
+ */
+export async function deleteProjectNote(input: { noteId: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedProjectNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageProjects(actor.role)) {
+    return actionError("You do not have permission to delete this note.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { deletedAt: new Date() } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "project.note_deleted",
+    companyId: actor.companyId,
+    projectId: note.project.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(`/projects/${note.project.id}`);
+  return actionSuccess();
+}

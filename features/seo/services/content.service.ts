@@ -49,8 +49,9 @@ export function getContentById(id: string) {
       author: { select: { id: true, firstName: true, lastName: true } },
       keywords: { select: { id: true, term: true } },
       notes: {
+        where: { deletedAt: null },
         orderBy: { createdAt: "desc" },
-        include: { author: { select: { firstName: true, lastName: true } } },
+        include: { author: { select: { id: true, firstName: true, lastName: true } } },
       },
       activities: {
         orderBy: { createdAt: "desc" },

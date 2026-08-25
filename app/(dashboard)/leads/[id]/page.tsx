@@ -21,7 +21,9 @@ import {
 import {
   addLeadNote,
   archiveLead,
+  deleteLeadNote,
   restoreLead,
+  updateLeadNote,
 } from "@/features/leads/actions/lead.actions";
 import LeadTaskList from "@/features/leads/components/LeadTaskList";
 import { getLeadById } from "@/features/leads/services/lead.service";
@@ -171,7 +173,13 @@ export default async function LeadDetailPage({ params }: LeadDetailPageProps) {
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <NoteForm action={addLeadNote.bind(null, lead.id)} />
-            <NotesList notes={lead.notes} />
+            <NotesList
+              notes={lead.notes}
+              currentUserId={user.id}
+              canManage={canManage}
+              onEdit={updateLeadNote}
+              onDelete={deleteLeadNote}
+            />
           </CardContent>
         </Card>
 

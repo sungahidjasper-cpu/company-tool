@@ -23,7 +23,9 @@ import {
 import {
   addSeoProjectNote,
   archiveSeoProject,
+  deleteSeoProjectNote,
   restoreSeoProject,
+  updateSeoProjectNote,
 } from "@/features/seo/actions/seo-project.actions";
 import { getSeoProjectById } from "@/features/seo/services/seo-project.service";
 import { listWebsiteAnalysisHistory } from "@/features/seo/services/website-analysis.service";
@@ -261,7 +263,13 @@ export default async function SeoProjectDetailPage({
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <NoteForm action={addSeoProjectNote.bind(null, seoProject.id)} />
-            <NotesList notes={seoProject.notes} />
+            <NotesList
+              notes={seoProject.notes}
+              currentUserId={user.id}
+              canManage={canManage}
+              onEdit={updateSeoProjectNote}
+              onDelete={deleteSeoProjectNote}
+            />
           </CardContent>
         </Card>
 

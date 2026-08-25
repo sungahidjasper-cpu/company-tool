@@ -16,7 +16,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   addContentNote,
   archiveContent,
+  deleteContentNote,
   restoreContent,
+  updateContentNote,
 } from "@/features/seo/actions/content.actions";
 import AdvanceContentStatusButton from "@/features/seo/components/AdvanceContentStatusButton";
 import ContentVersionHistory from "@/features/seo/components/ContentVersionHistory";
@@ -238,7 +240,13 @@ export default async function ContentDetailPage({ params }: ContentDetailPagePro
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <NoteForm action={addContentNote.bind(null, content.id)} />
-            <NotesList notes={content.notes} />
+            <NotesList
+              notes={content.notes}
+              currentUserId={user.id}
+              canManage={canManage}
+              onEdit={updateContentNote}
+              onDelete={deleteContentNote}
+            />
           </CardContent>
         </Card>
 

@@ -21,7 +21,9 @@ import {
 import {
   addTaskComment,
   archiveTask,
+  deleteTaskComment,
   restoreTask,
+  updateTaskComment,
 } from "@/features/tasks/actions/task.actions";
 import QuickAddSubtask from "@/features/tasks/components/QuickAddSubtask";
 import TaskStatusSelect from "@/features/tasks/components/TaskStatusSelect";
@@ -191,7 +193,13 @@ export default async function TaskDetailPage({ params }: TaskDetailPageProps) {
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <NoteForm action={addTaskComment.bind(null, task.id)} />
-          <NotesList notes={task.notes} />
+          <NotesList
+            notes={task.notes}
+            currentUserId={user.id}
+            canManage={canManage}
+            onEdit={updateTaskComment}
+            onDelete={deleteTaskComment}
+          />
         </CardContent>
       </Card>
 

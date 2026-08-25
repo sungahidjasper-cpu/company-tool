@@ -21,7 +21,9 @@ import {
 import {
   addClientNote,
   archiveClient,
+  deleteClientNote,
   restoreClient,
+  updateClientNote,
 } from "@/features/clients/actions/client.actions";
 import { getClientById } from "@/features/clients/services/client.service";
 import { listFilesFor } from "@/features/files/services/file.service";
@@ -167,7 +169,13 @@ export default async function ClientDetailPage({
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <NoteForm action={addClientNote.bind(null, client.id)} />
-            <NotesList notes={client.notes} />
+            <NotesList
+              notes={client.notes}
+              currentUserId={user.id}
+              canManage={canManage}
+              onEdit={updateClientNote}
+              onDelete={deleteClientNote}
+            />
           </CardContent>
         </Card>
 

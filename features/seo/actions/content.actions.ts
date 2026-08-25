@@ -304,6 +304,97 @@ export async function addContentNote(
   return actionSuccess();
 }
 
+/**
+ * Fetch-then-compare, matching addContentNote's own tenant-check idiom,
+ * extended to the Note's parent relation rather than Content directly.
+ * Only ever reads/writes the Note model — never touches Content or
+ * ContentRevision, so note edit/delete cannot interact with Phase 25's
+ * revision history or Content's own tracked fields in any way.
+ */
+async function getOwnedContentNote(noteId: string, companyId: string) {
+  const note = await prisma.note.findUnique({
+    where: { id: noteId },
+    include: { content: { select: { id: true, seoProject: { select: { id: true, companyId: true } } } } },
+  });
+  if (!note || !note.content || note.content.seoProject.companyId !== companyId) return null;
+  return { ...note, content: note.content };
+}
+
+/**
+ * Phase 26 Stage 3 — manager-or-author edit. Tenant ownership is re-derived
+ * from the Note's own content -> seoProject relation, never from a
+ * client-supplied id. Rejects editing an already-deleted note. Never calls
+ * createContentRevisionSnapshot or touches the Content row itself — this
+ * function only ever updates the Note model.
+ */
+export async function updateContentNote(input: { noteId: string; body: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedContentNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (note.deletedAt) {
+    return actionError("This note has already been deleted.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageSeoProjects(actor.role)) {
+    return actionError("You do not have permission to edit this note.");
+  }
+
+  const trimmed = input.body.trim();
+  if (trimmed.length === 0) {
+    return actionError("Note cannot be empty.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { body: trimmed } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "content.note_updated",
+    companyId: actor.companyId,
+    seoProjectId: note.content.seoProject.id,
+    contentId: note.content.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(`/seo/${note.content.seoProject.id}/content/${note.content.id}`);
+  return actionSuccess();
+}
+
+/**
+ * Phase 26 Stage 3 — manager-or-author soft delete. Same ownership
+ * re-derivation as updateContentNote. Never hard-deletes, never touches
+ * Content or ContentRevision.
+ */
+export async function deleteContentNote(input: { noteId: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedContentNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageSeoProjects(actor.role)) {
+    return actionError("You do not have permission to delete this note.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { deletedAt: new Date() } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "content.note_deleted",
+    companyId: actor.companyId,
+    seoProjectId: note.content.seoProject.id,
+    contentId: note.content.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(`/seo/${note.content.seoProject.id}/content/${note.content.id}`);
+  return actionSuccess();
+}
+
 async function getOwnedContentIds(seoProjectId: string, companyId: string, ids: string[]) {
   const seoProject = await prisma.sEOProject.findUnique({ where: { id: seoProjectId } });
   if (!seoProject || seoProject.companyId !== companyId) return [];
@@ -402,11 +493,22 @@ export async function bulkPublishContent(
   return actionSuccess({ count: result.count });
 }
 
-/** Same trash-then-purge scoping as bulkDeleteKeywords — see that function's comment. */
+/**
+ * Same trash-then-purge scoping as bulkDeleteKeywords — see that function's
+ * comment. Content additionally has ContentRevision rows referencing it
+ * with onDelete: Restrict (Phase 25) — any id with revision history would
+ * make a plain deleteMany throw a foreign-key violation for the ENTIRE
+ * batch, since a single multi-row DELETE is atomic. Rather than let one
+ * revision-protected item abort deletion of everything else selected, this
+ * excludes those ids up front and reports how many were skipped — the same
+ * "process what's valid, report what's not" shape importContentCsv already
+ * uses in this file. The Restrict constraint itself remains the actual
+ * safety guarantee; this is purely about not crashing on it.
+ */
 export async function bulkDeleteContent(
   seoProjectId: string,
   ids: string[]
-): Promise<ActionResult<{ count: number }>> {
+): Promise<ActionResult<{ count: number; skippedCount: number }>> {
   const actor = await requireUser();
   if (!Permissions.manageSeoProjects(actor.role)) {
     return actionError("You do not have permission to delete content.");
@@ -417,20 +519,29 @@ export async function bulkDeleteContent(
     return actionError("SEO project not found.");
   }
 
-  const result = await prisma.content.deleteMany({
-    where: { id: { in: ids }, seoProjectId, deletedAt: { not: null } },
+  const blocked = await prisma.contentRevision.findMany({
+    where: { contentId: { in: ids } },
+    select: { contentId: true },
+    distinct: ["contentId"],
   });
+  const blockedIds = new Set(blocked.map((revision) => revision.contentId));
+  const eligibleIds = ids.filter((id) => !blockedIds.has(id));
+
+  const result = await prisma.content.deleteMany({
+    where: { id: { in: eligibleIds }, seoProjectId, deletedAt: { not: null } },
+  });
+  const skippedCount = ids.length - result.count;
 
   await logActivity({
     actorId: actor.id,
     action: "content.bulk_deleted",
     companyId: actor.companyId,
     seoProjectId,
-    metadata: { count: result.count },
+    metadata: { count: result.count, skippedCount },
   });
 
   revalidatePath(`/seo/${seoProjectId}/content`);
-  return actionSuccess({ count: result.count });
+  return actionSuccess({ count: result.count, skippedCount });
 }
 
 type ImportSummary = {

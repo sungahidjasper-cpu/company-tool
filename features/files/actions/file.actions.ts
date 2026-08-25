@@ -113,6 +113,16 @@ export async function uploadFile(
   return actionSuccess({ id: record.id });
 }
 
+/**
+ * Phase 26 Stage 2 — soft-delete only: sets deletedAt and never touches
+ * storage. listFilesFor already filters deletedAt: null, so the file
+ * disappears from every existing view immediately, exactly as a hard
+ * delete would have looked to a user — but the DB row and the physical
+ * object both survive, so a future restore/purge stage can act on real
+ * data instead of a destroyed one. Permanent purge (deleting the DB row
+ * AND calling storage.delete()) is deliberately out of scope here; that's
+ * a separate future capability, not this action's job.
+ */
 export async function deleteFile(id: string): Promise<ActionResult> {
   const actor = await requireUser();
 
@@ -140,8 +150,15 @@ export async function deleteFile(id: string): Promise<ActionResult> {
     return actionError("You do not have permission to delete this file.");
   }
 
-  await storage.delete(file.url);
-  await prisma.file.delete({ where: { id } });
+  await prisma.file.update({ where: { id }, data: { deletedAt: new Date() } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "file.deleted",
+    companyId: context.companyId,
+    metadata: { fileId: file.id, fileName: file.fileName, entityType },
+    ...buildActivityRefs(entityType, entityId),
+  });
 
   context.paths.forEach((path) => revalidatePath(path));
   return actionSuccess();

@@ -194,3 +194,83 @@ export async function addSeoProjectNote(
   revalidatePath(`/seo/${seoProjectId}`);
   return actionSuccess();
 }
+
+/** Fetch-then-compare, matching addSeoProjectNote's own tenant-check idiom, extended to the Note's parent relation rather than the SEOProject directly. */
+async function getOwnedSeoProjectNote(noteId: string, companyId: string) {
+  const note = await prisma.note.findUnique({
+    where: { id: noteId },
+    include: { seoProject: { select: { id: true, companyId: true } } },
+  });
+  if (!note || !note.seoProject || note.seoProject.companyId !== companyId) return null;
+  return { ...note, seoProject: note.seoProject };
+}
+
+/**
+ * Phase 26 Stage 3 — manager-or-author edit. Tenant ownership is re-derived
+ * from the Note's own seoProject relation, never from a client-supplied id.
+ * Rejects editing an already-deleted note.
+ */
+export async function updateSeoProjectNote(input: { noteId: string; body: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedSeoProjectNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (note.deletedAt) {
+    return actionError("This note has already been deleted.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageSeoProjects(actor.role)) {
+    return actionError("You do not have permission to edit this note.");
+  }
+
+  const trimmed = input.body.trim();
+  if (trimmed.length === 0) {
+    return actionError("Note cannot be empty.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { body: trimmed } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "seo_project.note_updated",
+    companyId: actor.companyId,
+    seoProjectId: note.seoProject.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(`/seo/${note.seoProject.id}`);
+  return actionSuccess();
+}
+
+/**
+ * Phase 26 Stage 3 — manager-or-author soft delete. Same ownership
+ * re-derivation as updateSeoProjectNote. Never hard-deletes.
+ */
+export async function deleteSeoProjectNote(input: { noteId: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedSeoProjectNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageSeoProjects(actor.role)) {
+    return actionError("You do not have permission to delete this note.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { deletedAt: new Date() } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "seo_project.note_deleted",
+    companyId: actor.companyId,
+    seoProjectId: note.seoProject.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(`/seo/${note.seoProject.id}`);
+  return actionSuccess();
+}

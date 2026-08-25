@@ -326,6 +326,86 @@ export async function addLeadNote(
   return actionSuccess();
 }
 
+/** Fetch-then-compare, matching addLeadNote's own tenant-check idiom, extended to the Note's parent relation rather than the Lead directly. */
+async function getOwnedLeadNote(noteId: string, companyId: string) {
+  const note = await prisma.note.findUnique({
+    where: { id: noteId },
+    include: { lead: { select: { id: true, companyId: true } } },
+  });
+  if (!note || !note.lead || note.lead.companyId !== companyId) return null;
+  return { ...note, lead: note.lead };
+}
+
+/**
+ * Phase 26 Stage 3 — manager-or-author edit. Tenant ownership is re-derived
+ * from the Note's own lead relation, never from a client-supplied id.
+ * Rejects editing an already-deleted note.
+ */
+export async function updateLeadNote(input: { noteId: string; body: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedLeadNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (note.deletedAt) {
+    return actionError("This note has already been deleted.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageLeads(actor.role)) {
+    return actionError("You do not have permission to edit this note.");
+  }
+
+  const trimmed = input.body.trim();
+  if (trimmed.length === 0) {
+    return actionError("Note cannot be empty.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { body: trimmed } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "lead.note_updated",
+    companyId: actor.companyId,
+    leadId: note.lead.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(leadDetailPath(note.lead.id));
+  return actionSuccess();
+}
+
+/**
+ * Phase 26 Stage 3 — manager-or-author soft delete. Same ownership
+ * re-derivation as updateLeadNote. Never hard-deletes.
+ */
+export async function deleteLeadNote(input: { noteId: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedLeadNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageLeads(actor.role)) {
+    return actionError("You do not have permission to delete this note.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { deletedAt: new Date() } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "lead.note_deleted",
+    companyId: actor.companyId,
+    leadId: note.lead.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(leadDetailPath(note.lead.id));
+  return actionSuccess();
+}
+
 export async function createLeadTask(
   leadId: string,
   title: string

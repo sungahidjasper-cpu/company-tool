@@ -67,8 +67,9 @@ export function getProjectById(id: string) {
       owner: { select: { id: true, firstName: true, lastName: true } },
       assignedUsers: { select: { id: true, firstName: true, lastName: true } },
       notes: {
+        where: { deletedAt: null },
         orderBy: { createdAt: "desc" },
-        include: { author: { select: { firstName: true, lastName: true } } },
+        include: { author: { select: { id: true, firstName: true, lastName: true } } },
       },
       activities: {
         orderBy: { createdAt: "desc" },

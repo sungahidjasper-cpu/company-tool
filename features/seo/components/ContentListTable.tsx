@@ -67,7 +67,10 @@ export default function ContentListTable({
   };
 
   const runBulk = (
-    action: (seoProjectId: string, ids: string[]) => Promise<{ success: boolean; message?: string; data?: { count: number } }>,
+    action: (
+      seoProjectId: string,
+      ids: string[]
+    ) => Promise<{ success: boolean; message?: string; data?: { count: number; skippedCount?: number } }>,
     successVerb: string
   ) => {
     startTransition(async () => {
@@ -76,7 +79,14 @@ export default function ContentListTable({
         toast.error(result.message ?? "Something went wrong.");
         return;
       }
-      toast.success(`${result.data?.count ?? 0} content item(s) ${successVerb}`);
+      // skippedCount is only ever populated by bulkDeleteContent (revision-protected items) —
+      // every other bulk action's data has no such field, so this always falls through to the
+      // original message for Restore/Archive/Publish, unchanged.
+      toast.success(
+        result.data?.skippedCount
+          ? `${result.data.count} content item(s) ${successVerb}. ${result.data.skippedCount} skipped — they have edit history and cannot be permanently deleted.`
+          : `${result.data?.count ?? 0} content item(s) ${successVerb}`
+      );
       setSelected(new Set());
       router.refresh();
     });

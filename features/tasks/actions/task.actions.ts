@@ -310,6 +310,95 @@ export async function addTaskComment(
   return actionSuccess();
 }
 
+/**
+ * Fetch-then-compare, matching addTaskComment's own tenant-check idiom,
+ * extended to the Note's parent relation rather than the Task directly.
+ * Note ownership for edit/delete is always note.authorId — never
+ * task.assigneeId, which is a distinct concept (who the Task is assigned
+ * to, used only by updateTaskStatus's own canActOnStatus check) and must
+ * never be substituted here.
+ */
+async function getOwnedTaskNote(noteId: string, companyId: string) {
+  const note = await prisma.note.findUnique({
+    where: { id: noteId },
+    include: { task: { select: { id: true, projectId: true, project: { select: { companyId: true } } } } },
+  });
+  if (!note || !note.task || note.task.project.companyId !== companyId) return null;
+  return { ...note, task: note.task };
+}
+
+/**
+ * Phase 26 Stage 3 — manager-or-author edit. Tenant ownership is re-derived
+ * from the Note's own task -> project relation, never from a
+ * client-supplied id. Rejects editing an already-deleted note.
+ */
+export async function updateTaskComment(input: { noteId: string; body: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedTaskNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (note.deletedAt) {
+    return actionError("This note has already been deleted.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageProjects(actor.role)) {
+    return actionError("You do not have permission to edit this note.");
+  }
+
+  const trimmed = input.body.trim();
+  if (trimmed.length === 0) {
+    return actionError("Note cannot be empty.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { body: trimmed } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "task.comment_updated",
+    companyId: actor.companyId,
+    projectId: note.task.projectId,
+    taskId: note.task.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(taskDetailPath(note.task.projectId, note.task.id));
+  return actionSuccess();
+}
+
+/**
+ * Phase 26 Stage 3 — manager-or-author soft delete. Same ownership
+ * re-derivation as updateTaskComment. Never hard-deletes.
+ */
+export async function deleteTaskComment(input: { noteId: string }): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  const note = await getOwnedTaskNote(input.noteId, actor.companyId);
+  if (!note) {
+    return actionError("Note not found.");
+  }
+
+  if (note.authorId !== actor.id && !Permissions.manageProjects(actor.role)) {
+    return actionError("You do not have permission to delete this note.");
+  }
+
+  await prisma.note.update({ where: { id: input.noteId }, data: { deletedAt: new Date() } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "task.comment_deleted",
+    companyId: actor.companyId,
+    projectId: note.task.projectId,
+    taskId: note.task.id,
+    metadata: { noteId: input.noteId },
+  });
+
+  revalidatePath(taskDetailPath(note.task.projectId, note.task.id));
+  return actionSuccess();
+}
+
 export async function createSubtask(
   parentTaskId: string,
   title: string

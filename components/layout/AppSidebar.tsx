@@ -11,6 +11,7 @@ import {
   Kanban,
   FolderKanban,
   Search,
+  SearchCheck,
   Bot,
   Gauge,
   Settings,
@@ -33,6 +34,7 @@ import {
 
 const menuItems = [
   { name: "Dashboard", icon: LayoutDashboard, href: "/dashboard" },
+  { name: "Search", icon: SearchCheck, href: "/search" },
   { name: "Companies", icon: Building2, href: "/companies", minRole: "SUPER_ADMIN" as UserRole },
   { name: "Users", icon: UserCog, href: "/users", minRole: "ADMIN" as UserRole },
   { name: "Clients", icon: Users, href: "/clients" },

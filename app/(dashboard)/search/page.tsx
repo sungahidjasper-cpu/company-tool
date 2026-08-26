@@ -18,6 +18,11 @@ type SearchPageProps = {
   searchParams: Promise<{ q?: string }>;
 };
 
+// Mirrors search.service.ts's RESULT_LIMIT — a category returning exactly
+// this many results means more may exist beyond the cap, since no COUNT
+// query is run to know the real total.
+const POSSIBLY_TRUNCATED_AT = 8;
+
 function ResultSection({
   title,
   children,
@@ -36,6 +41,30 @@ function ResultSection({
       </CardHeader>
       <CardContent className="flex flex-col gap-2">{children}</CardContent>
     </Card>
+  );
+}
+
+function seeAllHref(base: string, q: string) {
+  const sp = new URLSearchParams({ q });
+  return `${base}?${sp.toString()}`;
+}
+
+function SeeAllLink({ href, label }: { href: string; label: string }) {
+  return (
+    <Link
+      href={href}
+      className="text-sm font-medium text-[var(--primary)] hover:underline"
+    >
+      See all results in {label} →
+    </Link>
+  );
+}
+
+function TruncationNote() {
+  return (
+    <p className="text-xs text-slate-500">
+      Showing the first 8 — refine your search to narrow results.
+    </p>
   );
 }
 
@@ -95,6 +124,9 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 {company.name}
               </Link>
             ))}
+            {results.companies.length === POSSIBLY_TRUNCATED_AT && (
+              <SeeAllLink href={seeAllHref("/companies", results.query)} label="Companies" />
+            )}
           </ResultSection>
 
           <ResultSection title="Users" isEmpty={results.users.length === 0}>
@@ -107,6 +139,9 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 {result.firstName} {result.lastName}
               </Link>
             ))}
+            {results.users.length === POSSIBLY_TRUNCATED_AT && (
+              <SeeAllLink href={seeAllHref("/users", results.query)} label="Users" />
+            )}
           </ResultSection>
 
           <ResultSection title="Clients" isEmpty={results.clients.length === 0}>
@@ -119,6 +154,9 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 {client.name}
               </Link>
             ))}
+            {results.clients.length === POSSIBLY_TRUNCATED_AT && (
+              <SeeAllLink href={seeAllHref("/clients", results.query)} label="Clients" />
+            )}
           </ResultSection>
 
           <ResultSection title="Leads" isEmpty={results.leads.length === 0}>
@@ -132,6 +170,9 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 {lead.companyName ? ` · ${lead.companyName}` : ""}
               </Link>
             ))}
+            {results.leads.length === POSSIBLY_TRUNCATED_AT && (
+              <SeeAllLink href={seeAllHref("/leads", results.query)} label="Leads" />
+            )}
           </ResultSection>
 
           <ResultSection title="Projects" isEmpty={results.projects.length === 0}>
@@ -144,6 +185,9 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 {project.name}
               </Link>
             ))}
+            {results.projects.length === POSSIBLY_TRUNCATED_AT && (
+              <SeeAllLink href={seeAllHref("/projects", results.query)} label="Projects" />
+            )}
           </ResultSection>
 
           <ResultSection title="Tasks" isEmpty={results.tasks.length === 0}>
@@ -156,6 +200,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 {task.title}
               </Link>
             ))}
+            {results.tasks.length === POSSIBLY_TRUNCATED_AT && <TruncationNote />}
           </ResultSection>
 
           <ResultSection title="Files" isEmpty={results.files.length === 0}>
@@ -182,6 +227,9 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 {report.title}
               </Link>
             ))}
+            {results.reports.length === POSSIBLY_TRUNCATED_AT && (
+              <SeeAllLink href={seeAllHref("/reports", results.query)} label="Reports" />
+            )}
           </ResultSection>
 
           <ResultSection title="SEO Projects" isEmpty={results.seoProjects.length === 0}>
@@ -195,6 +243,9 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 {seoProject.domain ? ` · ${seoProject.domain}` : ""}
               </Link>
             ))}
+            {results.seoProjects.length === POSSIBLY_TRUNCATED_AT && (
+              <SeeAllLink href={seeAllHref("/seo", results.query)} label="SEO Projects" />
+            )}
           </ResultSection>
 
           <ResultSection title="Keywords" isEmpty={results.keywords.length === 0}>
@@ -207,6 +258,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 {keyword.term}
               </Link>
             ))}
+            {results.keywords.length === POSSIBLY_TRUNCATED_AT && <TruncationNote />}
           </ResultSection>
 
           <ResultSection title="Content" isEmpty={results.content.length === 0}>
@@ -219,6 +271,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 {item.title}
               </Link>
             ))}
+            {results.content.length === POSSIBLY_TRUNCATED_AT && <TruncationNote />}
           </ResultSection>
         </div>
       )}

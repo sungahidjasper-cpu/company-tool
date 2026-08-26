@@ -3,14 +3,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/auth", () => ({ requireUser: vi.fn() }));
 vi.mock("@/lib/activity", () => ({ logActivity: vi.fn() }));
+vi.mock("@/features/notifications/services/notification.service", () => ({ createNotification: vi.fn() }));
 
 type MockPrisma = {
-  note: { findUnique: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+  note: { findUnique: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> };
+  client: { findUnique: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+  user: { findMany: ReturnType<typeof vi.fn> };
 };
 
 function createMockPrisma(): MockPrisma {
   return {
-    note: { findUnique: vi.fn(), update: vi.fn() },
+    note: { findUnique: vi.fn(), update: vi.fn(), create: vi.fn() },
+    client: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
+    user: { findMany: vi.fn().mockResolvedValue([]) },
   };
 }
 
@@ -20,18 +25,46 @@ import { requireUser } from "@/lib/auth";
 import { logActivity } from "@/lib/activity";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { deleteClientNote, restoreClientNote, updateClientNote } from "@/features/clients/actions/client.actions";
+import { createNotification } from "@/features/notifications/services/notification.service";
+import {
+  deleteClientNote,
+  restoreClientNote,
+  updateClientNote,
+  createClient,
+  updateClient,
+  archiveClient,
+  restoreClient,
+  addClientNote,
+} from "@/features/clients/actions/client.actions";
+import type { ClientInput } from "@/features/clients/schemas/client.schema";
 
 const mockedRequireUser = requireUser as unknown as ReturnType<typeof vi.fn>;
 const mockedLogActivity = logActivity as unknown as ReturnType<typeof vi.fn>;
 const mockedRevalidatePath = revalidatePath as unknown as ReturnType<typeof vi.fn>;
 const mockedPrisma = prisma as unknown as MockPrisma;
+const mockedCreateNotification = createNotification as unknown as ReturnType<typeof vi.fn>;
 
 const COMPANY_A = "company-a";
 const COMPANY_B = "company-b";
-const AUTHOR = { id: "user-1", role: "EMPLOYEE", companyId: COMPANY_A };
-const OTHER_EMPLOYEE = { id: "user-2", role: "EMPLOYEE", companyId: COMPANY_A };
-const MANAGER = { id: "user-3", role: "MANAGER", companyId: COMPANY_A };
+const AUTHOR = { id: "user-1", role: "EMPLOYEE", companyId: COMPANY_A, firstName: "Alex" };
+const OTHER_EMPLOYEE = { id: "user-2", role: "EMPLOYEE", companyId: COMPANY_A, firstName: "Sam" };
+const MANAGER = { id: "user-3", role: "MANAGER", companyId: COMPANY_A, firstName: "Morgan" };
+
+function makeClient(overrides: Partial<Record<string, unknown>> = {}) {
+  return { id: "client-1", companyId: COMPANY_A, name: "Acme Corp", ...overrides };
+}
+
+const VALID_CLIENT_INPUT: ClientInput = {
+  name: "Acme Corp",
+  email: "",
+  phone: "",
+  website: "",
+  industry: "",
+  address: "",
+  source: "",
+  status: "LEAD",
+  ownerId: "",
+};
 
 function makeNote(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -432,5 +465,448 @@ describe("restoreClientNote", () => {
       await restoreClientNote({ noteId: "note-1" });
       expect(mockedRevalidatePath).toHaveBeenCalledWith("/clients/client-1");
     });
+  });
+});
+
+describe("createClient", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(MANAGER);
+    mockedPrisma.client.create.mockResolvedValue({ id: "client-new", name: "Acme Corp" });
+  });
+
+  it("1. denies an EMPLOYEE without creating any Client", async () => {
+    mockedRequireUser.mockResolvedValue(AUTHOR);
+    const result = await createClient(VALID_CLIENT_INPUT);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("You do not have permission to create clients.");
+    expect(mockedPrisma.client.create).not.toHaveBeenCalled();
+  });
+
+  it("2. succeeds for a MANAGER", async () => {
+    const result = await createClient(VALID_CLIENT_INPUT);
+    expect(result.success).toBe(true);
+  });
+
+  it("3. rejects invalid input via the real schema, without creating any Client", async () => {
+    const result = await createClient({ ...VALID_CLIENT_INPUT, name: "A" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Name must be at least 2 characters");
+    expect(mockedPrisma.client.create).not.toHaveBeenCalled();
+  });
+
+  it("4. rejects an invalid email via the real schema, without creating any Client", async () => {
+    const result = await createClient({ ...VALID_CLIENT_INPUT, email: "not-an-email" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Enter a valid email address");
+    expect(mockedPrisma.client.create).not.toHaveBeenCalled();
+  });
+
+  it("5. [characterization — documents current production behavior] a cross-company ownerId is accepted without any tenant validation, because none exists in production", async () => {
+    const result = await createClient({ ...VALID_CLIENT_INPUT, ownerId: "user-from-another-company" });
+    expect(result.success).toBe(true);
+    const [{ data }] = mockedPrisma.client.create.mock.calls[0];
+    expect(data.ownerId).toBe("user-from-another-company");
+  });
+
+  it("6. creates the Client with the exact field mapping when every optional field is blank", async () => {
+    await createClient(VALID_CLIENT_INPUT);
+    expect(mockedPrisma.client.create).toHaveBeenCalledWith({
+      data: {
+        companyId: COMPANY_A,
+        name: "Acme Corp",
+        email: undefined,
+        phone: undefined,
+        website: undefined,
+        industry: undefined,
+        address: undefined,
+        source: undefined,
+        status: "LEAD",
+        ownerId: null,
+      },
+    });
+  });
+
+  it("7. stores provided optional fields as-is", async () => {
+    await createClient({
+      ...VALID_CLIENT_INPUT,
+      email: "contact@acme.test",
+      phone: "555-0100",
+      website: "https://acme.test",
+      industry: "Retail",
+      address: "123 Main St",
+      source: "Referral",
+      ownerId: "user-9",
+    });
+    const [{ data }] = mockedPrisma.client.create.mock.calls[0];
+    expect(data).toMatchObject({
+      email: "contact@acme.test",
+      phone: "555-0100",
+      website: "https://acme.test",
+      industry: "Retail",
+      address: "123 Main St",
+      source: "Referral",
+      ownerId: "user-9",
+    });
+  });
+
+  it("8. logs client.created with the exact actor/company/client ids and metadata", async () => {
+    await createClient(VALID_CLIENT_INPUT);
+    expect(mockedLogActivity).toHaveBeenCalledWith({
+      actorId: MANAGER.id,
+      action: "client.created",
+      companyId: COMPANY_A,
+      clientId: "client-new",
+      metadata: { name: "Acme Corp" },
+    });
+  });
+
+  it("9. revalidates the client list", async () => {
+    await createClient(VALID_CLIENT_INPUT);
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/clients");
+  });
+
+  it("10. returns the id of the newly created Client", async () => {
+    const result = await createClient(VALID_CLIENT_INPUT);
+    expect(result).toEqual({ success: true, data: { id: "client-new" } });
+  });
+
+  it("11. rejected requests never log activity or revalidate", async () => {
+    mockedRequireUser.mockResolvedValue(AUTHOR);
+    await createClient(VALID_CLIENT_INPUT);
+    expect(mockedLogActivity).not.toHaveBeenCalled();
+    expect(mockedRevalidatePath).not.toHaveBeenCalled();
+  });
+});
+
+describe("updateClient", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(MANAGER);
+    mockedPrisma.client.findUnique.mockResolvedValue(makeClient());
+    mockedPrisma.client.update.mockResolvedValue({ id: "client-1", name: "Acme Corp" });
+  });
+
+  it("1. denies an EMPLOYEE without querying or mutating the Client", async () => {
+    mockedRequireUser.mockResolvedValue(AUTHOR);
+    const result = await updateClient("client-1", VALID_CLIENT_INPUT);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("You do not have permission to edit clients.");
+    expect(mockedPrisma.client.findUnique).not.toHaveBeenCalled();
+    expect(mockedPrisma.client.update).not.toHaveBeenCalled();
+  });
+
+  it("2. rejects when the Client does not exist", async () => {
+    mockedPrisma.client.findUnique.mockResolvedValue(null);
+    const result = await updateClient("client-1", VALID_CLIENT_INPUT);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Client not found.");
+    expect(mockedPrisma.client.update).not.toHaveBeenCalled();
+  });
+
+  it("3. rejects when the Client belongs to a different company", async () => {
+    mockedPrisma.client.findUnique.mockResolvedValue(makeClient({ companyId: COMPANY_B }));
+    const result = await updateClient("client-1", VALID_CLIENT_INPUT);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Client not found.");
+    expect(mockedPrisma.client.update).not.toHaveBeenCalled();
+  });
+
+  it("4. rejects invalid input via the real schema, without mutating", async () => {
+    const result = await updateClient("client-1", { ...VALID_CLIENT_INPUT, name: "A" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Name must be at least 2 characters");
+    expect(mockedPrisma.client.update).not.toHaveBeenCalled();
+  });
+
+  it("5. [characterization — documents current production behavior] a cross-company ownerId is accepted without any tenant validation on update, because none exists in production", async () => {
+    const result = await updateClient("client-1", { ...VALID_CLIENT_INPUT, ownerId: "user-from-another-company" });
+    expect(result.success).toBe(true);
+    const [{ data }] = mockedPrisma.client.update.mock.calls[0];
+    expect(data.ownerId).toBe("user-from-another-company");
+  });
+
+  it("6. updates with the exact where clause and full field mapping", async () => {
+    await updateClient("client-1", { ...VALID_CLIENT_INPUT, ownerId: "user-9" });
+    expect(mockedPrisma.client.update).toHaveBeenCalledWith({
+      where: { id: "client-1" },
+      data: {
+        name: "Acme Corp",
+        email: undefined,
+        phone: undefined,
+        website: undefined,
+        industry: undefined,
+        address: undefined,
+        source: undefined,
+        status: "LEAD",
+        ownerId: "user-9",
+      },
+    });
+  });
+
+  it("7. logs client.updated with the exact actor/company/client ids and metadata", async () => {
+    await updateClient("client-1", VALID_CLIENT_INPUT);
+    expect(mockedLogActivity).toHaveBeenCalledWith({
+      actorId: MANAGER.id,
+      action: "client.updated",
+      companyId: COMPANY_A,
+      clientId: "client-1",
+      metadata: { name: "Acme Corp" },
+    });
+  });
+
+  it("8. revalidates the client list and the client detail path", async () => {
+    await updateClient("client-1", VALID_CLIENT_INPUT);
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/clients");
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/clients/client-1");
+  });
+
+  it("9. returns the id of the updated Client", async () => {
+    const result = await updateClient("client-1", VALID_CLIENT_INPUT);
+    expect(result).toEqual({ success: true, data: { id: "client-1" } });
+  });
+
+  it("10. rejected requests never mutate, log activity, or revalidate", async () => {
+    mockedRequireUser.mockResolvedValue(AUTHOR);
+    await updateClient("client-1", VALID_CLIENT_INPUT);
+    expect(mockedPrisma.client.update).not.toHaveBeenCalled();
+    expect(mockedLogActivity).not.toHaveBeenCalled();
+    expect(mockedRevalidatePath).not.toHaveBeenCalled();
+  });
+});
+
+describe("archiveClient", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(MANAGER);
+    mockedPrisma.client.findUnique.mockResolvedValue(makeClient());
+  });
+
+  it("1. denies an EMPLOYEE without mutating", async () => {
+    mockedRequireUser.mockResolvedValue(AUTHOR);
+    const result = await archiveClient("client-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("You do not have permission to archive clients.");
+    expect(mockedPrisma.client.update).not.toHaveBeenCalled();
+  });
+
+  it("2. rejects when the Client does not exist", async () => {
+    mockedPrisma.client.findUnique.mockResolvedValue(null);
+    const result = await archiveClient("client-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Client not found.");
+    expect(mockedPrisma.client.update).not.toHaveBeenCalled();
+  });
+
+  it("3. rejects when the Client belongs to a different company", async () => {
+    mockedPrisma.client.findUnique.mockResolvedValue(makeClient({ companyId: COMPANY_B }));
+    const result = await archiveClient("client-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Client not found.");
+    expect(mockedPrisma.client.update).not.toHaveBeenCalled();
+  });
+
+  it("4. sets deletedAt to a Date instance with the exact where clause", async () => {
+    await archiveClient("client-1");
+    const [{ where, data }] = mockedPrisma.client.update.mock.calls[0];
+    expect(where).toEqual({ id: "client-1" });
+    expect(Object.keys(data)).toEqual(["deletedAt"]);
+    expect(data.deletedAt).toBeInstanceOf(Date);
+  });
+
+  it("5. logs client.archived with no metadata", async () => {
+    await archiveClient("client-1");
+    expect(mockedLogActivity).toHaveBeenCalledWith({
+      actorId: MANAGER.id,
+      action: "client.archived",
+      companyId: COMPANY_A,
+      clientId: "client-1",
+    });
+  });
+
+  it("6. revalidates the client list", async () => {
+    await archiveClient("client-1");
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/clients");
+  });
+
+  it("7. returns a plain success result", async () => {
+    const result = await archiveClient("client-1");
+    expect(result).toEqual({ success: true, data: undefined });
+  });
+
+  it("8. rejected requests never log activity or revalidate", async () => {
+    mockedRequireUser.mockResolvedValue(AUTHOR);
+    await archiveClient("client-1");
+    expect(mockedLogActivity).not.toHaveBeenCalled();
+    expect(mockedRevalidatePath).not.toHaveBeenCalled();
+  });
+});
+
+describe("restoreClient", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(MANAGER);
+    mockedPrisma.client.findUnique.mockResolvedValue(makeClient());
+  });
+
+  it("1. denies an EMPLOYEE without mutating", async () => {
+    mockedRequireUser.mockResolvedValue(AUTHOR);
+    const result = await restoreClient("client-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("You do not have permission to restore clients.");
+    expect(mockedPrisma.client.update).not.toHaveBeenCalled();
+  });
+
+  it("2. rejects when the Client does not exist", async () => {
+    mockedPrisma.client.findUnique.mockResolvedValue(null);
+    const result = await restoreClient("client-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Client not found.");
+    expect(mockedPrisma.client.update).not.toHaveBeenCalled();
+  });
+
+  it("3. rejects when the Client belongs to a different company", async () => {
+    mockedPrisma.client.findUnique.mockResolvedValue(makeClient({ companyId: COMPANY_B }));
+    const result = await restoreClient("client-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Client not found.");
+    expect(mockedPrisma.client.update).not.toHaveBeenCalled();
+  });
+
+  it("4. sets deletedAt to exactly null with the exact where clause", async () => {
+    await restoreClient("client-1");
+    expect(mockedPrisma.client.update).toHaveBeenCalledWith({ where: { id: "client-1" }, data: { deletedAt: null } });
+  });
+
+  it("5. logs client.restored with no metadata", async () => {
+    await restoreClient("client-1");
+    expect(mockedLogActivity).toHaveBeenCalledWith({
+      actorId: MANAGER.id,
+      action: "client.restored",
+      companyId: COMPANY_A,
+      clientId: "client-1",
+    });
+  });
+
+  it("6. revalidates the client list", async () => {
+    await restoreClient("client-1");
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/clients");
+  });
+
+  it("7. returns a plain success result", async () => {
+    const result = await restoreClient("client-1");
+    expect(result).toEqual({ success: true, data: undefined });
+  });
+
+  it("8. rejected requests never log activity or revalidate", async () => {
+    mockedRequireUser.mockResolvedValue(AUTHOR);
+    await restoreClient("client-1");
+    expect(mockedLogActivity).not.toHaveBeenCalled();
+    expect(mockedRevalidatePath).not.toHaveBeenCalled();
+  });
+});
+
+describe("addClientNote", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(AUTHOR);
+    mockedPrisma.client.findUnique.mockResolvedValue(makeClient({ name: "Acme Corp" }));
+    mockedPrisma.note.create.mockResolvedValue({ id: "note-new" });
+    mockedPrisma.user.findMany.mockResolvedValue([]);
+  });
+
+  it("1. rejects when the Client does not exist", async () => {
+    mockedPrisma.client.findUnique.mockResolvedValue(null);
+    const result = await addClientNote("client-1", "A note");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Client not found.");
+    expect(mockedPrisma.note.create).not.toHaveBeenCalled();
+  });
+
+  it("2. rejects when the Client belongs to a different company", async () => {
+    mockedPrisma.client.findUnique.mockResolvedValue(makeClient({ companyId: COMPANY_B }));
+    const result = await addClientNote("client-1", "A note");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Client not found.");
+    expect(mockedPrisma.note.create).not.toHaveBeenCalled();
+  });
+
+  it("3. rejects a whitespace-only body without creating a note", async () => {
+    const result = await addClientNote("client-1", "    ");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Note cannot be empty.");
+    expect(mockedPrisma.note.create).not.toHaveBeenCalled();
+  });
+
+  it("4. succeeds for a plain EMPLOYEE (no role gate — self-service)", async () => {
+    const result = await addClientNote("client-1", "A note");
+    expect(result.success).toBe(true);
+  });
+
+  it("5. creates the note with the trimmed body and the actor/client association", async () => {
+    await addClientNote("client-1", "  padded note  ");
+    expect(mockedPrisma.note.create).toHaveBeenCalledWith({
+      data: { authorId: AUTHOR.id, clientId: "client-1", body: "padded note" },
+    });
+  });
+
+  it("6. logs client.note_added with no metadata", async () => {
+    await addClientNote("client-1", "A note");
+    expect(mockedLogActivity).toHaveBeenCalledWith({
+      actorId: AUTHOR.id,
+      action: "client.note_added",
+      companyId: COMPANY_A,
+      clientId: "client-1",
+    });
+  });
+
+  it("7. revalidates only the client detail path", async () => {
+    await addClientNote("client-1", "A note");
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/clients/client-1");
+  });
+
+  it("8. zero mentions in the body sends zero notifications", async () => {
+    mockedPrisma.user.findMany.mockResolvedValue([{ id: "user-9", firstName: "Sam" }]);
+    await addClientNote("client-1", "No mentions here");
+    expect(mockedCreateNotification).not.toHaveBeenCalled();
+  });
+
+  it("9. one real @mention sends exactly one notification, matching the exact production message (unquoted client name)", async () => {
+    mockedPrisma.user.findMany.mockResolvedValue([{ id: "user-9", firstName: "Sam" }]);
+    await addClientNote("client-1", "Great work @Sam");
+    expect(mockedPrisma.user.findMany).toHaveBeenCalledWith({
+      where: { companyId: COMPANY_A, deletedAt: null },
+      select: { id: true, firstName: true },
+    });
+    expect(mockedCreateNotification).toHaveBeenCalledTimes(1);
+    expect(mockedCreateNotification).toHaveBeenCalledWith({
+      userId: "user-9",
+      type: "COMMENT_MENTION",
+      message: `${AUTHOR.firstName} mentioned you in a note on Acme Corp`,
+      link: "/clients/client-1",
+    });
+  });
+
+  it("10. multiple @mentions send exactly one notification per mentioned user, to the correct recipients", async () => {
+    mockedPrisma.user.findMany.mockResolvedValue([
+      { id: "user-9", firstName: "Sam" },
+      { id: "user-10", firstName: "Jordan" },
+    ]);
+    await addClientNote("client-1", "cc @Sam and @Jordan");
+    expect(mockedCreateNotification).toHaveBeenCalledTimes(2);
+    const recipients = mockedCreateNotification.mock.calls.map((call: unknown[]) => (call[0] as { userId: string }).userId);
+    expect(recipients.sort()).toEqual(["user-10", "user-9"]);
+  });
+
+  it("11. never notifies the author for a self-mention", async () => {
+    mockedPrisma.user.findMany.mockResolvedValue([{ id: AUTHOR.id, firstName: "Alex" }]);
+    await addClientNote("client-1", "Reminding myself @Alex");
+    expect(mockedCreateNotification).not.toHaveBeenCalled();
+  });
+
+  it("12. sends no notifications when the request is rejected", async () => {
+    mockedPrisma.client.findUnique.mockResolvedValue(null);
+    await addClientNote("client-1", "Great work @Sam");
+    expect(mockedCreateNotification).not.toHaveBeenCalled();
   });
 });

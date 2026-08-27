@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Plus, Search, Sparkles } from "lucide-react";
+import { BookMarked, Plus, Search, Sparkles } from "lucide-react";
 
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
 import EmptyState from "@/components/dashboard/EmptyState";
@@ -56,6 +56,12 @@ export default async function SeoPage({ searchParams }: SeoPageProps) {
                 className={cn(buttonVariants({ variant: "outline" }))}
               >
                 <Sparkles size={16} /> Website Analysis
+              </Link>
+              <Link
+                href="/seo/knowledge-sources"
+                className={cn(buttonVariants({ variant: "outline" }))}
+              >
+                <BookMarked size={16} /> Knowledge Sources
               </Link>
               <Link href="/seo/new" className={cn(buttonVariants())}>
                 <Plus size={16} /> New SEO project

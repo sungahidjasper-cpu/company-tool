@@ -27,9 +27,16 @@ import {
   restoreSeoProject,
   updateSeoProjectNote,
 } from "@/features/seo/actions/seo-project.actions";
+import { unlinkKnowledgeSource } from "@/features/seo/actions/knowledge-source.actions";
 import { getSeoProjectById } from "@/features/seo/services/seo-project.service";
+import {
+  listKnowledgeSourceLinksForSeoProject,
+  listKnowledgeSources,
+} from "@/features/seo/services/knowledge-source.service";
+import { getUnlinkedKnowledgeSources } from "@/features/seo/lib/knowledge-source-availability";
 import { listWebsiteAnalysisHistory } from "@/features/seo/services/website-analysis.service";
 import { listFilesFor } from "@/features/files/services/file.service";
+import LinkKnowledgeSourceForm from "@/features/seo/components/LinkKnowledgeSourceForm";
 import { requireUser } from "@/lib/auth";
 import { assertCompanyAccess, Permissions } from "@/lib/authorization";
 import { cn, formatEnumLabel } from "@/lib/utils";
@@ -53,10 +60,13 @@ export default async function SeoProjectDetailPage({
 
   const canManage = Permissions.manageSeoProjects(user.role);
   const canAct = canManage || seoProject.ownerId === user.id;
-  const [files, analysisHistory] = await Promise.all([
+  const [files, analysisHistory, linkedSources, companySources] = await Promise.all([
     listFilesFor("seoProject", seoProject.id),
     listWebsiteAnalysisHistory(user.companyId, { seoProjectId: seoProject.id }),
+    listKnowledgeSourceLinksForSeoProject(seoProject.id),
+    listKnowledgeSources(user.companyId),
   ]);
+  const availableSources = getUnlinkedKnowledgeSources(companySources, linkedSources);
 
   return (
     <PageContainer>
@@ -253,6 +263,53 @@ export default async function SeoProjectDetailPage({
               Analyze new website →
             </Link>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Knowledge sources</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {linkedSources.length === 0 && (
+            <p className="text-sm text-slate-500">No knowledge sources linked yet.</p>
+          )}
+          {linkedSources.map((link) => (
+            <div key={link.id} className="flex items-center justify-between gap-4 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="font-medium">{link.knowledgeSource.title}</span>
+                {link.knowledgeSource.deletedAt && (
+                  <StatusBadge status="ARCHIVED" />
+                )}
+                {link.knowledgeSource.url && (
+                  <a
+                    href={link.knowledgeSource.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-slate-500 hover:underline"
+                  >
+                    ({link.knowledgeSource.url})
+                  </a>
+                )}
+              </div>
+              {canManage && (
+                <RecordActionButton
+                  id={link.id}
+                  action={unlinkKnowledgeSource}
+                  label="Unlink"
+                  variant="outline"
+                  confirmMessage="Unlink this knowledge source from the project?"
+                  successMessage="Knowledge source unlinked"
+                />
+              )}
+            </div>
+          ))}
+
+          {canManage && <LinkKnowledgeSourceForm seoProjectId={seoProject.id} availableSources={availableSources} />}
+
+          <Link href="/seo/knowledge-sources" className="text-sm font-medium hover:underline">
+            Manage knowledge sources →
+          </Link>
         </CardContent>
       </Card>
 

@@ -1,3 +1,4 @@
+import { prisma } from "@/lib/prisma";
 import { listKnowledgeSourceLinksForSeoProject } from "@/features/seo/services/knowledge-source.service";
 
 /** Bounds prompt growth — a project could accumulate many links over time; only the most recently linked sources are included. */
@@ -47,4 +48,34 @@ export async function getKnowledgeSourceContextForSeoProject(seoProjectId: strin
 
   const entries = activeSources.map(formatSourceEntry).join("\n");
   return `Supplied authoritative sources for this project (human-verified — you may ground claims in these, but never invent additional sources beyond them, and never state something these sources don't actually support just because a source is present):\n${entries}`;
+}
+
+/**
+ * Phase 30 Stage 8 — a tenant-safe entry point for callers (Website Analysis)
+ * that receive a `seoProjectId` from a persisted job row rather than from a
+ * request already scoped to a verified SEOProject the way Content Brief's/
+ * Long-Form's callers are. `seoProjectId` alone is never trusted as an
+ * authorization boundary — this re-verifies the project actually belongs to
+ * `companyId` (same ownership check already used in
+ * knowledge-source.actions.ts's linkKnowledgeSourceToSeoProject) before ever
+ * calling into getKnowledgeSourceContextForSeoProject above, so a job whose
+ * seoProjectId doesn't belong to its own company can never pull another
+ * company's Knowledge Source content into an AI prompt. Returns null (never
+ * throws) for a missing/absent/foreign project — indistinguishable from "no
+ * sources linked," which is the correct, non-error outcome for a job with no
+ * applicable Knowledge Source context.
+ */
+export async function getVerifiedKnowledgeSourceContextForJob(
+  companyId: string,
+  seoProjectId: string | null | undefined
+): Promise<string | null> {
+  if (!seoProjectId) return null;
+
+  const seoProject = await prisma.sEOProject.findUnique({
+    where: { id: seoProjectId },
+    select: { companyId: true },
+  });
+  if (!seoProject || seoProject.companyId !== companyId) return null;
+
+  return getKnowledgeSourceContextForSeoProject(seoProjectId);
 }

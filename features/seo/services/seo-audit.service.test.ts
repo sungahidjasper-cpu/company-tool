@@ -151,3 +151,46 @@ describe("generateSeoAudit — independent task failure (Phase 11C)", () => {
     await expect(generateSeoAudit(ctx())).rejects.toThrow("all providers exhausted");
   });
 });
+
+/** SCORES/RECOMMENDATIONS/CONTENT_INTELLIGENCE all build their prompt from buildSharedContext (where knowledgeSourceContext is injected); EXECUTIVE_SUMMARY's prompt is built separately from already-computed results and never includes it — that's unchanged, existing behavior, not something this stage touches. */
+const SHARED_CONTEXT_TASK_TYPES = new Set(["SCORES", "RECOMMENDATIONS", "CONTENT_INTELLIGENCE"]);
+
+describe("generateSeoAudit — Knowledge Source context (Phase 30 Stage 8)", () => {
+  it("includes the supplied Knowledge Source context block in every buildSharedContext-based task's prompt when present", async () => {
+    mockByTaskType();
+    mockGenerate.mockClear();
+    await generateSeoAudit({ ...ctx(), knowledgeSourceContext: "Supplied authoritative sources for this project:\n- Google Search Central" });
+
+    const sharedContextPrompts = mockGenerate.mock.calls
+      .filter((call) => SHARED_CONTEXT_TASK_TYPES.has(call[1].taskType as string))
+      .map((call) => call[1].prompt as string);
+    expect(sharedContextPrompts).toHaveLength(3);
+    for (const prompt of sharedContextPrompts) {
+      expect(prompt).toContain("Supplied authoritative sources for this project:\n- Google Search Central");
+    }
+  });
+
+  it("produces a byte-identical prompt to before this stage existed when no Knowledge Source context applies (null)", async () => {
+    mockByTaskType();
+    mockGenerate.mockClear();
+    await generateSeoAudit({ ...ctx(), knowledgeSourceContext: null });
+
+    const prompts = mockGenerate.mock.calls.map((call) => call[1].prompt as string);
+    expect(prompts.length).toBeGreaterThan(0);
+    for (const prompt of prompts) {
+      expect(prompt).not.toContain("Supplied authoritative sources");
+    }
+  });
+
+  it("omits the Knowledge Source block when the field is simply not supplied (existing callers/tests unaffected)", async () => {
+    mockByTaskType();
+    mockGenerate.mockClear();
+    await generateSeoAudit(ctx());
+
+    const prompts = mockGenerate.mock.calls.map((call) => call[1].prompt as string);
+    expect(prompts.length).toBeGreaterThan(0);
+    for (const prompt of prompts) {
+      expect(prompt).not.toContain("Supplied authoritative sources");
+    }
+  });
+});

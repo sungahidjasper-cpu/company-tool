@@ -3,11 +3,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/features/seo/services/knowledge-source.service", () => ({
   listKnowledgeSourceLinksForSeoProject: vi.fn(),
 }));
+vi.mock("@/lib/prisma", () => ({
+  prisma: { sEOProject: { findUnique: vi.fn() } },
+}));
 
+import { prisma } from "@/lib/prisma";
 import { listKnowledgeSourceLinksForSeoProject } from "@/features/seo/services/knowledge-source.service";
-import { getKnowledgeSourceContextForSeoProject } from "@/features/seo/services/knowledge-source-context.service";
+import {
+  getKnowledgeSourceContextForSeoProject,
+  getVerifiedKnowledgeSourceContextForJob,
+} from "@/features/seo/services/knowledge-source-context.service";
 
 const mockedListLinks = listKnowledgeSourceLinksForSeoProject as unknown as ReturnType<typeof vi.fn>;
+const mockedFindProject = vi.mocked(prisma.sEOProject.findUnique);
 
 function makeSource(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -108,5 +116,59 @@ describe("getKnowledgeSourceContextForSeoProject", () => {
     mockedListLinks.mockResolvedValue([makeLink(makeSource())]);
     const result = await getKnowledgeSourceContextForSeoProject("project-1");
     expect(result).toMatch(/^Supplied authoritative sources/);
+  });
+});
+
+describe("getVerifiedKnowledgeSourceContextForJob (Phase 30 Stage 8)", () => {
+  const COMPANY_ID = "company-1";
+  const PROJECT_ID = "project-1";
+
+  it("1. returns null without querying anything when seoProjectId is null", async () => {
+    const result = await getVerifiedKnowledgeSourceContextForJob(COMPANY_ID, null);
+    expect(result).toBeNull();
+    expect(mockedFindProject).not.toHaveBeenCalled();
+    expect(mockedListLinks).not.toHaveBeenCalled();
+  });
+
+  it("2. returns null without querying anything when seoProjectId is undefined", async () => {
+    const result = await getVerifiedKnowledgeSourceContextForJob(COMPANY_ID, undefined);
+    expect(result).toBeNull();
+    expect(mockedFindProject).not.toHaveBeenCalled();
+  });
+
+  it("3. returns null when the referenced SEO project doesn't exist", async () => {
+    mockedFindProject.mockResolvedValue(null);
+    const result = await getVerifiedKnowledgeSourceContextForJob(COMPANY_ID, PROJECT_ID);
+    expect(result).toBeNull();
+    expect(mockedListLinks).not.toHaveBeenCalled();
+  });
+
+  it("4. [CRITICAL] returns null — never another company's context — when the project belongs to a different company than the job", async () => {
+    mockedFindProject.mockResolvedValue({ companyId: "some-other-company" } as never);
+    const result = await getVerifiedKnowledgeSourceContextForJob(COMPANY_ID, PROJECT_ID);
+    expect(result).toBeNull();
+    // The tenant check must short-circuit before ever reading that project's linked sources.
+    expect(mockedListLinks).not.toHaveBeenCalled();
+  });
+
+  it("5. looks up the project by the exact seoProjectId given", async () => {
+    mockedFindProject.mockResolvedValue(null);
+    await getVerifiedKnowledgeSourceContextForJob(COMPANY_ID, PROJECT_ID);
+    expect(mockedFindProject).toHaveBeenCalledWith(expect.objectContaining({ where: { id: PROJECT_ID } }));
+  });
+
+  it("6. delegates to getKnowledgeSourceContextForSeoProject and returns its result when the project genuinely belongs to the given company", async () => {
+    mockedFindProject.mockResolvedValue({ companyId: COMPANY_ID } as never);
+    mockedListLinks.mockResolvedValue([makeLink(makeSource())]);
+    const result = await getVerifiedKnowledgeSourceContextForJob(COMPANY_ID, PROJECT_ID);
+    expect(result).toContain("Google Search Central");
+    expect(mockedListLinks).toHaveBeenCalledWith(PROJECT_ID);
+  });
+
+  it("7. returns null (not an error) when the project matches but has no linked sources", async () => {
+    mockedFindProject.mockResolvedValue({ companyId: COMPANY_ID } as never);
+    mockedListLinks.mockResolvedValue([]);
+    const result = await getVerifiedKnowledgeSourceContextForJob(COMPANY_ID, PROJECT_ID);
+    expect(result).toBeNull();
   });
 });

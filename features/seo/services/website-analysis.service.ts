@@ -21,6 +21,7 @@ import { websiteAnalysisExtractionSchema, type WebsiteAnalysisExtraction } from 
 import type { ReportData } from "@/features/reports/services/report.service";
 import { formatEnumLabel } from "@/lib/utils";
 import { generateSeoAudit, PROMPT_VERSION } from "@/features/seo/services/seo-audit.service";
+import { getVerifiedKnowledgeSourceContextForJob } from "@/features/seo/services/knowledge-source-context.service";
 import {
   computeInternalLinkingScore,
   computeOnPageSeoScore,
@@ -165,7 +166,7 @@ function classifyAiFailure(error: unknown): AiFailure {
  * crawl, skipping crawlWebsite entirely).
  */
 async function runAiPhase(
-  job: { id: string; domain: string; companyId: string },
+  job: { id: string; domain: string; companyId: string; seoProjectId?: string | null },
   crawlHash: string,
   { crawl, technical, onPage, structuredData, internalLinking }: ScoredCrawl
 ) {
@@ -220,6 +221,15 @@ async function runAiPhase(
   let audit: Awaited<ReturnType<typeof generateSeoAudit>> | null = null;
   if (extraction) {
     try {
+      // Phase 30 Stage 8 — connects the Knowledge Source foundation (Stages
+      // 1-7) to this existing AI call: a job with no seoProjectId (the
+      // common ad-hoc case) or one whose project has no linked sources both
+      // resolve to null here, producing a byte-identical prompt to before
+      // this stage existed. getVerifiedKnowledgeSourceContextForJob re-checks
+      // seoProjectId against job.companyId itself — the job's own
+      // seoProjectId is never trusted as an authorization boundary on its
+      // own (see that function's doc comment).
+      const knowledgeSourceContext = await getVerifiedKnowledgeSourceContextForJob(job.companyId, job.seoProjectId);
       audit = await generateSeoAudit({
         websiteAnalysisJobId: job.id,
         companyId: job.companyId,
@@ -230,6 +240,7 @@ async function runAiPhase(
         missingSchemaTypes: structuredData.missingSchemaTypes,
         orphanPages: internalLinking.orphanPages,
         thinPageUrls: onPage.thinPageUrls,
+        knowledgeSourceContext,
       });
       await updateWebsiteAnalysisJobProgress(job.id, 95);
     } catch (error) {

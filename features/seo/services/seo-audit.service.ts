@@ -34,6 +34,8 @@ export type AuditContext = {
   missingSchemaTypes: string[];
   orphanPages: string[];
   thinPageUrls: string[];
+  /** Phase 30 Stage 8 — a preformatted, human-verified Knowledge Source context block (see knowledge-source-context.service.ts), or null/undefined when none applies. Already tenant-verified and already prompt-injection-hardened by that service; buildSharedContext only ever places it into the prompt, never re-derives or re-checks it. */
+  knowledgeSourceContext?: string | null;
 };
 
 /** Phase 19 — bundles jobId+companyId for the 4 generator functions below, rather than adding a second bare string param to each (a second bare string is exactly the shape where a transposition bug across 4 call sites would go unnoticed). */
@@ -67,7 +69,7 @@ Structured data already detected: ${ctx.detectedSchemaTypes.join(", ") || "none"
 Structured data types missing (recommend JSON-LD only for types in this list, at most 5): ${ctx.missingSchemaTypes.slice(0, 5).join(", ") || "none missing"}.
 Pages with no internal links pointing to them (orphaned within this crawl sample): ${ctx.orphanPages.join(", ") || "none"}.
 Pages with very little text content: ${ctx.thinPageUrls.join(", ") || "none"}.
-
+${ctx.knowledgeSourceContext ? `\n${ctx.knowledgeSourceContext}\n` : ""}
 Crawled page content (homepage plus a sample of other pages):
 
 ${pageSummaries}`;

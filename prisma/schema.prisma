@@ -227,6 +227,7 @@ model Company {
   publishingJobs        PublishingJob[]
   contentPublications   ContentPublication[]
   contentRevisions      ContentRevision[]
+  knowledgeSources      KnowledgeSource[]
 
   @@index([deletedAt])
 }
@@ -308,6 +309,8 @@ model User {
   createdPublishingConnections PublishingConnection[] @relation("PublishingConnectionCreatedBy")
   requestedPublishingJobs      PublishingJob[]        @relation("PublishingJobRequestedBy")
   createdContentRevisions      ContentRevision[]      @relation("ContentRevisionCreatedBy")
+  addedKnowledgeSources        KnowledgeSource[]      @relation("KnowledgeSourceAddedBy")
+  createdKnowledgeSourceLinks  KnowledgeSourceLink[]  @relation("KnowledgeSourceLinkCreatedBy")
 
   @@index([companyId, status])
   @@index([deletedAt])
@@ -720,17 +723,18 @@ model SEOProject {
   client  Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
   owner   User?   @relation("SeoProjectOwner", fields: [ownerId], references: [id], onDelete: SetNull)
 
-  keywordClusters     KeywordCluster[]
-  keywords            Keyword[]
-  content             Content[]
-  notes               Note[]
-  activities          Activity[]
-  files               File[]
-  reports             Report[]
-  tags                Tag[]
-  websiteAnalysisJobs WebsiteAnalysisJob[]
-  aiUsageLogs         AiUsageLog[]
-  aiGenerationJobs    AiGenerationJob[]
+  keywordClusters      KeywordCluster[]
+  keywords             Keyword[]
+  content              Content[]
+  notes                Note[]
+  activities           Activity[]
+  files                File[]
+  reports              Report[]
+  tags                 Tag[]
+  websiteAnalysisJobs  WebsiteAnalysisJob[]
+  aiUsageLogs          AiUsageLog[]
+  aiGenerationJobs     AiGenerationJob[]
+  knowledgeSourceLinks KnowledgeSourceLink[]
 
   @@index([companyId, status])
   @@index([clientId])
@@ -779,6 +783,74 @@ model Keyword {
   @@index([clusterId])
   @@index([ownerId])
   @@index([deletedAt])
+}
+
+/// Phase 30 Stage 2 — an authoritative reference source (official docs,
+/// government/public institutions, industry organizations, research
+/// publications, client-provided material, etc.) that a future AI-generated
+/// recommendation or piece of content can cite. Deliberately has no crawl/
+/// embedding/verification machinery yet — see KnowledgeSourceLink below for
+/// how it's associated with the knowledge it supports, and
+/// features/seo/schemas/knowledge-source.schema.ts for why sourceType is a
+/// free-text column rather than a Prisma enum.
+model KnowledgeSource {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  companyId      String    @db.Uuid
+  title          String
+  url            String?
+  /// Free text, not a Prisma enum — see the schema file's
+  /// RECOMMENDED_SOURCE_TYPES for the suggested-but-not-exhaustive set, so a
+  /// new source category never requires a migration.
+  sourceType     String
+  description    String?
+  /// Optional normalized/pasted source material — e.g. a quoted passage a
+  /// human has verified supports a claim. Never populated by automated
+  /// crawling in this stage.
+  content        String?
+  publishedAt    DateTime?
+  /// Set (by a human, via updateKnowledgeSource) whenever someone confirms
+  /// this source is still live/accurate — the only freshness signal this
+  /// stage has; no automated re-check exists yet.
+  lastVerifiedAt DateTime?
+  /// Attribution only, same convention as ContentRevision.createdByUserId —
+  /// never an ownership gate.
+  addedByUserId  String?   @db.Uuid
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  company Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  addedBy User?                 @relation("KnowledgeSourceAddedBy", fields: [addedByUserId], references: [id], onDelete: SetNull)
+  links   KnowledgeSourceLink[]
+
+  @@index([companyId, deletedAt])
+  @@index([sourceType])
+}
+
+/// Phase 30 Stage 2 — a human-attributed link between a KnowledgeSource and
+/// the SEOProject-level knowledge base it supports. Deliberately scoped to
+/// SEOProject only for this stage, not to individual WebsiteAnalysisIssue
+/// rows or Content — linking a source directly to one AI-generated
+/// recommendation is the citation experience itself, which this stage does
+/// not build (see the Stage 2 report). No `@@unique` on the pair: the same
+/// source can support the same project more than once with a different
+/// rationale.
+model KnowledgeSourceLink {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  knowledgeSourceId String   @db.Uuid
+  seoProjectId      String   @db.Uuid
+  /// Why this source supports this project's knowledge base — human-entered
+  /// for now, never AI-generated in this stage.
+  note              String?
+  createdByUserId   String?  @db.Uuid
+  createdAt         DateTime @default(now())
+
+  knowledgeSource KnowledgeSource @relation(fields: [knowledgeSourceId], references: [id], onDelete: Cascade)
+  seoProject      SEOProject      @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
+  createdBy       User?           @relation("KnowledgeSourceLinkCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([knowledgeSourceId])
+  @@index([seoProjectId])
 }
 
 model Content {

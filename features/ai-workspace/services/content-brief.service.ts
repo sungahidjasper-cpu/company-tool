@@ -5,6 +5,7 @@ import { DEFAULT_CONTENT_BRIEF_SETTINGS, type ContentBriefSettings } from "@/fea
 import { contentBriefOutputSchema, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { looksLikeInstructionEcho, stripConfigurationArtifacts, stripHtmlTags } from "@/features/ai-workspace/services/content-sanitizer";
+import { getKnowledgeSourceContextForSeoProject } from "@/features/seo/services/knowledge-source-context.service";
 
 /**
  * Bumped whenever the prompt template below changes — same convention as
@@ -118,7 +119,7 @@ function buildSettingsClauses(settings: ContentBriefSettings): string[] {
  * review step is the actual mitigation for injected instructions, not a
  * sanitizer on this string.
  */
-export function buildPrompt(ctx: ContentBriefContext): string {
+export function buildPrompt(ctx: ContentBriefContext, knowledgeSourceContext?: string | null): string {
   const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
   const keywordLine = ctx.keyword
     ? `Target keyword: "${ctx.keyword.term}"${ctx.keyword.intent ? ` (tracked search intent: ${ctx.keyword.intent})` : ""}`
@@ -149,7 +150,7 @@ ${keywordLine}
 ${ctx.notes ? `Additional context/notes from the requester: ${ctx.notes}` : "No additional notes were provided."}
 
 ${buildSettingsClauses(settings).join("\n")}
-
+${knowledgeSourceContext ? `\n${knowledgeSourceContext}\n` : ""}
 Using ONLY the information above, produce a content brief with:
 ${requirements.join("\n")}
 
@@ -166,9 +167,10 @@ Never include internal instructions, configuration labels, word-count targets, c
 export async function generateContentBrief(ctx: ContentBriefContext, onChunk?: (event: StreamEvent) => void): Promise<ContentBriefOutput> {
   const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
   const schema = buildContentBriefOutputSchema(settings.sections);
+  const knowledgeSourceContext = await getKnowledgeSourceContextForSeoProject(ctx.seoProjectId);
   const options = {
     system: CONTENT_BRIEF_SYSTEM_PROMPT,
-    prompt: buildPrompt(ctx),
+    prompt: buildPrompt(ctx, knowledgeSourceContext),
     maxTokens: 3000,
     taskType: "CONTENT_BRIEF" as const,
     promptVersion: PROMPT_VERSION,

@@ -9,6 +9,7 @@ import { formatLongFormContentAsMarkdown, longFormContentOutputSchema, type Long
 import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { filterReservedSections, stripConfigurationArtifacts, stripHtmlTags } from "@/features/ai-workspace/services/content-sanitizer";
 import { computeWordCount } from "@/features/ai-workspace/services/seo-checklist.service";
+import { getKnowledgeSourceContextForSeoProject } from "@/features/seo/services/knowledge-source-context.service";
 
 /**
  * Bumped whenever the prompt template below changes — own, independent
@@ -50,7 +51,7 @@ export type LongFormContentContext = {
  * ever persisted without an explicit human review + Save, and the system
  * prompt above already instructs the model not to invent facts.
  */
-export function buildPrompt(ctx: LongFormContentContext): string {
+export function buildPrompt(ctx: LongFormContentContext, knowledgeSourceContext?: string | null): string {
   const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
   const keywordLine = ctx.keyword
     ? `Target keyword: "${ctx.keyword.term}"${ctx.keyword.intent ? ` (tracked search intent: ${ctx.keyword.intent})` : ""}`
@@ -119,7 +120,7 @@ This article's APPROVED BRIEF (already reviewed and approved by a human — foll
 This article's target length is approximately ${settings.wordCount} words in total — a range of roughly ${lowWords}-${highWords} words is fine, and reaching it should be a natural consequence of genuine depth, not a goal pursued for its own sake. The outline above has ${outlineSectionCount} sections; each section must contain AT LEAST ${minSectionWords} words of real substance — meaningful explanation, evidence or context grounded in the information supplied above, examples, or analysis that make the section genuinely useful on its own, not a thin summary. There is no upper limit stated for a section — develop each one as fully as the supplied brief and context genuinely support, rather than stopping once the minimum is technically met. Falling far short of the target because sections are shallow is not acceptable. But do not pad with repetition, generic restatements, filler sentences, or invented information just to hit the number — if the supplied context does not support reaching the target without inventing unsupported material, prioritize accuracy and write a shorter, honest article instead.
 Reading level: ${settings.readingLevel.toLowerCase().replace("_", " ")}. Brand voice/tone: ${settings.brandVoice.toLowerCase().replace(/_/g, " ")}.
 ${settings.sections.cta ? "A call-to-action belongs near the end of this piece. Do NOT write the CTA copy, button text, phone number, or URL yourself — it will be inserted separately from the requester's own literal, pre-approved text. Only account for its presence when structuring the article." : ""}
-
+${knowledgeSourceContext ? `\n${knowledgeSourceContext}\n` : ""}
 Using ONLY the information above, write a complete draft article with:
 ${requirements.join("\n")}
 
@@ -319,9 +320,10 @@ async function refineArticleLength(ctx: LongFormContentContext, article: LongFor
 export async function generateLongFormContent(ctx: LongFormContentContext, onChunk?: (event: StreamEvent) => void): Promise<LongFormContentOutput> {
   const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
   const schema = buildLongFormOutputSchema(settings.sections, settings.draftOptions);
+  const knowledgeSourceContext = await getKnowledgeSourceContextForSeoProject(ctx.seoProjectId);
   const options = {
     system: LONG_FORM_SYSTEM_PROMPT,
-    prompt: buildPrompt(ctx),
+    prompt: buildPrompt(ctx, knowledgeSourceContext),
     maxTokens: 4000,
     taskType: "CONTENT_DRAFT" as const,
     promptVersion: PROMPT_VERSION,

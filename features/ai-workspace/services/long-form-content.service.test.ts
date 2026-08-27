@@ -3,17 +3,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/ai/structured-output", () => ({
   generateStructuredOutput: vi.fn(),
 }));
+vi.mock("@/features/seo/services/knowledge-source-context.service", () => ({
+  getKnowledgeSourceContextForSeoProject: vi.fn(),
+}));
 
 import { generateStructuredOutput } from "@/lib/ai/structured-output";
+import { getKnowledgeSourceContextForSeoProject } from "@/features/seo/services/knowledge-source-context.service";
 import { DEFAULT_CONTENT_BRIEF_SETTINGS } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { generateLongFormContent, PROMPT_VERSION, type LongFormContentContext } from "@/features/ai-workspace/services/long-form-content.service";
 import { formatLongFormContentAsMarkdown } from "@/features/ai-workspace/schemas/long-form-content.schema";
 import { computeWordCount } from "@/features/ai-workspace/services/seo-checklist.service";
 
 const mockGenerate = vi.mocked(generateStructuredOutput);
+const mockGetKnowledgeSourceContext = vi.mocked(getKnowledgeSourceContextForSeoProject);
 
 beforeEach(() => {
   mockGenerate.mockClear();
+  mockGetKnowledgeSourceContext.mockReset();
+  mockGetKnowledgeSourceContext.mockResolvedValue(null);
 });
 
 /** A single word repeated N times — exactly N word-tokens under computeWordCount, so test fixtures can target exact totals without hand-counting prose. */
@@ -90,6 +97,28 @@ describe("generateLongFormContent", () => {
     await generateLongFormContent(BASE_CTX);
     const [, options] = mockGenerate.mock.calls[0];
     expect(options.companyId).toBe("company-1");
+  });
+
+  it("[Phase 30 Stage 3] looks up knowledge-source context by the exact seoProjectId", async () => {
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent(BASE_CTX);
+    expect(mockGetKnowledgeSourceContext).toHaveBeenCalledWith("project-1");
+  });
+
+  it("[Phase 30 Stage 3] produces a byte-identical prompt to the pre-Stage-3 shape when no knowledge sources are linked", async () => {
+    mockGetKnowledgeSourceContext.mockResolvedValue(null);
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).not.toContain("Supplied authoritative sources");
+  });
+
+  it("[Phase 30 Stage 3] includes the knowledge-source context block in the prompt when sources are linked", async () => {
+    mockGetKnowledgeSourceContext.mockResolvedValue("Supplied authoritative sources for this project:\n- Google Search Central (https://developers.google.com/search)");
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("Supplied authoritative sources for this project:\n- Google Search Central (https://developers.google.com/search)");
   });
 
   it("includes the approved brief's fields and the target keyword in the prompt", async () => {

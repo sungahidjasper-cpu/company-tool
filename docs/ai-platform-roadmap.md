@@ -1,6 +1,8 @@
-# AI Platform Roadmap (Phases 18–25)
+# AI Platform Roadmap (Phases 18–30)
 
 Tracks the roadmap produced by the post-Phase-17 architectural review of the AI Workspace and surrounding AI infrastructure. That review covered current architecture, technical debt, production readiness, multi-provider strategy, observability, and scalability, and proposed Phases 18–25 below. Phases 18 and 19 were flagged as essential before a real multi-tenant launch; this file is the persistent tracker for status as each phase ships (the review itself was delivered as a point-in-time analysis, not saved as a file).
+
+Phases 26–29 fall outside that original architectural review's scope — they were later, separately-driven phases (record lifecycle, trash/recovery, company/user visibility, search, and test-coverage backfill) that this file has been extended to also track, since they shipped using the same phase-numbered convention. Phase 30 is a future placeholder, not yet scoped or approved.
 
 Note: as actually delivered, Phase 21 diverged from this roadmap's original "Enhanced Observability" placeholder — it shipped instead as *Configurable Content Brief & Long-Form Draft Generation* (see below). Enhanced Observability was not part of what shipped under that name and remains unscoped. Phase 22 ("Streaming") matched its original placeholder.
 
@@ -12,8 +14,13 @@ Note: as actually delivered, Phase 21 diverged from this roadmap's original "Enh
 | 21 | Configurable Content Brief & Long-Form Draft Generation (renamed from "Enhanced Observability" — see note above) | High | **Complete, committed & pushed** — `e582f87`. Post-ship content-quality fixes: see [phase-21-content-quality-fixes.md](phase-21-content-quality-fixes.md) |
 | 22 | Streaming | Medium | **Complete, committed & pushed** — Stages 1–4: `2d4d2d2`, `0ce088a`, `270566b`, `b5e104b` |
 | 23 | UX Maturation | Medium | **Complete, committed & pushed** — Stages 1–5: `f311ab8`, `d5b7b43`, `207ec67`, `cc3c79a`, `5b0c998` |
-| 24 | Publishing / Distribution | Low | Not started |
-| 25 | Version History | Low | Not started |
+| 24 | Publishing / Distribution | Low | **Complete, committed & pushed** — Stages 1–2 + hardening: `a115450`, `857453f`, `25551a0` |
+| 25 | Version History | Low | **Complete, committed & pushed** — Stages 1–4: `c571f96`, `2fc7b23` |
+| 26 | Record Lifecycle Consistency | — | **Complete, committed & pushed** — `60cc43e` |
+| 27 | Trash and Recovery System | — | **Complete, committed & pushed** — `75f741a` |
+| 28 | Company/User Lifecycle Visibility | — | **Complete, committed & pushed** — `2fe6c00` |
+| 29 | Global Search + Action-Layer Test Coverage | — | **Complete, committed & pushed** — closing commit `78caeda` |
+| 30 | Native AI Engine | Future | **Not started — unscoped placeholder** (see below) |
 
 ## Phase 18 — Background Job Architecture for AI Generation
 
@@ -63,10 +70,58 @@ Stage 5 closed the two remaining polish items found during final audit: an acces
 
 All five stages were delivered as presentation-only changes to five AI Workspace component files, without reopening the protected AI-generation architecture (`lib/ai/`, the SSE route, the job runner/table), the Prisma schema, the shared `ActionResult`/`actionError` layer, or the Website Analysis implementation. Phase 23 is complete.
 
-## Phases 24–25
+## Phase 24 — Publishing / Distribution (Complete)
 
-Not yet scoped in detail — carried forward from the architectural review's roadmap table as placeholders for future design work:
-- **24 — Publishing / Distribution**: pushing generated content to external destinations (CMS, social, etc.).
-- **25 — Version History**: revision tracking for AI-generated and edited content.
+What it delivered, in plain terms: a way to connect the platform to external publishing destinations and push generated content out to them, instead of content only ever living inside Cloud Compass OS. Stage 1 added connection management (linking, listing, relabeling, and disconnecting destinations). Stage 2 completed the actual publishing workflow. A follow-up hardening pass improved error handling around persisting a publication, so a failure partway through doesn't leave things in a confusing state.
+
+Why it mattered: generating good content is only half the value — teams need it to actually reach the place it's meant to be published, without a manual copy-paste step.
+
+Committed and pushed as `a115450` (Stage 1), `857453f` (Stage 2), `25551a0` (hardening).
+
+## Phase 25 — Version History (Complete)
+
+What it delivered: every time a piece of Content is edited — by a person, by AI regeneration, or via an explicit restore — the system now snapshots the prior title/meta title/meta description/body before the overwrite happens, via a new `ContentRevision` model. Users get a Version History view on the Content detail page showing every past revision (who changed it, when, and how), with a one-click Restore that itself snapshots the pre-restore state first, so restoring is never a one-way door. Revision numbering stays correct even under concurrent edits.
+
+Why it mattered: AI-assisted content editing makes it easy to overwrite something good with something worse; without version history there was no way back.
+
+Committed and pushed as `c571f96` (the revision model, snapshot wiring, and restore action) and `2fc7b23` (the Version History UI).
+
+## Phases 26–29
+
+Four phases that, together, brought record lifecycle handling (archive, delete, restore) and everyday visibility features up to a consistent standard across the whole app.
+
+### Phase 26 — Record Lifecycle Consistency (Complete)
+
+Fixed an edge case where bulk-deleting Content could fail entirely if even one item in the batch had version history protecting it — now those items are safely skipped instead of blocking the whole batch. Switched File deletion from permanent removal to soft-delete, so a deleted file isn't unrecoverably gone. Added the ability for a note's author (or a manager) to edit or delete a note they'd left on a Lead, Project, Client, SEO Project, piece of Content, or Task — consistently, across all six.
+
+Committed and pushed as `60cc43e`.
+
+### Phase 27 — Trash and Recovery System (Complete)
+
+Added a centralized Trash page giving Content, Keywords, Files, and Notes a real, visible place to recover something that was deleted — Files and Notes previously had no restore path at all once removed, even after Phase 26 made their deletion "soft." Also improved the permanent-delete confirmation for Content and Keywords to show an accurate preview of exactly what will be lost (notes, files, activity history) before the user commits, correctly protecting anything with version history from being purged.
+
+Committed and pushed as `75f741a`.
+
+### Phase 28 — Company/User Lifecycle Visibility (Complete)
+
+Brought the Company and User detail pages up to the same standard as the rest of the app: Companies gained an Archive/Restore control, and both Companies and Users gained an Activity Timeline showing what's happened on that record over time. Also standardized the wording used when confirming a permanent delete, so it reads consistently across Content, Keywords, and Trash.
+
+Committed and pushed as `2fe6c00`.
+
+### Phase 29 — Global Search + Action-Layer Test Coverage (Complete)
+
+Started as a single feature: a global search box in the sidebar, so users can jump straight to a Lead, Project, Client, or other record by name instead of navigating through menus, plus its own regression tests. That work naturally grew into a much larger, methodical effort to backfill automated regression tests across every server-side action in the app — the functions that actually create, update, archive, restore, and otherwise change data — so that future changes are far less likely to silently break existing behavior. By the end, every action file in the codebase has meaningful test coverage except the Publishing feature's connection-management actions, which remain intentionally out of scope for this pass.
+
+Search feature committed as `26f7db2`, `179139c`, `7168253`. The test-coverage effort closed with `78caeda`.
+
+## Phase 30 — Native AI Engine (Future / Unscoped)
+
+**Status: Not started. Not scheduled. Not approved for implementation.** This is a placeholder recording a future direction under consideration, in the same spirit Phases 24–25 were originally carried as unscoped placeholders before being picked up.
+
+The concept: reduce the platform's dependence on third-party AI provider API keys by supporting self-hosted, open-weight models as a first-class option — not just as the emergency fallback Phase 20 already proved works (a live Gemini→local-Ollama fallback). This would extend the existing provider-abstraction layer rather than replace it. Alongside that, the concept includes building an internal SEO/GEO/AEO knowledge base, source-backed recommendations (citing where a claim or suggestion comes from), deeper website intelligence, and content research/verification — with model fine-tuning or customization only considered later, if and when it's actually justified by real usage.
+
+This overlaps meaningfully with `docs/seo-intelligence-platform-architecture.md` — a detailed, previously-written proposal (automated website crawling, AI-assisted keyword clustering, opportunity scoring) that was never approved or built. Phase 30, when eventually scoped, should treat that document as prior research to build on rather than starting over, while extending it to cover the self-hosted/open-weight model angle that document doesn't address.
+
+No design or implementation work has been done against this phase. It exists here only so the idea isn't lost and isn't confused with any currently active work.
 
 Enhanced Observability (deeper structured logging/tracing across the AI pipeline beyond today's `AiUsageLog` table and console-JSON `logger`) was this roadmap's original Phase 21 placeholder; it was superseded by the configurable-generation work above and remains unscoped.

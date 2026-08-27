@@ -114,7 +114,8 @@ function resolveUrl(href: string, base: string): string | null {
   }
 }
 
-function extractPageContent(html: string, url: string, loadTimeMs: number): CrawledPage {
+/** Phase 30 Stage 7 — exported (previously private) so knowledge-source-ingestion.service.ts can reuse this exact HTML→text extraction (including its existing 3000-char bodyText cap) rather than a second parser. Behavior unchanged. */
+export function extractPageContent(html: string, url: string, loadTimeMs: number): CrawledPage {
   const $ = cheerio.load(html);
   const title = $("title").first().text().trim() || null;
   const metaDescription = $('meta[name="description"]').attr("content")?.trim() || null;

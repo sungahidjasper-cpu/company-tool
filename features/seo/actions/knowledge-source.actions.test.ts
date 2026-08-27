@@ -10,6 +10,9 @@ vi.mock("@/features/seo/services/knowledge-source.service", () => ({
   findDuplicateKnowledgeSourceByUrl: vi.fn(),
   verifyKnowledgeSourceUrl: vi.fn(),
 }));
+vi.mock("@/features/seo/services/knowledge-source-ingestion.service", () => ({
+  ingestKnowledgeSourceContent: vi.fn(),
+}));
 
 type MockPrisma = {
   knowledgeSource: { create: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
@@ -42,9 +45,11 @@ import {
   listKnowledgeSources,
   verifyKnowledgeSourceUrl,
 } from "@/features/seo/services/knowledge-source.service";
+import { ingestKnowledgeSourceContent } from "@/features/seo/services/knowledge-source-ingestion.service";
 import {
   archiveKnowledgeSource,
   createKnowledgeSource,
+  ingestKnowledgeSourceContentAction,
   linkKnowledgeSourceToSeoProject,
   listKnowledgeSourceLinksForSeoProjectAction,
   listKnowledgeSourcesAction,
@@ -61,6 +66,7 @@ const mockedPrisma = prisma as unknown as MockPrisma;
 const mockedGetKnowledgeSourceById = getKnowledgeSourceById as unknown as ReturnType<typeof vi.fn>;
 const mockedListKnowledgeSources = listKnowledgeSources as unknown as ReturnType<typeof vi.fn>;
 const mockedListKnowledgeSourceLinksForSeoProject = listKnowledgeSourceLinksForSeoProject as unknown as ReturnType<typeof vi.fn>;
+const mockedIngestKnowledgeSourceContent = ingestKnowledgeSourceContent as unknown as ReturnType<typeof vi.fn>;
 const mockedFindDuplicateKnowledgeSourceByUrl = findDuplicateKnowledgeSourceByUrl as unknown as ReturnType<typeof vi.fn>;
 const mockedVerifyKnowledgeSourceUrl = verifyKnowledgeSourceUrl as unknown as ReturnType<typeof vi.fn>;
 
@@ -631,5 +637,78 @@ describe("verifyKnowledgeSourceFreshness", () => {
   it("13. returns a plain success result on success", async () => {
     const result = await verifyKnowledgeSourceFreshness("source-1");
     expect(result).toEqual({ success: true, data: undefined });
+  });
+});
+
+describe("ingestKnowledgeSourceContentAction", () => {
+  beforeEach(() => {
+    mockedIngestKnowledgeSourceContent.mockResolvedValue({ success: true, content: "Fetched page text." });
+  });
+
+  it("1. denies an EMPLOYEE without calling the ingestion service", async () => {
+    mockedRequireUser.mockResolvedValue(EMPLOYEE);
+    const result = await ingestKnowledgeSourceContentAction({ url: "https://example.com" });
+    expect(result.success).toBe(false);
+    expect(mockedIngestKnowledgeSourceContent).not.toHaveBeenCalled();
+  });
+
+  it("2. succeeds for a MANAGER in create mode (no knowledgeSourceId), without any ownership lookup", async () => {
+    const result = await ingestKnowledgeSourceContentAction({ url: "https://example.com" });
+    expect(result.success).toBe(true);
+    expect(mockedGetKnowledgeSourceById).not.toHaveBeenCalled();
+  });
+
+  it("3. [CRITICAL] passes the exact supplied URL to the ingestion service", async () => {
+    await ingestKnowledgeSourceContentAction({ url: "https://example.com/exact-article" });
+    expect(mockedIngestKnowledgeSourceContent).toHaveBeenCalledWith("https://example.com/exact-article");
+  });
+
+  it("4. returns the exact extracted content on success", async () => {
+    mockedIngestKnowledgeSourceContent.mockResolvedValue({ success: true, content: "Exact returned text." });
+    const result = await ingestKnowledgeSourceContentAction({ url: "https://example.com" });
+    expect(result).toEqual({ success: true, data: { content: "Exact returned text." } });
+  });
+
+  it("5. in edit mode, verifies ownership before calling the ingestion service", async () => {
+    mockedGetKnowledgeSourceById.mockResolvedValue(makeSource({ id: "source-1" }));
+    await ingestKnowledgeSourceContentAction({ url: "https://example.com", knowledgeSourceId: "source-1" });
+    expect(mockedGetKnowledgeSourceById).toHaveBeenCalledWith("source-1");
+    expect(mockedIngestKnowledgeSourceContent).toHaveBeenCalled();
+  });
+
+  it("6. [CRITICAL] rejects a cross-company knowledgeSourceId with the same generic not-found message, without calling the ingestion service", async () => {
+    mockedGetKnowledgeSourceById.mockResolvedValue(makeSource({ id: "source-1", companyId: COMPANY_B }));
+    const result = await ingestKnowledgeSourceContentAction({ url: "https://example.com", knowledgeSourceId: "source-1" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Knowledge source not found.");
+    expect(mockedIngestKnowledgeSourceContent).not.toHaveBeenCalled();
+  });
+
+  it("7. rejects a missing knowledgeSourceId (already deleted/never existed), without calling the ingestion service", async () => {
+    mockedGetKnowledgeSourceById.mockResolvedValue(null);
+    const result = await ingestKnowledgeSourceContentAction({ url: "https://example.com", knowledgeSourceId: "source-1" });
+    expect(result.success).toBe(false);
+    expect(mockedIngestKnowledgeSourceContent).not.toHaveBeenCalled();
+  });
+
+  it("8. returns the ingestion service's failure reason as the action error", async () => {
+    mockedIngestKnowledgeSourceContent.mockResolvedValue({ success: false, reason: "The URL returned an error (status 404)." });
+    const result = await ingestKnowledgeSourceContentAction({ url: "https://example.com/missing" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("The URL returned an error (status 404).");
+  });
+
+  it("9. [CRITICAL] never writes to Prisma — create, update, or any other knowledgeSource mutation — regardless of success or failure", async () => {
+    await ingestKnowledgeSourceContentAction({ url: "https://example.com" });
+    mockedIngestKnowledgeSourceContent.mockResolvedValue({ success: false, reason: "The URL could not be reached." });
+    await ingestKnowledgeSourceContentAction({ url: "https://example.com/other" });
+    expect(mockedPrisma.knowledgeSource.create).not.toHaveBeenCalled();
+    expect(mockedPrisma.knowledgeSource.update).not.toHaveBeenCalled();
+  });
+
+  it("10. never logs activity or revalidates — this action only reads, it does not change persisted state", async () => {
+    await ingestKnowledgeSourceContentAction({ url: "https://example.com" });
+    expect(mockedLogActivity).not.toHaveBeenCalled();
+    expect(mockedRevalidatePath).not.toHaveBeenCalled();
   });
 });

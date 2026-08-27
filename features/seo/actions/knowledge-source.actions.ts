@@ -24,6 +24,7 @@ import {
   listKnowledgeSources,
   verifyKnowledgeSourceUrl,
 } from "@/features/seo/services/knowledge-source.service";
+import { ingestKnowledgeSourceContent } from "@/features/seo/services/knowledge-source-ingestion.service";
 
 async function getOwnedKnowledgeSource(id: string, companyId: string) {
   const source = await getKnowledgeSourceById(id);
@@ -219,6 +220,43 @@ export async function verifyKnowledgeSourceFreshness(id: string): Promise<Action
 
   revalidatePath("/seo");
   return actionSuccess();
+}
+
+export type IngestKnowledgeSourceContentInput = {
+  url: string;
+  /** Present only when fetching for an already-saved source (edit mode) — verified with the same ownership check every other mutation uses, before any network request is made. Omitted entirely in create mode, where there's nothing yet to own. */
+  knowledgeSourceId?: string;
+};
+
+/**
+ * Phase 30 Stage 7 — fetches a URL's readable text for the caller to place
+ * into the (client-side, unsaved) content form field. Never writes to
+ * Prisma and never itself persists a Knowledge Source — only the existing
+ * createKnowledgeSource/updateKnowledgeSource actions do that, once a human
+ * has reviewed and explicitly submitted the form.
+ */
+export async function ingestKnowledgeSourceContentAction(
+  input: IngestKnowledgeSourceContentInput
+): Promise<ActionResult<{ content: string }>> {
+  const actor = await requireUser();
+
+  if (!Permissions.manageSeoProjects(actor.role)) {
+    return actionError("You do not have permission to fetch knowledge source content.");
+  }
+
+  if (input.knowledgeSourceId) {
+    const existing = await getOwnedKnowledgeSource(input.knowledgeSourceId, actor.companyId);
+    if (!existing) {
+      return actionError("Knowledge source not found.");
+    }
+  }
+
+  const result = await ingestKnowledgeSourceContent(input.url);
+  if (!result.success) {
+    return actionError(result.reason);
+  }
+
+  return actionSuccess({ content: result.content });
 }
 
 export async function listKnowledgeSourcesAction(): Promise<ActionResult<Awaited<ReturnType<typeof listKnowledgeSources>>>> {

@@ -8,6 +8,7 @@ import { toast } from "sonner";
 
 import {
   createKnowledgeSource,
+  ingestKnowledgeSourceContentAction,
   updateKnowledgeSource,
 } from "@/features/seo/actions/knowledge-source.actions";
 import {
@@ -39,10 +40,14 @@ type KnowledgeSourceFormProps = {
 export default function KnowledgeSourceForm({ knowledgeSource }: KnowledgeSourceFormProps) {
   const router = useRouter();
   const [formError, setFormError] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [isFetchingContent, setIsFetchingContent] = useState(false);
 
   const {
     register,
     handleSubmit,
+    getValues,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<KnowledgeSourceInput>({
     resolver: zodResolver(knowledgeSourceSchema),
@@ -74,6 +79,40 @@ export default function KnowledgeSourceForm({ knowledgeSource }: KnowledgeSource
     router.refresh();
   };
 
+  /**
+   * Phase 30 Stage 7 — pre-fills the Content field only, for the user to
+   * review/edit before ever clicking Create/Save. Never calls
+   * createKnowledgeSource/updateKnowledgeSource itself, never submits the
+   * form — fetched text becomes an ordinary (still-unsaved) form value,
+   * same trust level as if the user had pasted it in by hand.
+   */
+  const handleFetchContent = async () => {
+    setFetchError(null);
+    const url = getValues("url");
+    if (!url) {
+      setFetchError("Enter a URL above first.");
+      return;
+    }
+
+    const existingContent = getValues("content");
+    if (existingContent && existingContent.trim().length > 0) {
+      const confirmed = window.confirm("This will replace the current Content field with the fetched text. Continue?");
+      if (!confirmed) return;
+    }
+
+    setIsFetchingContent(true);
+    const result = await ingestKnowledgeSourceContentAction({ url, knowledgeSourceId: knowledgeSource?.id });
+    setIsFetchingContent(false);
+
+    if (!result.success) {
+      setFetchError(result.message);
+      return;
+    }
+
+    setValue("content", result.data.content);
+    toast.success("Content fetched — review before saving.");
+  };
+
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
@@ -90,8 +129,14 @@ export default function KnowledgeSourceForm({ knowledgeSource }: KnowledgeSource
         <label htmlFor="url" className="text-sm font-medium">
           URL
         </label>
-        <Input id="url" placeholder="https://example.com/article" {...register("url")} />
+        <div className="flex gap-2">
+          <Input id="url" placeholder="https://example.com/article" {...register("url")} />
+          <Button type="button" variant="outline" disabled={isFetchingContent} onClick={handleFetchContent}>
+            {isFetchingContent ? "Fetching..." : "Fetch Content"}
+          </Button>
+        </div>
         {errors.url && <p className="text-sm text-destructive">{errors.url.message}</p>}
+        {fetchError && <p className="text-sm text-destructive">{fetchError}</p>}
       </div>
 
       <div className="flex flex-col gap-1.5">

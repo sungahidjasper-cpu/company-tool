@@ -97,6 +97,57 @@ describe("generateContentBrief", () => {
     expect(options.prompt).toContain("Supplied authoritative sources for this project:\n- Google Search Central (https://developers.google.com/search)");
   });
 
+  it("[Phase 30 Stage 4] does not instruct the model to report sourcesReferenced when no sources are linked", async () => {
+    mockGetKnowledgeSourceContext.mockResolvedValue(null);
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+    await generateContentBrief(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).not.toContain("sourcesReferenced");
+  });
+
+  it("[Phase 30 Stage 4] instructs the model to report sourcesReferenced, with the exact never-invent/never-list-unsupplied rules, when sources are linked", async () => {
+    mockGetKnowledgeSourceContext.mockResolvedValue("Supplied authoritative sources for this project:\n- Google Search Central (https://developers.google.com/search)");
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+    await generateContentBrief(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("sourcesReferenced");
+    expect(options.prompt).toContain("Never invent a URL");
+    expect(options.prompt).toContain("Never list a source that was not supplied above");
+  });
+
+  it("[Phase 30 Stage 4] excludes sourcesReferenced from the request schema when no sources are linked", async () => {
+    mockGetKnowledgeSourceContext.mockResolvedValue(null);
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+    await generateContentBrief(BASE_CTX);
+    const [schema] = mockGenerate.mock.calls[0] as unknown as [{ shape: Record<string, unknown> }, unknown];
+    expect(Object.keys(schema.shape)).not.toContain("sourcesReferenced");
+  });
+
+  it("[Phase 30 Stage 4] includes sourcesReferenced in the request schema when sources are linked", async () => {
+    mockGetKnowledgeSourceContext.mockResolvedValue("Supplied authoritative sources for this project:\n- Google Search Central (https://developers.google.com/search)");
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+    await generateContentBrief(BASE_CTX);
+    const [schema] = mockGenerate.mock.calls[0] as unknown as [{ shape: Record<string, unknown> }, unknown];
+    expect(Object.keys(schema.shape)).toContain("sourcesReferenced");
+  });
+
+  it("[Phase 30 Stage 4] returns the model's reported sourcesReferenced unchanged", async () => {
+    mockGetKnowledgeSourceContext.mockResolvedValue("Supplied authoritative sources for this project:\n- Google Search Central (https://developers.google.com/search)");
+    mockGenerate.mockResolvedValue({
+      ...BRIEF_RESULT,
+      sourcesReferenced: [{ title: "Google Search Central", url: "https://developers.google.com/search" }],
+    });
+    const result = await generateContentBrief(BASE_CTX);
+    expect(result.sourcesReferenced).toEqual([{ title: "Google Search Central", url: "https://developers.google.com/search" }]);
+  });
+
+  it("[Phase 30 Stage 4] defaults sourcesReferenced to an empty array when the model omits it", async () => {
+    mockGetKnowledgeSourceContext.mockResolvedValue(null);
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+    const result = await generateContentBrief(BASE_CTX);
+    expect(result.sourcesReferenced).toEqual([]);
+  });
+
   it("includes the target keyword and its tracked intent in the prompt when a keyword is selected", async () => {
     mockGenerate.mockResolvedValue(BRIEF_RESULT);
 

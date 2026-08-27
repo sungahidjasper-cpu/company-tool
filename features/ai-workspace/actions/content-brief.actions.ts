@@ -199,6 +199,7 @@ export async function saveContentBriefAction(input: SaveContentBriefInput): Prom
         schemaSuggestions: input.brief.schemaSuggestions,
         statistics: input.brief.statistics,
         examples: input.brief.examples,
+        sourcesReferenced: input.brief.sourcesReferenced,
         briefSettings: input.settings,
       },
       keywords: input.keywordId ? { connect: [{ id: input.keywordId }] } : undefined,

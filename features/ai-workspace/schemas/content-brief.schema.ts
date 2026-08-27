@@ -2,7 +2,7 @@ import { z } from "zod";
 import { z as zv4 } from "zod/v4";
 
 import { optionalString } from "@/lib/zod-helpers";
-import { externalSourceSchema, faqItemSchema, internalLinkSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
+import { externalSourceSchema, faqItemSchema, internalLinkSchema, sourceReferenceSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { contentBriefSettingsSchema } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 
 export const CONTENT_BRIEF_TYPES = ["BLOG_POST", "LANDING_PAGE", "PILLAR_PAGE", "OTHER"] as const;
@@ -60,6 +60,8 @@ export const contentBriefOutputSchema = zv4.object({
   schemaSuggestions: zv4.array(zv4.string()).default([]),
   statistics: zv4.array(zv4.string()).default([]),
   examples: zv4.array(zv4.string()).default([]),
+  /** Phase 30 Stage 4 — which supplied KnowledgeSources the model reports actually using. Empty for every request with no supplied source context, and for every pre-Stage-4 saved row. */
+  sourcesReferenced: zv4.array(sourceReferenceSchema).default([]),
 });
 
 export type ContentBriefOutput = zv4.infer<typeof contentBriefOutputSchema>;

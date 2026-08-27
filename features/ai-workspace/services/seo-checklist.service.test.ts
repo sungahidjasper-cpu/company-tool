@@ -21,6 +21,7 @@ const BASE_BRIEF = {
   schemaSuggestions: [],
   statistics: [],
   examples: [],
+  sourcesReferenced: [],
 };
 
 describe("checkMetaLengths", () => {

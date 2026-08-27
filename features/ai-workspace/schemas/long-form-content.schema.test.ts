@@ -132,6 +132,7 @@ describe("formatLongFormContentAsMarkdown", () => {
     altTextSuggestions: [] as string[],
     socialSnippets: [] as string[],
     internalLinkPlacementSuggestions: [{ anchorText: "Suggestion that must NOT appear in the saved body", targetPage: "/services", reason: "relevant", placement: "introduction", priority: "MEDIUM" as const }],
+    sourcesReferenced: [] as { title: string; url: string | null }[],
   };
 
   it("includes the introduction, every section heading/body, and the conclusion", () => {

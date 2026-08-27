@@ -7,6 +7,7 @@ import {
   internalLinkSchema,
   normalizeArray,
   normalizeInternalLinkSuggestions,
+  sourceReferenceSchema,
 } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 
 const ALL_ON = contentBriefSectionsSchema.parse({
@@ -72,6 +73,43 @@ describe("buildContentBriefOutputSchema", () => {
     expect(keys).toContain("ctaPlacementSuggestion");
     expect(keys).not.toContain("cta");
     expect(keys).not.toContain("ctaCopy");
+  });
+
+  it("[Phase 30 Stage 4] omits sourcesReferenced when no knowledge-source context flag is passed", () => {
+    const schema = buildContentBriefOutputSchema(ALL_ON);
+    expect(Object.keys(schema.shape)).not.toContain("sourcesReferenced");
+  });
+
+  it("[Phase 30 Stage 4] omits sourcesReferenced when hasKnowledgeSourceContext is explicitly false", () => {
+    const schema = buildContentBriefOutputSchema(ALL_ON, false);
+    expect(Object.keys(schema.shape)).not.toContain("sourcesReferenced");
+  });
+
+  it("[Phase 30 Stage 4] includes sourcesReferenced only when hasKnowledgeSourceContext is true, independent of every section toggle", () => {
+    const schema = buildContentBriefOutputSchema(ALL_OFF, true);
+    expect(Object.keys(schema.shape)).toContain("sourcesReferenced");
+  });
+});
+
+describe("sourceReferenceSchema", () => {
+  it("[Phase 30 Stage 4] requires a title", () => {
+    const result = sourceReferenceSchema.safeParse({ url: "https://example.com" });
+    expect(result.success).toBe(false);
+  });
+
+  it("[Phase 30 Stage 4] accepts a null url", () => {
+    const result = sourceReferenceSchema.safeParse({ title: "Google Search Central", url: null });
+    expect(result.success).toBe(true);
+  });
+
+  it("[Phase 30 Stage 4] accepts a string url", () => {
+    const result = sourceReferenceSchema.safeParse({ title: "Google Search Central", url: "https://developers.google.com/search" });
+    expect(result.success).toBe(true);
+  });
+
+  it("[Phase 30 Stage 4] rejects a missing url entirely (must be explicitly string or null)", () => {
+    const result = sourceReferenceSchema.safeParse({ title: "Google Search Central" });
+    expect(result.success).toBe(false);
   });
 });
 

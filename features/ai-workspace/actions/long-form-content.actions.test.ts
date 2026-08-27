@@ -87,6 +87,7 @@ const VALID_BRIEF = {
   schemaSuggestions: [],
   statistics: [],
   examples: [],
+  sourcesReferenced: [],
 };
 
 function makeContentWithBrief(overrides: Partial<Record<string, unknown>> = {}) {

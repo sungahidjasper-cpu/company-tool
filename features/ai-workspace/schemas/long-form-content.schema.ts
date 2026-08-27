@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { z as zv4 } from "zod/v4";
 
-import { faqItemSchema, internalLinkSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
+import { faqItemSchema, internalLinkSchema, sourceReferenceSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { contentBriefSettingsSchema } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { optionalString } from "@/lib/zod-helpers";
 
@@ -81,6 +81,8 @@ export const longFormContentOutputSchema = zv4.object({
   excerpt: zv4.string().optional(),
   /** Informational for the human reviewer only — never written into the saved body (see formatLongFormContentAsMarkdown). Structured the same way as the brief's own internalLinkSuggestions (content-brief-output-builder.ts). */
   internalLinkPlacementSuggestions: zv4.array(internalLinkSchema).default([]),
+  /** Phase 30 Stage 4 — which supplied KnowledgeSources the model reports actually using. Empty when no source context was supplied. Ephemeral only — never persisted (see long-form-content.actions.ts; explicitly out of scope for this stage). */
+  sourcesReferenced: zv4.array(sourceReferenceSchema).default([]),
 });
 
 export type LongFormContentOutput = zv4.infer<typeof longFormContentOutputSchema>;

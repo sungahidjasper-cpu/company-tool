@@ -67,6 +67,7 @@ const BRIEF_OUTPUT_CANONICAL = {
   schemaSuggestions: [],
   statistics: [],
   examples: [],
+  sourcesReferenced: [],
 };
 
 const ARTICLE_OUTPUT = {

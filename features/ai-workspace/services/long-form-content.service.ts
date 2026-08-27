@@ -105,6 +105,11 @@ export function buildPrompt(ctx: LongFormContentContext, knowledgeSourceContext?
   if (settings.draftOptions.featuredImagePrompt) requirements.push("11. A single descriptive prompt suitable for generating a featured image for this article.");
   if (settings.draftOptions.socialSnippets) requirements.push("12. Two or three short social-media post snippets promoting this article.");
   if (settings.draftOptions.excerpt) requirements.push("13. A one-to-two sentence excerpt/summary suitable for a blog listing page.");
+  if (knowledgeSourceContext) {
+    requirements.push(
+      "14. sourcesReferenced: for each supplied authoritative source above that you actually drew from to support a specific claim in this article, list its exact supplied title and (if one was supplied) its exact supplied URL. Never invent a URL. Never list a source that was not supplied above. Never list a source merely because it seems topically relevant — this represents sources you actually used, not a list of potentially useful ones."
+    );
+  }
 
   return `Website: ${ctx.domain} (SEO project: ${ctx.seoProjectName})
 ${keywordLine}
@@ -319,8 +324,8 @@ async function refineArticleLength(ctx: LongFormContentContext, article: LongFor
  */
 export async function generateLongFormContent(ctx: LongFormContentContext, onChunk?: (event: StreamEvent) => void): Promise<LongFormContentOutput> {
   const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
-  const schema = buildLongFormOutputSchema(settings.sections, settings.draftOptions);
   const knowledgeSourceContext = await getKnowledgeSourceContextForSeoProject(ctx.seoProjectId);
+  const schema = buildLongFormOutputSchema(settings.sections, settings.draftOptions, Boolean(knowledgeSourceContext));
   const options = {
     system: LONG_FORM_SYSTEM_PROMPT,
     prompt: buildPrompt(ctx, knowledgeSourceContext),

@@ -143,6 +143,11 @@ export function buildPrompt(ctx: ContentBriefContext, knowledgeSourceContext?: s
   if (settings.sections.statistics) requirements.push("14. A list of statistic ANGLES this piece should cite (topics/claims to support with data — not invented numbers).");
   if (settings.sections.examples) requirements.push("15. A list of concrete example ideas the draft could use to illustrate points.");
   if (settings.sections.cta) requirements.push("16. A ctaPlacementSuggestion: ONE sentence describing where/how a call-to-action should appear — never the CTA's actual copy, button text, phone number, or URL, which come from the requester's own pre-approved fields.");
+  if (knowledgeSourceContext) {
+    requirements.push(
+      "17. sourcesReferenced: for each supplied authoritative source above that you actually drew from to support a specific claim in this brief, list its exact supplied title and (if one was supplied) its exact supplied URL. Never invent a URL. Never list a source that was not supplied above. Never list a source merely because it seems topically relevant — this represents sources you actually used, not a list of potentially useful ones."
+    );
+  }
 
   return `Website: ${ctx.domain} (SEO project: ${ctx.seoProjectName})
 Content type: ${ctx.contentType}
@@ -166,8 +171,8 @@ Never include internal instructions, configuration labels, word-count targets, c
  */
 export async function generateContentBrief(ctx: ContentBriefContext, onChunk?: (event: StreamEvent) => void): Promise<ContentBriefOutput> {
   const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
-  const schema = buildContentBriefOutputSchema(settings.sections);
   const knowledgeSourceContext = await getKnowledgeSourceContextForSeoProject(ctx.seoProjectId);
+  const schema = buildContentBriefOutputSchema(settings.sections, Boolean(knowledgeSourceContext));
   const options = {
     system: CONTENT_BRIEF_SYSTEM_PROMPT,
     prompt: buildPrompt(ctx, knowledgeSourceContext),

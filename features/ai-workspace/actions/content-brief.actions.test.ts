@@ -99,6 +99,7 @@ function makeBrief(overrides: Partial<Record<string, unknown>> = {}) {
     schemaSuggestions: [],
     statistics: [],
     examples: [],
+    sourcesReferenced: [],
     ...overrides,
   };
 }
@@ -330,6 +331,48 @@ describe("saveContentBriefAction", () => {
     mockedPrisma.content.create.mockResolvedValue({ id: "new-content-1", title: "Saved Title" });
     const result = await saveContentBriefAction(SAVE_INPUT);
     expect(result).toEqual({ success: true, data: { id: "new-content-1" } });
+  });
+
+  it("8. [Phase 30 Stage 4] persists the brief's sourcesReferenced inside aiBriefDetails", async () => {
+    const sourcesReferenced = [{ title: "Google Search Central", url: "https://developers.google.com/search" }];
+    await saveContentBriefAction({ seoProjectId: "seo-1", brief: makeBrief({ title: "Saved Title", sourcesReferenced }) });
+    const [{ data }] = mockedPrisma.content.create.mock.calls[0];
+    expect(data.aiBriefDetails.sourcesReferenced).toEqual(sourcesReferenced);
+  });
+
+  it("9. [Phase 30 Stage 4] persists an empty sourcesReferenced (never fabricates one) when the brief has none", async () => {
+    await saveContentBriefAction(SAVE_INPUT);
+    const [{ data }] = mockedPrisma.content.create.mock.calls[0];
+    expect(data.aiBriefDetails.sourcesReferenced).toEqual([]);
+  });
+
+  it("10. [Phase 30 Stage 4] preserves every other existing aiBriefDetails property alongside sourcesReferenced", async () => {
+    const brief = makeBrief({
+      title: "Saved Title",
+      outline: ["Intro", "Body"],
+      seoRecommendations: ["Use the keyword in the H1"],
+      sourcesReferenced: [{ title: "Google Search Central", url: null }],
+    });
+    await saveContentBriefAction({ seoProjectId: "seo-1", brief });
+    const [{ data }] = mockedPrisma.content.create.mock.calls[0];
+    expect(data.aiBriefDetails).toEqual({
+      outline: ["Intro", "Body"],
+      suggestedHeadings: brief.suggestedHeadings,
+      internalLinkSuggestions: brief.internalLinkSuggestions,
+      seoRecommendations: ["Use the keyword in the H1"],
+      geoAeoNotes: brief.geoAeoNotes,
+      suggestedSearchIntent: brief.suggestedSearchIntent,
+      conclusion: brief.conclusion,
+      ctaPlacementSuggestion: brief.ctaPlacementSuggestion,
+      externalSources: brief.externalSources,
+      faq: brief.faq,
+      keyTakeaways: brief.keyTakeaways,
+      schemaSuggestions: brief.schemaSuggestions,
+      statistics: brief.statistics,
+      examples: brief.examples,
+      sourcesReferenced: [{ title: "Google Search Central", url: null }],
+      briefSettings: undefined,
+    });
   });
 });
 

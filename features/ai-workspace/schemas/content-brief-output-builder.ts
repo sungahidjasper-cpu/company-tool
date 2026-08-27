@@ -44,6 +44,20 @@ export const faqItemSchema = zv4.object({
 });
 export type FaqItem = zv4.infer<typeof faqItemSchema>;
 
+/**
+ * Phase 30 Stage 4 — one supplied KnowledgeSource the model reports actually
+ * using. `title`/`url` must echo a source from the "Supplied authoritative
+ * sources" prompt block verbatim (see knowledge-source-context.service.ts)
+ * — the model is instructed never to invent a URL or list an unsupplied
+ * source, but this schema alone can't enforce that; it only constrains the
+ * SHAPE of a claimed reference, not its truthfulness.
+ */
+export const sourceReferenceSchema = zv4.object({
+  title: zv4.string(),
+  url: zv4.string().nullable(),
+});
+export type SourceReference = zv4.infer<typeof sourceReferenceSchema>;
+
 const BASE_OUTPUT_SHAPE = {
   title: zv4.string(),
   metaTitle: zv4.string(),
@@ -63,7 +77,16 @@ const BASE_OUTPUT_SHAPE = {
  * the model is never asked (and never spends tokens) to produce it.
  * `cta` never appears here — see contentBriefCtaSchema's comment.
  */
-export function buildContentBriefOutputSchema(sections: ContentBriefSections) {
+/**
+ * `hasKnowledgeSourceContext` is not a user-facing section toggle like the
+ * others above — it's a runtime fact (whether content-brief.service.ts's
+ * buildPrompt was actually given supplied-source context for this request),
+ * so it's a separate parameter rather than another ContentBriefSections
+ * field. Only requesting `sourcesReferenced` when there's something to
+ * reference keeps this identical to every other conditional field: a
+ * disabled/inapplicable section is never asked for, never spends tokens.
+ */
+export function buildContentBriefOutputSchema(sections: ContentBriefSections, hasKnowledgeSourceContext?: boolean) {
   const shape: Record<string, zv4.ZodTypeAny> = { ...BASE_OUTPUT_SHAPE };
 
   if (sections.internalLinks) shape.internalLinkSuggestions = zv4.array(internalLinkSchema);
@@ -76,6 +99,7 @@ export function buildContentBriefOutputSchema(sections: ContentBriefSections) {
   if (sections.schemaSuggestions) shape.schemaSuggestions = zv4.array(zv4.string());
   if (sections.statistics) shape.statistics = zv4.array(zv4.string());
   if (sections.examples) shape.examples = zv4.array(zv4.string());
+  if (hasKnowledgeSourceContext) shape.sourcesReferenced = zv4.array(sourceReferenceSchema);
 
   return zv4.object(shape);
 }

@@ -14,7 +14,7 @@ import type { LongFormJobInput } from "@/features/ai-workspace/schemas/ai-genera
 import { generateLongFormContent } from "@/features/ai-workspace/services/long-form-content.service";
 import { createContentRevisionSnapshot } from "@/features/seo/services/content-revision.service";
 import { contentBriefOutputSchema, type ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
-import { externalSourceSchema, faqItemSchema, normalizeArray, normalizeInternalLinkSuggestions } from "@/features/ai-workspace/schemas/content-brief-output-builder";
+import { externalSourceSchema, faqItemSchema, normalizeArray, normalizeInternalLinkSuggestions, sourceReferenceSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { contentBriefSettingsSchema, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import {
   generateLongFormFromBriefContextSchema,
@@ -98,6 +98,7 @@ function buildBriefFromContentRow(content: {
     schemaSuggestions: asStringArray(raw.schemaSuggestions),
     statistics: asStringArray(raw.statistics),
     examples: asStringArray(raw.examples),
+    sourcesReferenced: normalizeArray(sourceReferenceSchema, raw.sourcesReferenced),
   };
   const parsed = contentBriefOutputSchema.safeParse(brief);
   return parsed.success ? parsed.data : null;

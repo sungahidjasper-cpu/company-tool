@@ -1,6 +1,6 @@
 import { z as zv4 } from "zod/v4";
 
-import { faqItemSchema, internalLinkSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
+import { faqItemSchema, internalLinkSchema, sourceReferenceSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import type { ContentBriefSections, ContentDraftOptions } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 
 const BASE_LONG_FORM_SHAPE = {
@@ -21,8 +21,12 @@ const BASE_LONG_FORM_SHAPE = {
  * the user enabled for this generation. `conclusion` and `faq` were
  * unconditional in Phase 16; they're now gated by the same `sections`
  * toggles the brief uses, since both come from the same settings object.
+ *
+ * `hasKnowledgeSourceContext` mirrors buildContentBriefOutputSchema's own
+ * parameter of the same name — a runtime fact (whether buildPrompt was
+ * actually given supplied-source context), not a user-facing toggle.
  */
-export function buildLongFormOutputSchema(sections: ContentBriefSections, draftOptions: ContentDraftOptions) {
+export function buildLongFormOutputSchema(sections: ContentBriefSections, draftOptions: ContentDraftOptions, hasKnowledgeSourceContext?: boolean) {
   const shape: Record<string, zv4.ZodTypeAny> = { ...BASE_LONG_FORM_SHAPE };
 
   if (sections.conclusion) shape.conclusion = zv4.string();
@@ -33,6 +37,7 @@ export function buildLongFormOutputSchema(sections: ContentBriefSections, draftO
   if (draftOptions.featuredImagePrompt) shape.featuredImagePrompt = zv4.string();
   if (draftOptions.socialSnippets) shape.socialSnippets = zv4.array(zv4.string());
   if (draftOptions.excerpt) shape.excerpt = zv4.string();
+  if (hasKnowledgeSourceContext) shape.sourcesReferenced = zv4.array(sourceReferenceSchema);
 
   return zv4.object(shape);
 }

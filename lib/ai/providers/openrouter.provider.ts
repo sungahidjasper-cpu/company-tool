@@ -54,6 +54,14 @@ export function classifyError(error: unknown): LlmProviderError {
     const status = error.status;
     let type: LlmErrorType = "UNKNOWN";
     if (status === 401 || status === 403) type = "AUTHENTICATION_ERROR";
+    // OpenRouter's documented status for "account or API key has insufficient
+    // credits" — https://openrouter.ai/docs error codes. Distinct from the
+    // RateLimitError branch above, which only ever fires for a 429; a 402
+    // arrives as a plain APIError and previously fell through every branch
+    // to UNKNOWN, hiding a real, actionable "add credits" failure behind the
+    // generic unclassified error (confirmed live: a 402 "requires more
+    // credits" response was misreported as UNKNOWN).
+    else if (status === 402) type = "INSUFFICIENT_CREDITS";
     else if (status === 404) type = "MODEL_UNAVAILABLE"; // Phase 20 — the underlying model OPENROUTER_MODEL names is unknown/no longer routed.
     else if (status === 400 || status === 422) type = "INVALID_REQUEST";
     else if (status !== undefined && status >= 500) type = "SERVICE_UNAVAILABLE";

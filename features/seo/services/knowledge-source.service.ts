@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { isUuid } from "@/lib/utils";
+import { checkLinkHealth } from "@/features/seo/services/website-crawler.service";
 
 export async function getKnowledgeSourceById(id: string) {
   if (!isUuid(id)) return null;
@@ -37,6 +38,25 @@ export function listKnowledgeSourceLinksForSeoProject(seoProjectId: string) {
       createdBy: { select: { id: true, firstName: true, lastName: true } },
     },
   });
+}
+
+export type KnowledgeSourceVerificationResult = { verified: true } | { verified: false; reason: string };
+
+/**
+ * Phase 30 Stage 6 — reuses website-crawler.service.ts's existing
+ * checkLinkHealth exactly as-is (same HEAD-first/GET-fallback,
+ * 8s-timeout, ≤5-redirect-hop mechanism already relied on by
+ * seo-issue-detection.service.ts) rather than building a second
+ * link-checking implementation. Deliberately returns only a verified/
+ * reason signal — never the response body, never fetched content —
+ * so this stays a pure freshness check, not a step toward ingestion.
+ */
+export async function verifyKnowledgeSourceUrl(url: string): Promise<KnowledgeSourceVerificationResult> {
+  const result = await checkLinkHealth(url);
+  if (result.broken) {
+    return { verified: false, reason: result.status ? `The URL returned an error (status ${result.status}).` : "The URL could not be reached." };
+  }
+  return { verified: true };
 }
 
 /** Case-insensitive, whitespace-normalized comparison — mirrors the CSV-import dedupe normalization already used elsewhere in this feature (e.g. keyword-cluster matching). */

@@ -22,6 +22,7 @@ import {
   getKnowledgeSourceById,
   listKnowledgeSourceLinksForSeoProject,
   listKnowledgeSources,
+  verifyKnowledgeSourceUrl,
 } from "@/features/seo/services/knowledge-source.service";
 
 async function getOwnedKnowledgeSource(id: string, companyId: string) {
@@ -169,6 +170,49 @@ export async function restoreKnowledgeSource(id: string): Promise<ActionResult> 
   await logActivity({
     actorId: actor.id,
     action: "knowledge_source.restored",
+    companyId: actor.companyId,
+    metadata: { knowledgeSourceId: id },
+  });
+
+  revalidatePath("/seo");
+  return actionSuccess();
+}
+
+/**
+ * Phase 30 Stage 6 — manual, on-demand freshness check. Never overwrites
+ * lastVerifiedAt on a failed check — that field means "the system
+ * successfully verified this URL at this time," not "the URL was
+ * checked." Allowed on an archived source, same as updateKnowledgeSource
+ * — archiving doesn't currently gate any other mutation on this model,
+ * and inventing that restriction here would be a new state rule this
+ * stage isn't scoped to add.
+ */
+export async function verifyKnowledgeSourceFreshness(id: string): Promise<ActionResult> {
+  const actor = await requireUser();
+
+  if (!Permissions.manageSeoProjects(actor.role)) {
+    return actionError("You do not have permission to verify knowledge sources.");
+  }
+
+  const existing = await getOwnedKnowledgeSource(id, actor.companyId);
+  if (!existing) {
+    return actionError("Knowledge source not found.");
+  }
+
+  if (!existing.url) {
+    return actionError("This knowledge source has no URL to verify.");
+  }
+
+  const result = await verifyKnowledgeSourceUrl(existing.url);
+  if (!result.verified) {
+    return actionError(result.reason);
+  }
+
+  await prisma.knowledgeSource.update({ where: { id }, data: { lastVerifiedAt: new Date() } });
+
+  await logActivity({
+    actorId: actor.id,
+    action: "knowledge_source.verified",
     companyId: actor.companyId,
     metadata: { knowledgeSourceId: id },
   });

@@ -8,6 +8,7 @@ vi.mock("@/features/seo/services/knowledge-source.service", () => ({
   listKnowledgeSources: vi.fn(),
   listKnowledgeSourceLinksForSeoProject: vi.fn(),
   findDuplicateKnowledgeSourceByUrl: vi.fn(),
+  verifyKnowledgeSourceUrl: vi.fn(),
 }));
 
 type MockPrisma = {
@@ -39,6 +40,7 @@ import {
   getKnowledgeSourceById,
   listKnowledgeSourceLinksForSeoProject,
   listKnowledgeSources,
+  verifyKnowledgeSourceUrl,
 } from "@/features/seo/services/knowledge-source.service";
 import {
   archiveKnowledgeSource,
@@ -49,6 +51,7 @@ import {
   restoreKnowledgeSource,
   unlinkKnowledgeSource,
   updateKnowledgeSource,
+  verifyKnowledgeSourceFreshness,
 } from "@/features/seo/actions/knowledge-source.actions";
 
 const mockedRequireUser = requireUser as unknown as ReturnType<typeof vi.fn>;
@@ -59,6 +62,7 @@ const mockedGetKnowledgeSourceById = getKnowledgeSourceById as unknown as Return
 const mockedListKnowledgeSources = listKnowledgeSources as unknown as ReturnType<typeof vi.fn>;
 const mockedListKnowledgeSourceLinksForSeoProject = listKnowledgeSourceLinksForSeoProject as unknown as ReturnType<typeof vi.fn>;
 const mockedFindDuplicateKnowledgeSourceByUrl = findDuplicateKnowledgeSourceByUrl as unknown as ReturnType<typeof vi.fn>;
+const mockedVerifyKnowledgeSourceUrl = verifyKnowledgeSourceUrl as unknown as ReturnType<typeof vi.fn>;
 
 const COMPANY_A = "company-a";
 const COMPANY_B = "company-b";
@@ -516,5 +520,116 @@ describe("listKnowledgeSourceLinksForSeoProjectAction", () => {
     mockedListKnowledgeSourceLinksForSeoProject.mockResolvedValue(links);
     const result = await listKnowledgeSourceLinksForSeoProjectAction("seo-project-1");
     expect(result).toEqual({ success: true, data: links });
+  });
+});
+
+describe("verifyKnowledgeSourceFreshness", () => {
+  beforeEach(() => {
+    mockedGetKnowledgeSourceById.mockResolvedValue(makeSource({ url: "https://developers.google.com/search" }));
+    mockedVerifyKnowledgeSourceUrl.mockResolvedValue({ verified: true });
+    mockedPrisma.knowledgeSource.update.mockResolvedValue(makeSource());
+  });
+
+  it("1. denies an EMPLOYEE without looking up the source", async () => {
+    mockedRequireUser.mockResolvedValue(EMPLOYEE);
+    const result = await verifyKnowledgeSourceFreshness("source-1");
+    expect(result.success).toBe(false);
+    expect(mockedGetKnowledgeSourceById).not.toHaveBeenCalled();
+    expect(mockedVerifyKnowledgeSourceUrl).not.toHaveBeenCalled();
+  });
+
+  it("2. rejects when the source does not exist, without verifying or mutating", async () => {
+    mockedGetKnowledgeSourceById.mockResolvedValue(null);
+    const result = await verifyKnowledgeSourceFreshness("source-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Knowledge source not found.");
+    expect(mockedVerifyKnowledgeSourceUrl).not.toHaveBeenCalled();
+    expect(mockedPrisma.knowledgeSource.update).not.toHaveBeenCalled();
+  });
+
+  it("3. [CRITICAL] rejects a cross-company source with the same generic not-found message, without verifying or mutating", async () => {
+    mockedGetKnowledgeSourceById.mockResolvedValue(makeSource({ companyId: COMPANY_B, url: "https://example.com" }));
+    const result = await verifyKnowledgeSourceFreshness("source-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Knowledge source not found.");
+    expect(mockedVerifyKnowledgeSourceUrl).not.toHaveBeenCalled();
+    expect(mockedPrisma.knowledgeSource.update).not.toHaveBeenCalled();
+  });
+
+  it("4. rejects a source with no URL, without calling the verification service or mutating", async () => {
+    mockedGetKnowledgeSourceById.mockResolvedValue(makeSource({ url: null }));
+    const result = await verifyKnowledgeSourceFreshness("source-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("This knowledge source has no URL to verify.");
+    expect(mockedVerifyKnowledgeSourceUrl).not.toHaveBeenCalled();
+    expect(mockedPrisma.knowledgeSource.update).not.toHaveBeenCalled();
+  });
+
+  it("5. allows verification on an archived source (same as updateKnowledgeSource's existing behavior)", async () => {
+    mockedGetKnowledgeSourceById.mockResolvedValue(makeSource({ deletedAt: new Date(), url: "https://example.com" }));
+    const result = await verifyKnowledgeSourceFreshness("source-1");
+    expect(result.success).toBe(true);
+    expect(mockedPrisma.knowledgeSource.update).toHaveBeenCalled();
+  });
+
+  it("6. [CRITICAL] passes the source's exact saved URL to the verification service", async () => {
+    mockedGetKnowledgeSourceById.mockResolvedValue(makeSource({ url: "https://developers.google.com/search/exact" }));
+    await verifyKnowledgeSourceFreshness("source-1");
+    expect(mockedVerifyKnowledgeSourceUrl).toHaveBeenCalledWith("https://developers.google.com/search/exact");
+  });
+
+  it("7. [CRITICAL] updates lastVerifiedAt to now on successful verification", async () => {
+    const before = Date.now();
+    await verifyKnowledgeSourceFreshness("source-1");
+    const [{ where, data }] = mockedPrisma.knowledgeSource.update.mock.calls[0];
+    expect(where).toEqual({ id: "source-1" });
+    expect(data.lastVerifiedAt).toBeInstanceOf(Date);
+    expect((data.lastVerifiedAt as Date).getTime()).toBeGreaterThanOrEqual(before);
+  });
+
+  it("8. never touches url, title, description, content, or sourceType on success", async () => {
+    await verifyKnowledgeSourceFreshness("source-1");
+    const [{ data }] = mockedPrisma.knowledgeSource.update.mock.calls[0];
+    expect(Object.keys(data)).toEqual(["lastVerifiedAt"]);
+  });
+
+  it("9. [CRITICAL] does NOT update lastVerifiedAt (no mutation at all) when verification fails", async () => {
+    mockedVerifyKnowledgeSourceUrl.mockResolvedValue({ verified: false, reason: "The URL returned an error (status 404)." });
+    const result = await verifyKnowledgeSourceFreshness("source-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("The URL returned an error (status 404).");
+    expect(mockedPrisma.knowledgeSource.update).not.toHaveBeenCalled();
+  });
+
+  it("10. does not log activity or revalidate when verification fails", async () => {
+    mockedVerifyKnowledgeSourceUrl.mockResolvedValue({ verified: false, reason: "The URL could not be reached." });
+    await verifyKnowledgeSourceFreshness("source-1");
+    expect(mockedLogActivity).not.toHaveBeenCalled();
+    expect(mockedRevalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("11. logs knowledge_source.verified and revalidates /seo on success", async () => {
+    await verifyKnowledgeSourceFreshness("source-1");
+    expect(mockedLogActivity).toHaveBeenCalledWith({
+      actorId: MANAGER.id,
+      action: "knowledge_source.verified",
+      companyId: COMPANY_A,
+      metadata: { knowledgeSourceId: "source-1" },
+    });
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/seo");
+  });
+
+  it("12. [CRITICAL] scopes ownership to the ACTING user's own company — a different actor's company is what gates access, never a client-supplied value", async () => {
+    const actorB = { id: "user-3", role: "MANAGER", companyId: COMPANY_B };
+    mockedRequireUser.mockResolvedValue(actorB);
+    mockedGetKnowledgeSourceById.mockResolvedValue(makeSource({ companyId: COMPANY_A, url: "https://example.com" }));
+    const result = await verifyKnowledgeSourceFreshness("source-1");
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.knowledgeSource.update).not.toHaveBeenCalled();
+  });
+
+  it("13. returns a plain success result on success", async () => {
+    const result = await verifyKnowledgeSourceFreshness("source-1");
+    expect(result).toEqual({ success: true, data: undefined });
   });
 });

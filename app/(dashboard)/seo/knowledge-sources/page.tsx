@@ -15,7 +15,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { archiveKnowledgeSource, restoreKnowledgeSource } from "@/features/seo/actions/knowledge-source.actions";
+import {
+  archiveKnowledgeSource,
+  restoreKnowledgeSource,
+  verifyKnowledgeSourceFreshness,
+} from "@/features/seo/actions/knowledge-source.actions";
 import { listKnowledgeSources } from "@/features/seo/services/knowledge-source.service";
 import { requireUser } from "@/lib/auth";
 import { Permissions } from "@/lib/authorization";
@@ -86,6 +90,7 @@ export default async function KnowledgeSourcesPage({ searchParams }: KnowledgeSo
                 <TableHead>Type</TableHead>
                 <TableHead>URL</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Last verified</TableHead>
                 {canManage && <TableHead className="text-right">Actions</TableHead>}
               </TableRow>
             </TableHeader>
@@ -114,25 +119,38 @@ export default async function KnowledgeSourcesPage({ searchParams }: KnowledgeSo
                   <TableCell>
                     <StatusBadge status={source.deletedAt ? "ARCHIVED" : "ACTIVE"} />
                   </TableCell>
+                  <TableCell className="text-slate-500">
+                    {source.lastVerifiedAt ? source.lastVerifiedAt.toLocaleString() : "Never verified"}
+                  </TableCell>
                   {canManage && (
                     <TableCell className="text-right">
-                      {source.deletedAt ? (
-                        <RecordActionButton
-                          id={source.id}
-                          action={restoreKnowledgeSource}
-                          label="Restore"
-                          successMessage="Knowledge source restored"
-                        />
-                      ) : (
-                        <RecordActionButton
-                          id={source.id}
-                          action={archiveKnowledgeSource}
-                          label="Archive"
-                          variant="destructive"
-                          confirmMessage="Archive this knowledge source?"
-                          successMessage="Knowledge source archived"
-                        />
-                      )}
+                      <div className="flex justify-end gap-2">
+                        {!source.deletedAt && source.url && (
+                          <RecordActionButton
+                            id={source.id}
+                            action={verifyKnowledgeSourceFreshness}
+                            label="Verify URL"
+                            successMessage="Knowledge source verified"
+                          />
+                        )}
+                        {source.deletedAt ? (
+                          <RecordActionButton
+                            id={source.id}
+                            action={restoreKnowledgeSource}
+                            label="Restore"
+                            successMessage="Knowledge source restored"
+                          />
+                        ) : (
+                          <RecordActionButton
+                            id={source.id}
+                            action={archiveKnowledgeSource}
+                            label="Archive"
+                            variant="destructive"
+                            confirmMessage="Archive this knowledge source?"
+                            successMessage="Knowledge source archived"
+                          />
+                        )}
+                      </div>
                     </TableCell>
                   )}
                 </TableRow>

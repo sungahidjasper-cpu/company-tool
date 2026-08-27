@@ -11,15 +11,19 @@ function createMockPrisma(): MockPrisma {
 }
 
 vi.mock("@/lib/prisma", () => ({ prisma: createMockPrisma() }));
+vi.mock("@/features/seo/services/website-crawler.service", () => ({ checkLinkHealth: vi.fn() }));
 
 import { prisma } from "@/lib/prisma";
+import { checkLinkHealth } from "@/features/seo/services/website-crawler.service";
 import {
   findDuplicateKnowledgeSourceByUrl,
   getKnowledgeSourceById,
   listKnowledgeSources,
+  verifyKnowledgeSourceUrl,
 } from "@/features/seo/services/knowledge-source.service";
 
 const mockedPrisma = prisma as unknown as MockPrisma;
+const mockedCheckLinkHealth = checkLinkHealth as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -94,5 +98,31 @@ describe("findDuplicateKnowledgeSourceByUrl", () => {
     await findDuplicateKnowledgeSourceByUrl("company-a", "https://example.com/docs");
     const [{ where }] = mockedPrisma.knowledgeSource.findMany.mock.calls[0];
     expect(where.companyId).toBe("company-a");
+  });
+});
+
+describe("verifyKnowledgeSourceUrl", () => {
+  it("1. [Phase 30 Stage 6] reports verified when checkLinkHealth returns broken: false", async () => {
+    mockedCheckLinkHealth.mockResolvedValue({ url: "https://example.com", finalUrl: "https://example.com", status: 200, redirectCount: 0, broken: false });
+    const result = await verifyKnowledgeSourceUrl("https://example.com");
+    expect(result).toEqual({ verified: true });
+  });
+
+  it("2. reports not verified, with the response status in the reason, when checkLinkHealth returns broken: true with a status", async () => {
+    mockedCheckLinkHealth.mockResolvedValue({ url: "https://example.com", finalUrl: "https://example.com", status: 404, redirectCount: 0, broken: true });
+    const result = await verifyKnowledgeSourceUrl("https://example.com");
+    expect(result).toEqual({ verified: false, reason: "The URL returned an error (status 404)." });
+  });
+
+  it("3. reports not verified with an unreachable-URL reason when checkLinkHealth returns broken: true with no status (network failure)", async () => {
+    mockedCheckLinkHealth.mockResolvedValue({ url: "https://example.com", finalUrl: "https://example.com", status: null, redirectCount: 0, broken: true });
+    const result = await verifyKnowledgeSourceUrl("https://example.com");
+    expect(result).toEqual({ verified: false, reason: "The URL could not be reached." });
+  });
+
+  it("4. [CRITICAL] calls checkLinkHealth with the exact supplied URL — never a modified/canonicalized one", async () => {
+    mockedCheckLinkHealth.mockResolvedValue({ url: "https://example.com/exact-path", finalUrl: "https://example.com/exact-path", status: 200, redirectCount: 0, broken: false });
+    await verifyKnowledgeSourceUrl("https://example.com/exact-path");
+    expect(mockedCheckLinkHealth).toHaveBeenCalledWith("https://example.com/exact-path");
   });
 });

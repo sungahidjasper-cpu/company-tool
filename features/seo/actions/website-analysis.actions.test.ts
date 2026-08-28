@@ -100,6 +100,53 @@ describe("startWebsiteAnalysisAction", () => {
     const result = await startWebsiteAnalysisAction({ domain: "acme.example" });
     expect(result).toEqual({ success: true, data: { id: "new-job-1" } });
   });
+
+  it("7. [characterization — documents current production behavior] a seoProjectId belonging to another company is accepted without any tenant validation, because none exists in production", async () => {
+    const result = await startWebsiteAnalysisAction({ domain: "acme.example", seoProjectId: "seo-from-company-b" });
+    expect(result.success).toBe(true);
+    expect(mockedStartWebsiteAnalysis).toHaveBeenCalledWith(
+      expect.objectContaining({ companyId: MANAGER.companyId, seoProjectId: "seo-from-company-b" })
+    );
+  });
+
+  it("8. [characterization — documents current production behavior] a clientId belonging to another company is accepted without any tenant validation, because none exists in production", async () => {
+    const result = await startWebsiteAnalysisAction({ domain: "acme.example", clientId: "client-from-company-b" });
+    expect(result.success).toBe(true);
+    expect(mockedStartWebsiteAnalysis).toHaveBeenCalledWith(
+      expect.objectContaining({ companyId: MANAGER.companyId, clientId: "client-from-company-b" })
+    );
+  });
+
+  it("9. a matching-company seoProjectId/clientId combination succeeds identically — the action takes no different path for it than for the untrusted values above, because it never distinguishes them", async () => {
+    const result = await startWebsiteAnalysisAction({
+      domain: "acme.example",
+      seoProjectId: "seo-belonging-to-company-a",
+      clientId: "client-belonging-to-company-a",
+    });
+    expect(result.success).toBe(true);
+    expect(mockedStartWebsiteAnalysis).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: MANAGER.companyId,
+        seoProjectId: "seo-belonging-to-company-a",
+        clientId: "client-belonging-to-company-a",
+      })
+    );
+  });
+
+  it("10. [characterization] the exact payload forwarded to startWebsiteAnalysis for an untrusted seoProjectId/clientId is identical in shape to a same-company call — no separate ownership-verification field, flag, or lookup result is threaded through", async () => {
+    await startWebsiteAnalysisAction({
+      domain: "acme.example",
+      seoProjectId: "seo-from-company-b",
+      clientId: "client-from-company-b",
+    });
+    expect(mockedStartWebsiteAnalysis).toHaveBeenCalledWith({
+      companyId: MANAGER.companyId,
+      domain: "acme.example",
+      seoProjectId: "seo-from-company-b",
+      clientId: "client-from-company-b",
+    });
+    expect(mockedStartWebsiteAnalysis).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("getWebsiteAnalysisJobAction", () => {

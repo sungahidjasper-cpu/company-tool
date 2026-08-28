@@ -295,6 +295,24 @@ describe("updateContent", () => {
       );
     });
   });
+
+  describe("2. the transaction's own row-locked re-fetch returning null (content deleted between the outer check and the lock) is handled without mutating anything", () => {
+    it("returns 'Content not found.' without calling content.update or contentRevision.create", async () => {
+      // First call satisfies the outer getContentWithProject preflight check;
+      // the second call is the transaction's own re-fetch under the row lock —
+      // documents the existing defensive behavior for that race window, not a
+      // claim that this is the only possible way to handle it.
+      mockedPrisma.content.findUnique
+        .mockResolvedValueOnce(makeExistingContent())
+        .mockResolvedValueOnce(null);
+
+      const result = await updateContent("content-1", makeInput({ title: "New Title" }));
+
+      expect(result).toEqual({ success: false, message: "Content not found." });
+      expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+      expect(mockedPrisma.contentRevision.create).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("getContentDeletionImpact", () => {

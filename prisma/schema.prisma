@@ -155,6 +155,12 @@ enum AiGenerationJobStatus {
   RUNNING
   SUCCEEDED
   FAILED
+  /// Phase 30 Stage 10 — a soft, user-initiated cancel. Does not abort an
+  /// in-flight provider HTTP call (the runner has no way to do that yet);
+  /// it marks the row so the UI/duplicate-detection stop treating it as
+  /// active, and markAiGenerationJobSucceeded/Failed refuse to overwrite a
+  /// job once it's in this state (see ai-generation-job-table.ts).
+  CANCELLED
 }
 
 enum ReportType {

@@ -1,4 +1,4 @@
-import type { Prisma, WebsiteAnalysisErrorType } from "@/lib/generated/prisma/client";
+import type { AiTaskType, Prisma, WebsiteAnalysisErrorType } from "@/lib/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { describeLlmError, LlmProviderError } from "@/lib/ai/providers/errors";
 import type { StreamEvent } from "@/lib/ai/providers/types";
@@ -122,6 +122,98 @@ function createStreamingHandler(jobId: string): ((event: StreamEvent) => void) |
   };
 }
 
+type DispatchJob = { taskType: string; inputJson: unknown; companyId: string };
+type TaskHandler = (job: DispatchJob, onChunk?: (event: StreamEvent) => void) => Promise<Prisma.InputJsonValue>;
+
+async function dispatchContentBrief(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const parsed = validateContentBriefJobInput(job.inputJson);
+  if (!parsed.success) throw new Error(parsed.message);
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
+  if (!seoProject) throw new Error("SEO project not found.");
+  const keyword = await loadKeyword(parsed.data.keywordId);
+
+  const brief = await generateContentBrief(
+    {
+      seoProjectId: seoProject.id,
+      companyId: job.companyId,
+      seoProjectName: seoProject.name,
+      domain: seoProject.domain,
+      contentType: parsed.data.contentType,
+      keyword,
+      notes: parsed.data.notes,
+      settings: parsed.data.settings,
+    },
+    onChunk
+  );
+  return brief as unknown as Prisma.InputJsonValue;
+}
+
+async function dispatchContentDraft(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const parsed = validateLongFormJobInput(job.inputJson);
+  if (!parsed.success) throw new Error(parsed.message);
+
+  if (parsed.data.mode === "fromContent") {
+    const content = await prisma.content.findUnique({
+      where: { id: parsed.data.contentId },
+      include: { seoProject: { select: { id: true, name: true, domain: true } }, keywords: { select: { term: true, intent: true } } },
+    });
+    if (!content) throw new Error("Content not found.");
+    const brief = buildBriefFromContentRow(content);
+    if (!brief) throw new Error("This content has no saved brief to generate an article from.");
+    const firstKeyword = content.keywords[0];
+    const keyword = firstKeyword ? { term: firstKeyword.term, intent: firstKeyword.intent } : null;
+
+    const article = await generateLongFormContent(
+      {
+        seoProjectId: content.seoProject.id,
+        companyId: job.companyId,
+        seoProjectName: content.seoProject.name,
+        domain: content.seoProject.domain,
+        brief,
+        keyword,
+        settings: readBriefSettingsFromContentRow(content.aiBriefDetails),
+      },
+      onChunk
+    );
+    return article as unknown as Prisma.InputJsonValue;
+  }
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
+  if (!seoProject) throw new Error("SEO project not found.");
+  const keyword = await loadKeyword(parsed.data.keywordId);
+
+  const article = await generateLongFormContent(
+    {
+      seoProjectId: seoProject.id,
+      companyId: job.companyId,
+      seoProjectName: seoProject.name,
+      domain: seoProject.domain,
+      brief: parsed.data.brief,
+      keyword,
+      settings: parsed.data.settings,
+    },
+    onChunk
+  );
+  return article as unknown as Prisma.InputJsonValue;
+}
+
+/**
+ * Phase 30 Stage 10 — a per-taskType lookup table replacing what used to be
+ * a hardcoded if/else chain in dispatch() below. Behavior for CONTENT_BRIEF
+ * and CONTENT_DRAFT is unchanged (dispatchContentBrief/dispatchContentDraft
+ * are exactly those two branches' original bodies, moved, not rewritten —
+ * see ai-generation-job-runner.test.ts, which pins this down); the only
+ * thing this buys is that a future AI Workspace tool adds one enum value
+ * and one entry here instead of growing this if/else further. RECOMMENDATIONS
+ * and CONTENT_INTELLIGENCE (Website Analysis's own AiTaskType values) are
+ * deliberately absent — those are never dispatched through AiGenerationJob.
+ */
+const TASK_HANDLERS: Partial<Record<AiTaskType, TaskHandler>> = {
+  CONTENT_BRIEF: dispatchContentBrief,
+  CONTENT_DRAFT: dispatchContentDraft,
+};
+
 /**
  * Dispatches a job to the existing, UNCHANGED generation service functions
  * — generateContentBrief/generateLongFormContent are called with exactly
@@ -133,84 +225,10 @@ function createStreamingHandler(jobId: string): ((event: StreamEvent) => void) |
  * dispatcher only re-validates the job's *shape*, not who's allowed to see
  * it, matching the "thin dispatcher, no new business logic" design.
  */
-async function dispatch(
-  job: { taskType: string; inputJson: unknown; companyId: string },
-  onChunk?: (event: StreamEvent) => void
-): Promise<Prisma.InputJsonValue> {
-  if (job.taskType === "CONTENT_BRIEF") {
-    const parsed = validateContentBriefJobInput(job.inputJson);
-    if (!parsed.success) throw new Error(parsed.message);
-
-    const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
-    if (!seoProject) throw new Error("SEO project not found.");
-    const keyword = await loadKeyword(parsed.data.keywordId);
-
-    const brief = await generateContentBrief(
-      {
-        seoProjectId: seoProject.id,
-        companyId: job.companyId,
-        seoProjectName: seoProject.name,
-        domain: seoProject.domain,
-        contentType: parsed.data.contentType,
-        keyword,
-        notes: parsed.data.notes,
-        settings: parsed.data.settings,
-      },
-      onChunk
-    );
-    return brief as unknown as Prisma.InputJsonValue;
-  }
-
-  if (job.taskType === "CONTENT_DRAFT") {
-    const parsed = validateLongFormJobInput(job.inputJson);
-    if (!parsed.success) throw new Error(parsed.message);
-
-    if (parsed.data.mode === "fromContent") {
-      const content = await prisma.content.findUnique({
-        where: { id: parsed.data.contentId },
-        include: { seoProject: { select: { id: true, name: true, domain: true } }, keywords: { select: { term: true, intent: true } } },
-      });
-      if (!content) throw new Error("Content not found.");
-      const brief = buildBriefFromContentRow(content);
-      if (!brief) throw new Error("This content has no saved brief to generate an article from.");
-      const firstKeyword = content.keywords[0];
-      const keyword = firstKeyword ? { term: firstKeyword.term, intent: firstKeyword.intent } : null;
-
-      const article = await generateLongFormContent(
-        {
-          seoProjectId: content.seoProject.id,
-          companyId: job.companyId,
-          seoProjectName: content.seoProject.name,
-          domain: content.seoProject.domain,
-          brief,
-          keyword,
-          settings: readBriefSettingsFromContentRow(content.aiBriefDetails),
-        },
-        onChunk
-      );
-      return article as unknown as Prisma.InputJsonValue;
-    }
-
-    const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
-    if (!seoProject) throw new Error("SEO project not found.");
-    const keyword = await loadKeyword(parsed.data.keywordId);
-
-    const article = await generateLongFormContent(
-      {
-        seoProjectId: seoProject.id,
-        companyId: job.companyId,
-        seoProjectName: seoProject.name,
-        domain: seoProject.domain,
-        brief: parsed.data.brief,
-        keyword,
-        settings: parsed.data.settings,
-      },
-      onChunk
-    );
-    return article as unknown as Prisma.InputJsonValue;
-  }
-
-  throw new Error(`Unsupported task type for background generation: ${job.taskType}`);
+async function dispatch(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const handler = TASK_HANDLERS[job.taskType as AiTaskType];
+  if (!handler) throw new Error(`Unsupported task type for background generation: ${job.taskType}`);
+  return handler(job, onChunk);
 }
 
 /**

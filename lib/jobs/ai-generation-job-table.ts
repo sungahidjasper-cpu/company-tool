@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { AiTaskType, Prisma, WebsiteAnalysisErrorType } from "@/lib/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
+import { isUuid } from "@/lib/utils";
 
 /**
  * Job-row helpers for AiGenerationJob — the Phase 18 background-job
@@ -58,7 +59,18 @@ export function createAiGenerationJob(input: {
   });
 }
 
+/**
+ * Phase 30 Stage 10 live-verification finding — `id` is now reachable from a
+ * user-editable `?jobId=` URL query param (the refresh-recovery feature),
+ * not just a server-minted value, so it must be validated before ever
+ * reaching a `@db.Uuid` column: Prisma throws a raw, unhandled type error
+ * for a non-UUID string rather than returning null, the same class of bug
+ * seo-project.service.ts's and knowledge-source.service.ts's own isUuid
+ * guards already exist to prevent. A malformed id is exactly "not found,"
+ * same as one that's simply never existed.
+ */
 export function getAiGenerationJob(id: string) {
+  if (!isUuid(id)) return Promise.resolve(null);
   return prisma.aiGenerationJob.findUnique({ where: { id } });
 }
 
@@ -94,6 +106,24 @@ export function updateAiGenerationJobProgress(id: string, progress: number) {
 }
 
 /**
+ * Phase 30 Stage 10 — a soft cancel: marks a still-active job CANCELLED so
+ * the UI stops polling it and findActiveAiGenerationJob no longer treats it
+ * as in-flight for duplicate-detection. Scoped to the owning company and to
+ * PENDING/RUNNING only — cancelling a job that already finished (or was
+ * already cancelled) is a no-op, reported via the returned count rather than
+ * throwing. Does NOT abort whatever provider call is actually in flight;
+ * see markAiGenerationJobSucceeded/Failed below for how a late-arriving
+ * result from that call is prevented from overwriting the cancellation.
+ */
+export function cancelAiGenerationJob(id: string, companyId: string) {
+  if (!isUuid(id)) return Promise.resolve({ count: 0 });
+  return prisma.aiGenerationJob.updateMany({
+    where: { id, companyId, status: { in: ["PENDING", "RUNNING"] } },
+    data: { status: "CANCELLED" },
+  });
+}
+
+/**
  * Phase 22 — throttle-written by the runner while a streaming generation is
  * RUNNING. `partialResultText: null` is a real, meaningful write (not a
  * no-op): it's how the runner signals a same-provider retry or cross-
@@ -103,23 +133,40 @@ export function updateAiGenerationJobProgress(id: string, progress: number) {
  * the next attempt's. Presentation-only — never read by anything that
  * treats it as a validated or final result.
  */
+/**
+ * Phase 30 Stage 10 — guarded to RUNNING only, same reasoning as
+ * markAiGenerationJobSucceeded/Failed below: a job the user has already
+ * cancelled must not have its partial-text preview resurrected by a
+ * still-in-flight streaming write that hasn't noticed yet.
+ */
 export function updateAiGenerationJobPartialText(id: string, partialResultText: string | null, progress?: number) {
-  return prisma.aiGenerationJob.update({
-    where: { id },
+  return prisma.aiGenerationJob.updateMany({
+    where: { id, status: "RUNNING" },
     data: progress === undefined ? { partialResultText } : { partialResultText, progress },
   });
 }
 
+/**
+ * Phase 30 Stage 10 — updateMany with a `status: "RUNNING"` guard, not
+ * update(): the runner has no way to abort an in-flight provider call once
+ * cancelAiGenerationJob has marked a job CANCELLED, so that call's eventual
+ * result can still arrive here. Without this guard it would silently flip
+ * the job back to SUCCEEDED, contradicting the cancellation and (via Stage
+ * 10's refresh-recovery) potentially surfacing that stale result to a user
+ * who already navigated away. A cancelled/already-terminal job simply
+ * matches zero rows and this becomes a no-op.
+ */
 export function markAiGenerationJobSucceeded(id: string, resultJson: Prisma.InputJsonValue) {
-  return prisma.aiGenerationJob.update({
-    where: { id },
+  return prisma.aiGenerationJob.updateMany({
+    where: { id, status: "RUNNING" },
     data: { status: "SUCCEEDED", progress: 100, resultJson },
   });
 }
 
+/** Phase 30 Stage 10 — same RUNNING guard as markAiGenerationJobSucceeded above, for the same reason. */
 export function markAiGenerationJobFailed(id: string, errorMessage: string, errorType?: WebsiteAnalysisErrorType) {
-  return prisma.aiGenerationJob.update({
-    where: { id },
+  return prisma.aiGenerationJob.updateMany({
+    where: { id, status: "RUNNING" },
     data: { status: "FAILED", errorMessage, errorType },
   });
 }

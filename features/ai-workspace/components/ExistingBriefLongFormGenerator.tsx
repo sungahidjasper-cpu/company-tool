@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
+import { cancelAiGenerationJobAction, getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import { startLongFormGenerationAction, updateLongFormContentAction } from "@/features/ai-workspace/actions/long-form-content.actions";
 import LongFormContentReview, { type LongFormDraftExtras, type LongFormEditableFields } from "@/features/ai-workspace/components/LongFormContentReview";
+import { validateLongFormJobInput } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 import type { InternalLinkSuggestion } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import type { ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { formatLongFormContentAsMarkdown, longFormContentOutputSchema } from "@/features/ai-workspace/schemas/long-form-content.schema";
@@ -44,6 +45,8 @@ export default function ExistingBriefLongFormGenerator({
   settings,
 }: ExistingBriefLongFormGeneratorProps) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [longFormFields, setLongFormFields] = useState<LongFormEditableFields | null>(null);
   const [linkSuggestions, setLinkSuggestions] = useState<InternalLinkSuggestion[]>([]);
   const [draftExtras, setDraftExtras] = useState<LongFormDraftExtras | undefined>(undefined);
@@ -68,6 +71,42 @@ export default function ExistingBriefLongFormGenerator({
   // layered beneath the char-count line above; never a source of truth.
   const [previewFields, setPreviewFields] = useState<Record<string, JsonValue> | null>(null);
   const streamRef = useRef<EventSource | null>(null);
+
+  /** Phase 30 Stage 10 — same refresh-recovery/cancel mechanism as ContentBriefPicker.tsx; see that file's identical field for the full rationale. */
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+
+  function setActiveJob(jobId: string | null) {
+    setActiveJobId(jobId);
+    const params = new URLSearchParams(searchParams.toString());
+    if (jobId) params.set("jobId", jobId);
+    else params.delete("jobId");
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }
+
+  /** Shared by runGenerate's poll success handler and resumeJob — no state dependency, so no stale-closure risk. */
+  function applyResult(resultJson: unknown) {
+    const parsed = longFormContentOutputSchema.safeParse(resultJson);
+    if (!parsed.success) {
+      setErrorType(null);
+      setError("Received an unexpected result — please try regenerating.");
+      return;
+    }
+    setLinkSuggestions(parsed.data.internalLinkPlacementSuggestions);
+    setDraftExtras({
+      imagePlaceholders: parsed.data.imagePlaceholders,
+      altTextSuggestions: parsed.data.altTextSuggestions,
+      featuredImagePrompt: parsed.data.featuredImagePrompt,
+      socialSnippets: parsed.data.socialSnippets,
+      excerpt: parsed.data.excerpt,
+    });
+    setLongFormFields({
+      title,
+      metaTitle,
+      metaDescription,
+      body: formatLongFormContentAsMarkdown(parsed.data, settings.sections.cta ? settings.cta : undefined),
+    });
+  }
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
@@ -123,6 +162,46 @@ export default function ExistingBriefLongFormGenerator({
     source.onerror = () => source.close();
   }
 
+  /** Phase 30 Stage 10 — factored out of runGenerate so resumeJob below can share the exact same polling behavior. */
+  function pollGenerationJob(jobId: string, onSucceeded: (resultJson: unknown) => void, onSettled: () => void) {
+    if (pollRef.current) clearInterval(pollRef.current);
+    const startedAt = Date.now();
+
+    pollRef.current = setInterval(async () => {
+      if (Date.now() - startedAt > MAX_POLL_MS) {
+        if (pollRef.current) clearInterval(pollRef.current);
+        onSettled();
+        setErrorType(null);
+        setError("This is taking longer than expected. Please check back shortly or try again.");
+        return;
+      }
+
+      const poll = await getAiGenerationJobAction(jobId);
+      if (!poll.success) {
+        if (pollRef.current) clearInterval(pollRef.current);
+        onSettled();
+        setErrorType(null);
+        setError(poll.message);
+        return;
+      }
+      if (!poll.data) return;
+
+      if (poll.data.status === "FAILED") {
+        if (pollRef.current) clearInterval(pollRef.current);
+        onSettled();
+        setErrorType(poll.data.errorType);
+        setError(poll.data.errorMessage ?? "Generation failed.");
+        return;
+      }
+
+      if (poll.data.status === "SUCCEEDED") {
+        if (pollRef.current) clearInterval(pollRef.current);
+        onSettled();
+        onSucceeded(poll.data.resultJson);
+      }
+    }, POLL_INTERVAL_MS);
+  }
+
   async function runGenerate() {
     setError(null);
     setErrorType(null);
@@ -136,65 +215,77 @@ export default function ExistingBriefLongFormGenerator({
       return;
     }
 
+    setActiveJob(result.data.jobId);
     openGenerationStream(result.data.jobId);
+    pollGenerationJob(result.data.jobId, applyResult, () => {
+      setIsGenerating(false);
+      closeGenerationStream();
+    });
+  }
+
+  /**
+   * Phase 30 Stage 10 — reattaches to the job named in ?jobId=. Guards that
+   * the job actually belongs to THIS content row (mode "fromContent" with a
+   * matching contentId) before touching any state — a stale or manually-
+   * edited jobId param must never resurrect an unrelated generation here.
+   */
+  async function resumeJob(jobId: string) {
+    const poll = await getAiGenerationJobAction(jobId);
+    if (!poll.success || !poll.data || poll.data.taskType !== "CONTENT_DRAFT") {
+      setActiveJob(null);
+      return;
+    }
+    const job = poll.data;
+    const parsedInput = validateLongFormJobInput(job.inputJson);
+    if (!parsedInput.success || parsedInput.data.mode !== "fromContent" || parsedInput.data.contentId !== contentId) {
+      setActiveJob(null);
+      return;
+    }
+    setActiveJobId(jobId);
+
+    if (job.status === "SUCCEEDED") {
+      applyResult(job.resultJson);
+      return;
+    }
+    if (job.status === "FAILED") {
+      setErrorType(job.errorType);
+      setError(job.errorMessage ?? "Generation failed.");
+      return;
+    }
+    if (job.status === "CANCELLED") {
+      return;
+    }
+    setIsGenerating(true);
+    openGenerationStream(jobId);
+    pollGenerationJob(jobId, applyResult, () => {
+      setIsGenerating(false);
+      closeGenerationStream();
+    });
+  }
+
+  useEffect(() => {
+    const resumeJobId = searchParams.get("jobId");
+    if (!resumeJobId) return;
+    // Deferred via setTimeout — see ContentBriefPicker.tsx's identical
+    // comment for why (mirrors this codebase's existing pollJob pattern).
+    const timeoutId = setTimeout(() => {
+      void resumeJob(resumeJobId);
+    }, 0);
+    return () => clearTimeout(timeoutId);
+    // Only on mount — resumeJob itself drives every subsequent state change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Phase 30 Stage 10 — a soft cancel; see cancelAiGenerationJob's comment for exactly what this does and doesn't stop. */
+  async function handleCancel() {
+    if (!activeJobId) return;
+    const jobId = activeJobId;
     if (pollRef.current) clearInterval(pollRef.current);
-    const startedAt = Date.now();
-    pollRef.current = setInterval(async () => {
-      if (Date.now() - startedAt > MAX_POLL_MS) {
-        if (pollRef.current) clearInterval(pollRef.current);
-        setIsGenerating(false);
-        closeGenerationStream();
-        setErrorType(null);
-        setError("This is taking longer than expected. Please check back shortly or try again.");
-        return;
-      }
-
-      const poll = await getAiGenerationJobAction(result.data.jobId);
-      if (!poll.success) {
-        if (pollRef.current) clearInterval(pollRef.current);
-        setIsGenerating(false);
-        closeGenerationStream();
-        setErrorType(null);
-        setError(poll.message);
-        return;
-      }
-      if (!poll.data) return;
-
-      if (poll.data.status === "FAILED") {
-        if (pollRef.current) clearInterval(pollRef.current);
-        setIsGenerating(false);
-        closeGenerationStream();
-        setErrorType(poll.data.errorType);
-        setError(poll.data.errorMessage ?? "Generation failed.");
-        return;
-      }
-
-      if (poll.data.status === "SUCCEEDED") {
-        if (pollRef.current) clearInterval(pollRef.current);
-        setIsGenerating(false);
-        closeGenerationStream();
-        const parsed = longFormContentOutputSchema.safeParse(poll.data.resultJson);
-        if (!parsed.success) {
-          setErrorType(null);
-          setError("Received an unexpected result — please try regenerating.");
-          return;
-        }
-        setLinkSuggestions(parsed.data.internalLinkPlacementSuggestions);
-        setDraftExtras({
-          imagePlaceholders: parsed.data.imagePlaceholders,
-          altTextSuggestions: parsed.data.altTextSuggestions,
-          featuredImagePrompt: parsed.data.featuredImagePrompt,
-          socialSnippets: parsed.data.socialSnippets,
-          excerpt: parsed.data.excerpt,
-        });
-        setLongFormFields({
-          title,
-          metaTitle,
-          metaDescription,
-          body: formatLongFormContentAsMarkdown(parsed.data, settings.sections.cta ? settings.cta : undefined),
-        });
-      }
-    }, POLL_INTERVAL_MS);
+    closeGenerationStream();
+    setIsGenerating(false);
+    setActiveJob(null);
+    await cancelAiGenerationJobAction(jobId);
+    toast.success("Generation cancelled.");
   }
 
   async function handleSave() {
@@ -279,9 +370,16 @@ export default function ExistingBriefLongFormGenerator({
           )}
         </div>
       )}
-      <Button type="button" onClick={runGenerate} disabled={isGenerating}>
-        {isGenerating ? "Generating..." : "Generate Long-Form Content"}
-      </Button>
+      <div className="flex gap-3">
+        <Button type="button" onClick={runGenerate} disabled={isGenerating}>
+          {isGenerating ? "Generating..." : "Generate Long-Form Content"}
+        </Button>
+        {isGenerating && (
+          <Button type="button" variant="outline" onClick={handleCancel}>
+            Cancel
+          </Button>
+        )}
+      </div>
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { actionError, actionSuccess, type ActionResult } from "@/lib/action-result";
 import { requireUser } from "@/lib/auth";
-import { getAiGenerationJob } from "@/lib/jobs/ai-generation-job-table";
+import { cancelAiGenerationJob, getAiGenerationJob } from "@/lib/jobs/ai-generation-job-table";
 
 /**
  * One polling action for both CONTENT_BRIEF and CONTENT_DRAFT jobs, since
@@ -21,4 +21,22 @@ export async function getAiGenerationJobAction(id: string): Promise<
   }
 
   return actionSuccess(job);
+}
+
+/**
+ * Phase 30 Stage 10 — a soft cancel: no role gate beyond being an
+ * authenticated member of the owning company, matching
+ * getAiGenerationJobAction's own permission shape exactly (any actor may
+ * poll or cancel their own company's job). See cancelAiGenerationJob's
+ * comment for what "soft" means here.
+ */
+export async function cancelAiGenerationJobAction(id: string): Promise<ActionResult<{ cancelled: boolean }>> {
+  const actor = await requireUser();
+
+  const result = await cancelAiGenerationJob(id, actor.companyId);
+  if (result.count === 0) {
+    return actionError("This generation could not be cancelled — it may have already finished.");
+  }
+
+  return actionSuccess({ cancelled: true });
 }

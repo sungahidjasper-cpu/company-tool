@@ -195,6 +195,13 @@ describe("createKeyword", () => {
     const result = await createKeyword("seo-1", VALID_KEYWORD_INPUT);
     expect(result).toEqual({ success: true, data: { id: "new-kw-1" } });
   });
+
+  it("9. [characterization — documents current production behavior] an ownerId belonging to another company is accepted without any tenant validation, because none exists in production", async () => {
+    const result = await createKeyword("seo-1", { ...VALID_KEYWORD_INPUT, ownerId: "user-from-another-company" });
+    expect(result.success).toBe(true);
+    const [{ data }] = mockedPrisma.keyword.create.mock.calls[0];
+    expect(data.ownerId).toBe("user-from-another-company");
+  });
 });
 
 describe("updateKeyword", () => {
@@ -266,6 +273,20 @@ describe("updateKeyword", () => {
   it("7. returns the keyword's id", async () => {
     const result = await updateKeyword("kw-1", VALID_KEYWORD_INPUT);
     expect(result).toEqual({ success: true, data: { id: "kw-1" } });
+  });
+
+  it("8. [characterization — documents current production behavior] a clusterId belonging to another company/project is accepted without any tenant validation on update, because none exists in production", async () => {
+    const result = await updateKeyword("kw-1", { ...VALID_KEYWORD_INPUT, clusterId: "cluster-from-another-company" });
+    expect(result.success).toBe(true);
+    const [{ data }] = mockedPrisma.keyword.update.mock.calls[0];
+    expect(data.clusterId).toBe("cluster-from-another-company");
+  });
+
+  it("9. [characterization — documents current production behavior] an ownerId belonging to another company is accepted without any tenant validation on update, because none exists in production", async () => {
+    const result = await updateKeyword("kw-1", { ...VALID_KEYWORD_INPUT, ownerId: "user-from-another-company" });
+    expect(result.success).toBe(true);
+    const [{ data }] = mockedPrisma.keyword.update.mock.calls[0];
+    expect(data.ownerId).toBe("user-from-another-company");
   });
 });
 

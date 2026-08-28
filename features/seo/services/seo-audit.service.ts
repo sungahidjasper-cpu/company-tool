@@ -3,13 +3,18 @@ import { logger } from "@/lib/logger";
 import {
   executiveSummarySchema,
   seoContentIntelligenceSchema,
+  seoContentIntelligenceWithSourcesSchema,
   seoRecommendationsSchema,
+  seoRecommendationsWithSourcesSchema,
   seoScoresSchema,
   type Recommendation,
+  type RecommendationsWithSources,
   type SeoAuditOutput,
   type SeoContentIntelligenceOutput,
+  type SeoRecommendationsOutput,
   type SeoScoresOutput,
 } from "@/features/seo/schemas/seo-audit.schema";
+import type { SourceReference } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import type { WebsiteAnalysisExtraction } from "@/features/seo/schemas/website-analysis.schema";
 import type { DeterministicFinding } from "@/features/seo/services/seo-scoring.service";
 import type { CrawlResult } from "@/features/seo/services/website-crawler.service";
@@ -96,12 +101,20 @@ Using ONLY the information above:
   });
 }
 
-async function generateRecommendations(sharedContext: string, taskCtx: AuditTaskContext): Promise<Recommendation[]> {
+async function generateRecommendations(
+  sharedContext: string,
+  taskCtx: AuditTaskContext,
+  hasKnowledgeSourceContext: boolean
+): Promise<RecommendationsWithSources> {
+  const sourcesInstruction = hasKnowledgeSourceContext
+    ? "\n\nsourcesReferenced: for each supplied authoritative source above that you actually drew from to support a specific recommendation, list its exact supplied title and (if one was supplied) its exact supplied URL. Never invent a URL. Never list a source that was not supplied above. Never list a source merely because it seems topically relevant — this represents sources you actually used, not a list of potentially useful ones."
+    : "";
   const prompt = `${sharedContext}
 
-Using ONLY the information above, produce a prioritized list of recommendations covering technical, on-page, content, structured data, internal linking, EEAT, GEO, and AEO — each with a title, description, why it matters, estimated impact, difficulty, priority, and category. Do not just restate the deterministic findings above verbatim; add judgment-based recommendations they don't cover.`;
+Using ONLY the information above, produce a prioritized list of recommendations covering technical, on-page, content, structured data, internal linking, EEAT, GEO, and AEO — each with a title, description, why it matters, estimated impact, difficulty, priority, and category. Do not just restate the deterministic findings above verbatim; add judgment-based recommendations they don't cover.${sourcesInstruction}`;
 
-  const result = await generateStructuredOutput(seoRecommendationsSchema, {
+  const schema = hasKnowledgeSourceContext ? seoRecommendationsWithSourcesSchema : seoRecommendationsSchema;
+  const result = (await generateStructuredOutput(schema, {
     system: AUDIT_SYSTEM_PROMPT,
     prompt,
     maxTokens: 6000,
@@ -109,20 +122,28 @@ Using ONLY the information above, produce a prioritized list of recommendations 
     promptVersion: PROMPT_VERSION,
     websiteAnalysisJobId: taskCtx.jobId,
     companyId: taskCtx.companyId,
-  });
-  return result.recommendations;
+  })) as SeoRecommendationsOutput & { sourcesReferenced?: SourceReference[] };
+  return { recommendations: result.recommendations, sourcesReferenced: result.sourcesReferenced ?? null };
 }
 
-async function generateContentIntelligence(sharedContext: string, taskCtx: AuditTaskContext): Promise<SeoContentIntelligenceOutput> {
+async function generateContentIntelligence(
+  sharedContext: string,
+  taskCtx: AuditTaskContext,
+  hasKnowledgeSourceContext: boolean
+): Promise<SeoContentIntelligenceOutput> {
+  const sourcesInstruction = hasKnowledgeSourceContext
+    ? "\n5. sourcesReferenced: for each supplied authoritative source above that you actually drew from to support keyword intelligence, a content gap, or an internal-linking suggestion, list its exact supplied title and (if one was supplied) its exact supplied URL. Never invent a URL. Never list a source that was not supplied above. Never list a source merely because it seems topically relevant — this represents sources you actually used, not a list of potentially useful ones."
+    : "";
   const prompt = `${sharedContext}
 
 Using ONLY the information above:
 1. Recommend keyword intelligence (primary/secondary/long-tail/semantic keywords, a search-intent summary, and content clusters) based only on the business context and crawled content above — never invent products or services not evidenced there.
 2. Identify content gaps: missing page types this specific business would plausibly benefit from, given its actual services and locations.
 3. For each missing structured-data type listed above, write a real, valid JSON-LD example grounded in the actual business info (not a generic placeholder).
-4. Suggest internal-linking improvements, referencing the actual orphan pages listed above where relevant.`;
+4. Suggest internal-linking improvements, referencing the actual orphan pages listed above where relevant.${sourcesInstruction}`;
 
-  return generateStructuredOutput(seoContentIntelligenceSchema, {
+  const schema = hasKnowledgeSourceContext ? seoContentIntelligenceWithSourcesSchema : seoContentIntelligenceSchema;
+  return generateStructuredOutput(schema, {
     system: AUDIT_SYSTEM_PROMPT,
     prompt,
     maxTokens: 8000,
@@ -130,7 +151,7 @@ Using ONLY the information above:
     promptVersion: PROMPT_VERSION,
     websiteAnalysisJobId: taskCtx.jobId,
     companyId: taskCtx.companyId,
-  });
+  }) as Promise<SeoContentIntelligenceOutput>;
 }
 
 async function generateExecutiveSummary(
@@ -178,11 +199,16 @@ Write an executive summary: a short narrative on overall health, 3-5 strengths, 
 export async function generateSeoAudit(ctx: AuditContext): Promise<SeoAuditOutput> {
   const sharedContext = buildSharedContext(ctx);
   const taskCtx: AuditTaskContext = { jobId: ctx.websiteAnalysisJobId, companyId: ctx.companyId };
+  // Phase 30 Stage 9 — same condition Stage 8 already established for
+  // injecting the context block itself: a run with no Knowledge Source
+  // context is never even asked to produce a sourcesReferenced field, so it
+  // can never invent one just because the field exists in its schema.
+  const hasKnowledgeSourceContext = Boolean(ctx.knowledgeSourceContext);
 
   const [scoresResult, recommendationsResult, contentIntelligenceResult] = await Promise.allSettled([
     generateScores(sharedContext, taskCtx),
-    generateRecommendations(sharedContext, taskCtx),
-    generateContentIntelligence(sharedContext, taskCtx),
+    generateRecommendations(sharedContext, taskCtx, hasKnowledgeSourceContext),
+    generateContentIntelligence(sharedContext, taskCtx, hasKnowledgeSourceContext),
   ]);
 
   const logTaskFailure = (task: string, result: PromiseSettledResult<unknown>) => {
@@ -210,7 +236,8 @@ export async function generateSeoAudit(ctx: AuditContext): Promise<SeoAuditOutpu
   }
 
   const scores = scoresResult.status === "fulfilled" ? scoresResult.value : null;
-  const recommendations = recommendationsResult.status === "fulfilled" ? recommendationsResult.value : null;
+  const recommendations = recommendationsResult.status === "fulfilled" ? recommendationsResult.value.recommendations : null;
+  const recommendationSources = recommendationsResult.status === "fulfilled" ? recommendationsResult.value.sourcesReferenced : null;
   const contentIntelligence = contentIntelligenceResult.status === "fulfilled" ? contentIntelligenceResult.value : null;
 
   const executiveSummary =
@@ -221,5 +248,5 @@ export async function generateSeoAudit(ctx: AuditContext): Promise<SeoAuditOutpu
         })
       : null;
 
-  return { scores, recommendations, contentIntelligence, executiveSummary };
+  return { scores, recommendations, recommendationSources, contentIntelligence, executiveSummary };
 }

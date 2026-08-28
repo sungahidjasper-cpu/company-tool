@@ -1,6 +1,7 @@
 import { z as zv4 } from "zod/v4";
 
 import { PRIORITIES, SEO_CATEGORIES } from "@/features/seo/services/seo-scoring.service";
+import { sourceReferenceSchema, type SourceReference } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import type { WebsiteAnalysisJob } from "@/lib/generated/prisma/client";
 
 /**
@@ -116,6 +117,18 @@ export const seoRecommendationsSchema = zv4.object({
   recommendations: zv4.array(recommendationSchema),
 });
 
+/**
+ * Phase 30 Stage 9 — the same sourcesReferenced pattern Content Brief/
+ * Long-Form already use (see content-brief-output-builder.ts), reused
+ * rather than reinvented. Only ever requested when the caller actually
+ * supplied Knowledge Source context for this run (see seo-audit.service.ts)
+ * — a run with no linked sources is never asked to produce this field at
+ * all, so it can never invent one.
+ */
+export const seoRecommendationsWithSourcesSchema = seoRecommendationsSchema.extend({
+  sourcesReferenced: zv4.array(sourceReferenceSchema),
+});
+
 export const seoContentIntelligenceSchema = zv4.object({
   keywordIntelligence: zv4.object({
     primaryKeywords: zv4.array(zv4.string()),
@@ -130,6 +143,11 @@ export const seoContentIntelligenceSchema = zv4.object({
   internalLinkingSuggestions: zv4.array(internalLinkingSuggestionSchema),
 });
 
+/** Phase 30 Stage 9 — same reuse rationale as seoRecommendationsWithSourcesSchema above. */
+export const seoContentIntelligenceWithSourcesSchema = seoContentIntelligenceSchema.extend({
+  sourcesReferenced: zv4.array(sourceReferenceSchema),
+});
+
 export const executiveSummarySchema = zv4.object({
   overallHealthNarrative: zv4.string(),
   strengths: zv4.array(zv4.string()),
@@ -139,11 +157,14 @@ export const executiveSummarySchema = zv4.object({
 
 export type SeoScoresOutput = zv4.infer<typeof seoScoresSchema>;
 export type SeoRecommendationsOutput = zv4.infer<typeof seoRecommendationsSchema>;
-export type SeoContentIntelligenceOutput = zv4.infer<typeof seoContentIntelligenceSchema>;
+/** sourcesReferenced is optional here (rather than on the base zod schema) because it's only ever present when seoContentIntelligenceWithSourcesSchema — not the base schema — was the one actually sent to the model; see generateContentIntelligence. */
+export type SeoContentIntelligenceOutput = zv4.infer<typeof seoContentIntelligenceSchema> & { sourcesReferenced?: SourceReference[] };
 export type ExecutiveSummaryOutput = zv4.infer<typeof executiveSummarySchema>;
 
 export type Recommendation = SeoRecommendationsOutput["recommendations"][number];
 export type ScoreWithReasoning = { score: number; reasoning: string };
+/** The result of a single generateRecommendations() call — kept separate from the bare Recommendation[] callers consume, so attribution never has to be embedded into (and never normalizes) the Recommendation shape itself. */
+export type RecommendationsWithSources = { recommendations: Recommendation[]; sourcesReferenced: SourceReference[] | null };
 
 /**
  * Phase 11C — each of the 4 AI calls generateSeoAudit() makes fails
@@ -158,6 +179,8 @@ export type ScoreWithReasoning = { score: number; reasoning: string };
 export type SeoAuditOutput = {
   scores: SeoScoresOutput | null;
   recommendations: Recommendation[] | null;
+  /** Phase 30 Stage 9 — null whenever recommendations is null, or when this run had no Knowledge Source context at all (nothing to attribute). Never fabricated when a source-attribution field simply wasn't requested. */
+  recommendationSources: SourceReference[] | null;
   contentIntelligence: SeoContentIntelligenceOutput | null;
   /** Null whenever scores or recommendations is null — summarizing missing data would be worse than not summarizing at all. */
   executiveSummary: ExecutiveSummaryOutput | null;
@@ -204,12 +227,16 @@ export type SeoAuditResultData = {
     aeoReadiness: SeoScoresOutput["aeoReadiness"] | null;
   };
   recommendations: Recommendation[];
+  /** Phase 30 Stage 9 — which supplied Knowledge Sources the model reports actually drawing from for the recommendations above; null when unavailable or inapplicable (no Knowledge Source context for this run). */
+  recommendationSources: SourceReference[] | null;
   keywordIntelligence: SeoContentIntelligenceOutput["keywordIntelligence"] | null;
   contentGaps: SeoContentIntelligenceOutput["contentGaps"] | null;
   structuredDataRecommendations: SeoContentIntelligenceOutput["structuredDataRecommendations"] | null;
   detectedSchemaTypes: string[];
   internalLinkingSuggestions: SeoContentIntelligenceOutput["internalLinkingSuggestions"] | null;
   orphanPages: string[];
+  /** Phase 30 Stage 9 — same as recommendationSources, for the content-intelligence section (keyword intelligence, content gaps, structured-data recommendations, internal-linking suggestions). */
+  contentIntelligenceSources: SourceReference[] | null;
   executiveSummary: ExecutiveSummaryOutput | null;
 };
 

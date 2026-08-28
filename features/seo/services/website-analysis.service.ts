@@ -290,12 +290,14 @@ async function runAiPhase(
           aeoReadiness: audit.scores?.aeoReadiness ?? null,
         },
         recommendations,
+        recommendationSources: audit.recommendationSources ?? null,
         keywordIntelligence: audit.contentIntelligence?.keywordIntelligence ?? null,
         contentGaps: audit.contentIntelligence?.contentGaps ?? null,
         structuredDataRecommendations: audit.contentIntelligence?.structuredDataRecommendations ?? null,
         detectedSchemaTypes: structuredData.detectedSchemaTypes,
         internalLinkingSuggestions: audit.contentIntelligence?.internalLinkingSuggestions ?? null,
         orphanPages: internalLinking.orphanPages,
+        contentIntelligenceSources: audit.contentIntelligence?.sourcesReferenced ?? null,
         executiveSummary: audit.executiveSummary ?? null,
       } satisfies Prisma.InputJsonValue;
     }

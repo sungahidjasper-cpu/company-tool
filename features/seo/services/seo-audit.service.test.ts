@@ -6,6 +6,12 @@ vi.mock("@/lib/ai/structured-output", () => ({
 
 import { generateStructuredOutput } from "@/lib/ai/structured-output";
 import { generateSeoAudit, type AuditContext } from "@/features/seo/services/seo-audit.service";
+import {
+  seoContentIntelligenceSchema,
+  seoContentIntelligenceWithSourcesSchema,
+  seoRecommendationsSchema,
+  seoRecommendationsWithSourcesSchema,
+} from "@/features/seo/schemas/seo-audit.schema";
 import type { CrawlResult } from "@/features/seo/services/website-crawler.service";
 
 const mockGenerate = vi.mocked(generateStructuredOutput);
@@ -192,5 +198,116 @@ describe("generateSeoAudit — Knowledge Source context (Phase 30 Stage 8)", () 
     for (const prompt of prompts) {
       expect(prompt).not.toContain("Supplied authoritative sources");
     }
+  });
+});
+
+describe("generateSeoAudit — source attribution (Phase 30 Stage 9)", () => {
+  const SOURCES = [{ title: "Google Search Central", url: "https://developers.google.com/search" }];
+  const KS_CONTEXT = "Supplied authoritative sources for this project:\n- Google Search Central";
+
+  function callByTaskType(taskType: string) {
+    return mockGenerate.mock.calls.find((call) => call[1].taskType === taskType);
+  }
+
+  it("1. [CRITICAL] uses the sources-extended schema for RECOMMENDATIONS and CONTENT_INTELLIGENCE only when Knowledge Source context is present", async () => {
+    mockByTaskType();
+    mockGenerate.mockClear();
+    await generateSeoAudit({ ...ctx(), knowledgeSourceContext: KS_CONTEXT });
+
+    expect(callByTaskType("RECOMMENDATIONS")?.[0]).toBe(seoRecommendationsWithSourcesSchema);
+    expect(callByTaskType("CONTENT_INTELLIGENCE")?.[0]).toBe(seoContentIntelligenceWithSourcesSchema);
+  });
+
+  it("2. uses the original (unmodified) schemas for RECOMMENDATIONS and CONTENT_INTELLIGENCE when no Knowledge Source context applies", async () => {
+    mockByTaskType();
+    mockGenerate.mockClear();
+    await generateSeoAudit(ctx());
+
+    expect(callByTaskType("RECOMMENDATIONS")?.[0]).toBe(seoRecommendationsSchema);
+    expect(callByTaskType("CONTENT_INTELLIGENCE")?.[0]).toBe(seoContentIntelligenceSchema);
+  });
+
+  it("3. instructs the model to cite only supplied sources and never fabricate one, only when Knowledge Source context is present", async () => {
+    mockByTaskType();
+    mockGenerate.mockClear();
+    await generateSeoAudit({ ...ctx(), knowledgeSourceContext: KS_CONTEXT });
+
+    const recommendationsPrompt = callByTaskType("RECOMMENDATIONS")?.[1].prompt as string;
+    const contentIntelligencePrompt = callByTaskType("CONTENT_INTELLIGENCE")?.[1].prompt as string;
+    for (const prompt of [recommendationsPrompt, contentIntelligencePrompt]) {
+      expect(prompt).toContain("sourcesReferenced");
+      expect(prompt).toContain("Never invent a URL");
+      expect(prompt).toContain("Never list a source that was not supplied above");
+    }
+  });
+
+  it("4. never adds the citation instruction when no Knowledge Source context applies", async () => {
+    mockByTaskType();
+    mockGenerate.mockClear();
+    await generateSeoAudit(ctx());
+
+    const recommendationsPrompt = callByTaskType("RECOMMENDATIONS")?.[1].prompt as string;
+    const contentIntelligencePrompt = callByTaskType("CONTENT_INTELLIGENCE")?.[1].prompt as string;
+    for (const prompt of [recommendationsPrompt, contentIntelligencePrompt]) {
+      expect(prompt).not.toContain("sourcesReferenced");
+    }
+  });
+
+  it("5. surfaces recommendationSources and contentIntelligence.sourcesReferenced exactly as the model returned them, in { title, url } form", async () => {
+    mockByTaskType({
+      RECOMMENDATIONS: { ...RECOMMENDATIONS_RESULT, sourcesReferenced: SOURCES },
+      CONTENT_INTELLIGENCE: { ...CONTENT_INTELLIGENCE_RESULT, sourcesReferenced: SOURCES },
+    });
+    const result = await generateSeoAudit({ ...ctx(), knowledgeSourceContext: KS_CONTEXT });
+
+    expect(result.recommendationSources).toEqual(SOURCES);
+    expect(result.recommendationSources?.[0]).toEqual({ title: "Google Search Central", url: "https://developers.google.com/search" });
+    expect(Object.keys(result.recommendationSources![0])).toEqual(["title", "url"]);
+    expect(result.contentIntelligence?.sourcesReferenced).toEqual(SOURCES);
+  });
+
+  it("6. [defensive-only, not a reachable production case] the recommendations pass-through never fabricates a source list even if sourcesReferenced were entirely missing from the response", async () => {
+    // NOTE: with Knowledge Source context present, seoRecommendationsWithSourcesSchema/
+    // seoContentIntelligenceWithSourcesSchema make sourcesReferenced a REQUIRED field —
+    // the real generateStructuredOutput would reject a response missing it outright via
+    // schema.safeParse, so this exact input can never actually reach generateSeoAudit in
+    // production. This test exists purely to prove the `?? null` pass-through itself
+    // doesn't silently invent a fabricated value if that invariant were ever violated
+    // (e.g. by a future bug elsewhere) — see test 8 below for the realistic "model cited
+    // nothing" case (a present, empty sourcesReferenced: []), which IS schema-valid.
+    mockByTaskType();
+    const result = await generateSeoAudit({ ...ctx(), knowledgeSourceContext: KS_CONTEXT });
+
+    expect(result.recommendationSources).toBeNull();
+    expect(result.contentIntelligence?.sourcesReferenced).toBeUndefined();
+  });
+
+  it("7. recommendationSources is null and contentIntelligence.sourcesReferenced is absent when no Knowledge Source context applies — existing output shape otherwise unaffected", async () => {
+    mockByTaskType();
+    const result = await generateSeoAudit(ctx());
+
+    expect(result.recommendationSources).toBeNull();
+    expect(result.contentIntelligence?.sourcesReferenced).toBeUndefined();
+    // Everything else about the existing output shape is untouched by this stage.
+    expect(result.scores).not.toBeNull();
+    expect(result.recommendations).not.toBeNull();
+    expect(result.contentIntelligence).not.toBeNull();
+    expect(result.executiveSummary).not.toBeNull();
+  });
+
+  it("8. [realistic, schema-valid case] preserves an empty sourcesReferenced: [] exactly as returned — never converted to null, and never fabricated into a non-empty list", async () => {
+    // Unlike test 6's unreachable "field entirely missing" input, an empty array IS a
+    // schema-valid response from seoRecommendationsWithSourcesSchema/
+    // seoContentIntelligenceWithSourcesSchema — this is what the model is expected to
+    // return when Knowledge Source context was supplied but it genuinely drew from none
+    // of it for this particular run.
+    mockByTaskType({
+      RECOMMENDATIONS: { ...RECOMMENDATIONS_RESULT, sourcesReferenced: [] },
+      CONTENT_INTELLIGENCE: { ...CONTENT_INTELLIGENCE_RESULT, sourcesReferenced: [] },
+    });
+    const result = await generateSeoAudit({ ...ctx(), knowledgeSourceContext: KS_CONTEXT });
+
+    expect(result.recommendationSources).toEqual([]);
+    expect(result.contentIntelligence?.sourcesReferenced).toEqual([]);
   });
 });

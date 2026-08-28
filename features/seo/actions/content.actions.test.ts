@@ -964,6 +964,13 @@ describe("createContent", () => {
     const result = await createContent("seo-1", VALID_CONTENT_INPUT);
     expect(result).toEqual({ success: true, data: { id: "content-new" } });
   });
+
+  it("13. [characterization — documents current production behavior] an authorId belonging to another company is accepted without any tenant validation, because none exists in production", async () => {
+    const result = await createContent("seo-1", { ...VALID_CONTENT_INPUT, authorId: "author-from-another-company" });
+    expect(result.success).toBe(true);
+    const [{ data }] = mockedPrisma.content.create.mock.calls[0];
+    expect(data.authorId).toBe("author-from-another-company");
+  });
 });
 
 describe("advanceContentStatus", () => {

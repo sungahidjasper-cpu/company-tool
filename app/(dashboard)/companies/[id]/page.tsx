@@ -17,6 +17,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import BrandProfileForm from "@/features/companies/components/BrandProfileForm";
 import CompanyAiLimitsForm from "@/features/companies/components/CompanyAiLimitsForm";
 import {
   archiveCompany,
@@ -33,7 +34,7 @@ import {
 import { listFilesFor } from "@/features/files/services/file.service";
 import { getCurrentPeriodSpendUsd } from "@/lib/ai/ai-limit.service";
 import { requireUser } from "@/lib/auth";
-import { assertCompanyAccess, Permissions } from "@/lib/authorization";
+import { assertCompanyAccess, hasMinimumRole, Permissions } from "@/lib/authorization";
 import { cn, formatEnumLabel } from "@/lib/utils";
 
 type CompanyDetailPageProps = {
@@ -55,6 +56,8 @@ export default async function CompanyDetailPage({
   const canManageFiles = Permissions.manageCompanies(user.role);
   const canManageAiLimits = Permissions.manageCompanies(user.role);
   const canManage = Permissions.manageCompanies(user.role);
+  /** Same rule as company.actions.ts's (unexported) canEditCompany — SUPER_ADMIN, or this company's own ADMIN. */
+  const canManageBrandProfile = Permissions.manageCompanies(user.role) || (hasMinimumRole(user.role, "ADMIN") && user.companyId === company.id);
 
   const [counts, recentUsers, recentClients, recentProjects, files, currentPeriodSpendUsd, activities] =
     await Promise.all([
@@ -216,6 +219,32 @@ export default async function CompanyDetailPage({
               aiMonthlyBudgetUsd={company.aiMonthlyBudgetUsd ? Number(company.aiMonthlyBudgetUsd) : null}
               aiRateLimitPerMinute={company.aiRateLimitPerMinute}
               currentPeriodSpendUsd={currentPeriodSpendUsd}
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      {canManageBrandProfile && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Brand profile</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <BrandProfileForm
+              companyId={company.id}
+              brandProfile={
+                company.brandProfile
+                  ? {
+                      brandName: company.brandProfile.brandName,
+                      brandVoice: company.brandProfile.brandVoice,
+                      targetAudience: company.brandProfile.targetAudience,
+                      productsServices: company.brandProfile.productsServices,
+                      targetCountry: company.brandProfile.targetCountry,
+                      language: company.brandProfile.language,
+                      competitorUrls: company.brandProfile.competitorUrls,
+                    }
+                  : null
+              }
             />
           </CardContent>
         </Card>

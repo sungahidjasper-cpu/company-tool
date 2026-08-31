@@ -234,8 +234,40 @@ model Company {
   contentPublications   ContentPublication[]
   contentRevisions      ContentRevision[]
   knowledgeSources      KnowledgeSource[]
+  brandProfile          BrandProfile?
 
   @@index([deletedAt])
+}
+
+/// Phase 30 Stage 12 (AI Workspace foundation) — persistent, company-level
+/// brand context, reused across every future generation instead of being
+/// re-typed per request. Deliberately one-to-one with Company, not
+/// SEOProject or Client: mirrors the existing precedent set by
+/// Company.aiMonthlyBudgetUsd/aiRateLimitPerMinute (the only other
+/// company-level AI-adjacent configuration in this schema). Every field is
+/// optional — this is a convenience default, never a new gate in front of
+/// generation; ContentBriefSettings' own identically-named per-request
+/// fields (content-brief-settings.schema.ts) still take precedence when
+/// filled in. NOT YET consumed by any AI generation code — see
+/// buildSharedContextClauses' own comment for the integration point this
+/// is deliberately shaped to feed into once that stage is authorized.
+model BrandProfile {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  companyId String   @unique @db.Uuid
+  brandName String?
+  /// Free text matching content-brief-settings.schema.ts's BRAND_VOICES
+  /// values, validated at the application layer (zod) rather than a
+  /// parallel Prisma enum — see brand-profile.schema.ts for why.
+  brandVoice       String?
+  targetAudience   String?
+  productsServices String?
+  targetCountry    String?
+  language         String?
+  competitorUrls   String[] @default([])
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 }
 
 /// Global catalog of grantable capabilities (e.g. "projects:create").

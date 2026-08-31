@@ -31,7 +31,7 @@ export async function listCompanies(searchParams: ListSearchParams) {
 }
 
 export function getCompanyById(id: string) {
-  return prisma.company.findUnique({ where: { id } });
+  return prisma.company.findUnique({ where: { id }, include: { brandProfile: true } });
 }
 
 export async function getCompanyCounts(companyId: string) {

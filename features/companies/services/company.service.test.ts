@@ -90,10 +90,10 @@ describe("listCompanies", () => {
 });
 
 describe("getCompanyById", () => {
-  it("1. queries by id and returns whatever Prisma resolves", async () => {
+  it("1. queries by id, including the brand profile relation, and returns whatever Prisma resolves", async () => {
     mockedPrisma.company.findUnique.mockResolvedValue({ id: "c-1", name: "Acme" });
     const result = await getCompanyById("c-1");
-    expect(mockedPrisma.company.findUnique).toHaveBeenCalledWith({ where: { id: "c-1" } });
+    expect(mockedPrisma.company.findUnique).toHaveBeenCalledWith({ where: { id: "c-1" }, include: { brandProfile: true } });
     expect(result).toEqual({ id: "c-1", name: "Acme" });
   });
 });

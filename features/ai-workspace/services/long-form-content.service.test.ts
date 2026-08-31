@@ -6,9 +6,13 @@ vi.mock("@/lib/ai/structured-output", () => ({
 vi.mock("@/features/seo/services/knowledge-source-context.service", () => ({
   getKnowledgeSourceContextForSeoProject: vi.fn(),
 }));
+vi.mock("@/features/companies/services/brand-profile.service", () => ({
+  getBrandProfileByCompanyId: vi.fn(),
+}));
 
 import { generateStructuredOutput } from "@/lib/ai/structured-output";
 import { getKnowledgeSourceContextForSeoProject } from "@/features/seo/services/knowledge-source-context.service";
+import { getBrandProfileByCompanyId } from "@/features/companies/services/brand-profile.service";
 import { DEFAULT_CONTENT_BRIEF_SETTINGS } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { generateLongFormContent, PROMPT_VERSION, type LongFormContentContext } from "@/features/ai-workspace/services/long-form-content.service";
 import { formatLongFormContentAsMarkdown } from "@/features/ai-workspace/schemas/long-form-content.schema";
@@ -16,11 +20,14 @@ import { computeWordCount } from "@/features/ai-workspace/services/seo-checklist
 
 const mockGenerate = vi.mocked(generateStructuredOutput);
 const mockGetKnowledgeSourceContext = vi.mocked(getKnowledgeSourceContextForSeoProject);
+const mockGetBrandProfile = vi.mocked(getBrandProfileByCompanyId);
 
 beforeEach(() => {
   mockGenerate.mockClear();
   mockGetKnowledgeSourceContext.mockReset();
   mockGetKnowledgeSourceContext.mockResolvedValue(null);
+  mockGetBrandProfile.mockReset();
+  mockGetBrandProfile.mockResolvedValue(null);
 });
 
 /** A single word repeated N times — exactly N word-tokens under computeWordCount, so test fixtures can target exact totals without hand-counting prose. */
@@ -215,6 +222,84 @@ describe("generateLongFormContent", () => {
     expect(options.prompt).toContain("Write in this language: English.");
     expect(options.prompt).toContain("Brand name: Acme Plumbing.");
     expect(options.prompt).toContain("Competitor pages to differentiate from (for context only — do not copy): https://competitor-a.example.com, https://competitor-b.example.com.");
+  });
+
+  const BASE_BRAND_PROFILE = {
+    id: "profile-1",
+    companyId: "company-1",
+    brandName: "Profile Brand",
+    brandVoice: "FRIENDLY",
+    targetAudience: "Homeowners in need of urgent repairs",
+    productsServices: "Emergency plumbing and drain services",
+    targetCountry: "Canada",
+    language: "French",
+    competitorUrls: ["https://profile-competitor.example.com"],
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  describe("Brand Profile integration — applies the same precedence rules as Content Brief (proven exhaustively there; these confirm the wiring reaches long-form too)", () => {
+    it("1. omits every Brand Profile clause when no Brand Profile row exists — the default, unchanged case", async () => {
+      mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+      await generateLongFormContent(BASE_CTX);
+      const [, options] = mockGenerate.mock.calls[0];
+      expect(options.prompt).not.toContain("Target audience:");
+      expect(options.prompt).not.toContain("Products/services:");
+    });
+
+    it("2. falls back to the Brand Profile's brandName/targetCountry/language when the per-request fields are blank", async () => {
+      mockGetBrandProfile.mockResolvedValue(BASE_BRAND_PROFILE as never);
+      mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+      await generateLongFormContent(BASE_CTX);
+      const [, options] = mockGenerate.mock.calls[0];
+      expect(options.prompt).toContain("Brand name: Profile Brand.");
+      expect(options.prompt).toContain("Target country/market: Canada.");
+      expect(options.prompt).toContain("Write in this language: French.");
+    });
+
+    it("3. lets per-request brandName/targetCountry/language override the Brand Profile's values entirely", async () => {
+      mockGetBrandProfile.mockResolvedValue(BASE_BRAND_PROFILE as never);
+      mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+      await generateLongFormContent({
+        ...BASE_CTX,
+        settings: { ...DEFAULT_CONTENT_BRIEF_SETTINGS, brandName: "Request Brand", targetCountry: "United States", language: "English" },
+      });
+      const [, options] = mockGenerate.mock.calls[0];
+      expect(options.prompt).toContain("Brand name: Request Brand.");
+      expect(options.prompt).toContain("Target country/market: United States.");
+      expect(options.prompt).toContain("Write in this language: English.");
+      expect(options.prompt).not.toContain("Profile Brand");
+      expect(options.prompt).not.toContain("Canada");
+      expect(options.prompt).not.toContain("French");
+    });
+
+    it("4. uses ONLY the per-request competitorUrls when populated — never unions with the Brand Profile's own list", async () => {
+      mockGetBrandProfile.mockResolvedValue(BASE_BRAND_PROFILE as never);
+      mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+      await generateLongFormContent({
+        ...BASE_CTX,
+        settings: { ...DEFAULT_CONTENT_BRIEF_SETTINGS, competitorUrls: ["https://request-competitor.example.com"] },
+      });
+      const [, options] = mockGenerate.mock.calls[0];
+      expect(options.prompt).toContain("Competitor pages to differentiate from (for context only — do not copy): https://request-competitor.example.com.");
+      expect(options.prompt).not.toContain("profile-competitor");
+    });
+
+    it("5. includes the Brand Profile's targetAudience and productsServices — fields with no per-request equivalent", async () => {
+      mockGetBrandProfile.mockResolvedValue(BASE_BRAND_PROFILE as never);
+      mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+      await generateLongFormContent(BASE_CTX);
+      const [, options] = mockGenerate.mock.calls[0];
+      expect(options.prompt).toContain("Target audience: Homeowners in need of urgent repairs.");
+      expect(options.prompt).toContain("Products/services: Emergency plumbing and drain services.");
+    });
+
+    it("6. fetches the Brand Profile by ctx.companyId, not the seoProjectId — applies uniformly regardless of fromBrief/fromContent call shape", async () => {
+      mockGetBrandProfile.mockResolvedValue(null);
+      mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+      await generateLongFormContent(BASE_CTX);
+      expect(mockGetBrandProfile).toHaveBeenCalledWith(BASE_CTX.companyId);
+    });
   });
 
   it("still generates when no keyword is selected", async () => {

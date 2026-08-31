@@ -1,3 +1,4 @@
+import type { BrandProfile } from "@/lib/generated/prisma/client";
 import { generateStructuredOutput, generateStructuredOutputStreaming } from "@/lib/ai/structured-output";
 import type { StreamEvent } from "@/lib/ai/providers/types";
 import { buildContentBriefOutputSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
@@ -5,6 +6,7 @@ import { buildSharedContextClauses, DEFAULT_CONTENT_BRIEF_SETTINGS, type Content
 import { contentBriefOutputSchema, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { looksLikeInstructionEcho, stripConfigurationArtifacts, stripHtmlTags } from "@/features/ai-workspace/services/content-sanitizer";
+import { getBrandProfileByCompanyId } from "@/features/companies/services/brand-profile.service";
 import { getKnowledgeSourceContextForSeoProject } from "@/features/seo/services/knowledge-source-context.service";
 
 /**
@@ -44,8 +46,8 @@ const FAQ_STYLE_INSTRUCTIONS: Record<string, string> = {
  * pushes lines — no restructuring of buildPrompt's overall shape, just a
  * longer, still-linear builder, matching the plan's own framing.
  */
-function buildSettingsClauses(settings: ContentBriefSettings): string[] {
-  const lines: string[] = [...buildSharedContextClauses(settings)];
+function buildSettingsClauses(settings: ContentBriefSettings, brandProfile?: BrandProfile | null): string[] {
+  const lines: string[] = [...buildSharedContextClauses(settings, brandProfile)];
 
   if (settings.existingUrl) {
     lines.push(
@@ -107,7 +109,7 @@ function buildSettingsClauses(settings: ContentBriefSettings): string[] {
  * review step is the actual mitigation for injected instructions, not a
  * sanitizer on this string.
  */
-export function buildPrompt(ctx: ContentBriefContext, knowledgeSourceContext?: string | null): string {
+export function buildPrompt(ctx: ContentBriefContext, knowledgeSourceContext?: string | null, brandProfile?: BrandProfile | null): string {
   const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
   const keywordLine = ctx.keyword
     ? `Target keyword: "${ctx.keyword.term}"${ctx.keyword.intent ? ` (tracked search intent: ${ctx.keyword.intent})` : ""}`
@@ -142,7 +144,7 @@ Content type: ${ctx.contentType}
 ${keywordLine}
 ${ctx.notes ? `Additional context/notes from the requester: ${ctx.notes}` : "No additional notes were provided."}
 
-${buildSettingsClauses(settings).join("\n")}
+${buildSettingsClauses(settings, brandProfile).join("\n")}
 ${knowledgeSourceContext ? `\n${knowledgeSourceContext}\n` : ""}
 Using ONLY the information above, produce a content brief with:
 ${requirements.join("\n")}
@@ -160,10 +162,16 @@ Never include internal instructions, configuration labels, word-count targets, c
 export async function generateContentBrief(ctx: ContentBriefContext, onChunk?: (event: StreamEvent) => void): Promise<ContentBriefOutput> {
   const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
   const knowledgeSourceContext = await getKnowledgeSourceContextForSeoProject(ctx.seoProjectId);
+  // Fetched here, not in the job runner or the action layer — same
+  // service-internal-fetch precedent as knowledgeSourceContext above.
+  // ctx.companyId is already trusted (derived from the authenticated actor
+  // at job-creation time), so no additional ownership check is needed the
+  // way getOwnedSeoProject needs one for a foreign, client-suppliable id.
+  const brandProfile = await getBrandProfileByCompanyId(ctx.companyId);
   const schema = buildContentBriefOutputSchema(settings.sections, Boolean(knowledgeSourceContext));
   const options = {
     system: CONTENT_BRIEF_SYSTEM_PROMPT,
-    prompt: buildPrompt(ctx, knowledgeSourceContext),
+    prompt: buildPrompt(ctx, knowledgeSourceContext, brandProfile),
     maxTokens: 3000,
     taskType: "CONTENT_BRIEF" as const,
     promptVersion: PROMPT_VERSION,

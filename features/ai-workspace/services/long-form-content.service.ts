@@ -1,5 +1,6 @@
 import { z as zv4 } from "zod/v4";
 
+import type { BrandProfile } from "@/lib/generated/prisma/client";
 import { generateStructuredOutput, generateStructuredOutputStreaming } from "@/lib/ai/structured-output";
 import type { StreamEvent } from "@/lib/ai/providers/types";
 import type { ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
@@ -9,6 +10,7 @@ import { formatLongFormContentAsMarkdown, longFormContentOutputSchema, type Long
 import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { filterReservedSections, stripConfigurationArtifacts, stripHtmlTags } from "@/features/ai-workspace/services/content-sanitizer";
 import { computeWordCount } from "@/features/ai-workspace/services/seo-checklist.service";
+import { getBrandProfileByCompanyId } from "@/features/companies/services/brand-profile.service";
 import { getKnowledgeSourceContextForSeoProject } from "@/features/seo/services/knowledge-source-context.service";
 
 /**
@@ -51,7 +53,7 @@ export type LongFormContentContext = {
  * ever persisted without an explicit human review + Save, and the system
  * prompt above already instructs the model not to invent facts.
  */
-export function buildPrompt(ctx: LongFormContentContext, knowledgeSourceContext?: string | null): string {
+export function buildPrompt(ctx: LongFormContentContext, knowledgeSourceContext?: string | null, brandProfile?: BrandProfile | null): string {
   const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
   const keywordLine = ctx.keyword
     ? `Target keyword: "${ctx.keyword.term}"${ctx.keyword.intent ? ` (tracked search intent: ${ctx.keyword.intent})` : ""}`
@@ -111,7 +113,7 @@ export function buildPrompt(ctx: LongFormContentContext, knowledgeSourceContext?
     );
   }
 
-  const sharedContextClauses = buildSharedContextClauses(settings);
+  const sharedContextClauses = buildSharedContextClauses(settings, brandProfile);
 
   return `Website: ${ctx.domain} (SEO project: ${ctx.seoProjectName})
 ${keywordLine}
@@ -327,10 +329,16 @@ async function refineArticleLength(ctx: LongFormContentContext, article: LongFor
 export async function generateLongFormContent(ctx: LongFormContentContext, onChunk?: (event: StreamEvent) => void): Promise<LongFormContentOutput> {
   const settings = ctx.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS;
   const knowledgeSourceContext = await getKnowledgeSourceContextForSeoProject(ctx.seoProjectId);
+  // Same service-internal-fetch precedent as knowledgeSourceContext and as
+  // content-brief.service.ts's identical fetch — ctx.companyId is already
+  // trusted, no ownership re-check needed. Applies uniformly to both the
+  // "fromBrief" and "fromContent" call shapes, since both flow through this
+  // one function regardless of which mode created the job.
+  const brandProfile = await getBrandProfileByCompanyId(ctx.companyId);
   const schema = buildLongFormOutputSchema(settings.sections, settings.draftOptions, Boolean(knowledgeSourceContext));
   const options = {
     system: LONG_FORM_SYSTEM_PROMPT,
-    prompt: buildPrompt(ctx, knowledgeSourceContext),
+    prompt: buildPrompt(ctx, knowledgeSourceContext, brandProfile),
     maxTokens: 4000,
     taskType: "CONTENT_DRAFT" as const,
     promptVersion: PROMPT_VERSION,

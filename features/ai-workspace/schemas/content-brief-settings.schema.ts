@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import type { BrandProfile } from "@/lib/generated/prisma/client";
 import { optionalEmail, optionalString, optionalUrl } from "@/lib/zod-helpers";
 
 /** Mirrors prisma's KeywordIntent enum values exactly — not a parallel enum, just a plain-zod copy since this form schema can't import a Prisma enum type directly the way the AI output schemas do. */
@@ -143,8 +144,32 @@ export const DEFAULT_CONTENT_BRIEF_SETTINGS: ContentBriefSettings = contentBrief
  * and by the time long-form runs, that framing is already baked into the
  * approved brief it's given — restating it here would be redundant, not
  * missing context.
+ *
+ * Brand Profile integration — `brandProfile` is optional and, when
+ * supplied, is used ONLY as a fallback: a per-request settings value, when
+ * present, always wins outright (never merged/unioned with the Brand
+ * Profile's own value — this matters most for competitorUrls, where
+ * silently combining a piece-specific list with the company's standing
+ * list would inject names the requester didn't ask for). brandName,
+ * targetCountry, language, and competitorUrls follow this fallback rule;
+ * targetAudience and productsServices have no per-request equivalent at
+ * all, so they're included whenever the Brand Profile has them, with no
+ * precedence question to resolve. Every field still behaves as "not set"
+ * for null/undefined/blank/empty-array — a company with no Brand Profile
+ * row (the common case today) produces byte-identical output to before
+ * this parameter existed, since every fallback then resolves through
+ * `undefined`/`[]` exactly as it already did.
+ *
+ * brandProfile.brandVoice is deliberately never read here.
+ * ContentBriefSettings.brandVoice always carries a concrete value
+ * (`.default("PROFESSIONAL")`, never optional), so there is no way to
+ * distinguish "the requester chose PROFESSIONAL" from "this field was
+ * never touched" — merging at this layer would silently discard one of
+ * those two real cases. If Brand Profile should influence brand voice,
+ * that belongs in the picker's own initial form state (a UI concern), not
+ * in prompt construction.
  */
-export function buildSharedContextClauses(settings: ContentBriefSettings): string[] {
+export function buildSharedContextClauses(settings: ContentBriefSettings, brandProfile?: BrandProfile | null): string[] {
   const lines: string[] = [];
 
   if (settings.secondaryKeywords.length > 0) {
@@ -153,11 +178,26 @@ export function buildSharedContextClauses(settings: ContentBriefSettings): strin
   if (settings.searchIntent) {
     lines.push(`Requested search intent: ${settings.searchIntent}.`);
   }
-  if (settings.targetCountry) lines.push(`Target country/market: ${settings.targetCountry}.`);
-  if (settings.language) lines.push(`Write in this language: ${settings.language}.`);
-  if (settings.brandName) lines.push(`Brand name: ${settings.brandName}.`);
-  if (settings.competitorUrls.length > 0) {
-    lines.push(`Competitor pages to differentiate from (for context only — do not copy): ${settings.competitorUrls.join(", ")}.`);
+
+  const targetCountry = settings.targetCountry || brandProfile?.targetCountry || undefined;
+  if (targetCountry) lines.push(`Target country/market: ${targetCountry}.`);
+
+  const language = settings.language || brandProfile?.language || undefined;
+  if (language) lines.push(`Write in this language: ${language}.`);
+
+  const brandName = settings.brandName || brandProfile?.brandName || undefined;
+  if (brandName) lines.push(`Brand name: ${brandName}.`);
+
+  const competitorUrls = settings.competitorUrls.length > 0 ? settings.competitorUrls : (brandProfile?.competitorUrls ?? []);
+  if (competitorUrls.length > 0) {
+    lines.push(`Competitor pages to differentiate from (for context only — do not copy): ${competitorUrls.join(", ")}.`);
+  }
+
+  if (brandProfile?.targetAudience) {
+    lines.push(`Target audience: ${brandProfile.targetAudience}.`);
+  }
+  if (brandProfile?.productsServices) {
+    lines.push(`Products/services: ${brandProfile.productsServices}.`);
   }
 
   return lines;

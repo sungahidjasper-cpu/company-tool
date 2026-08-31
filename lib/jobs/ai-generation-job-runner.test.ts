@@ -19,6 +19,9 @@ vi.mock("@/features/ai-workspace/services/content-brief.service", () => ({
 vi.mock("@/features/ai-workspace/services/long-form-content.service", () => ({
   generateLongFormContent: vi.fn(),
 }));
+vi.mock("@/features/ai-workspace/services/schema-markup-generator.service", () => ({
+  generateSchemaMarkupRecommendations: vi.fn(),
+}));
 
 import { prisma } from "@/lib/prisma";
 import {
@@ -29,6 +32,7 @@ import {
 } from "@/lib/jobs/ai-generation-job-table";
 import { generateContentBrief } from "@/features/ai-workspace/services/content-brief.service";
 import { generateLongFormContent } from "@/features/ai-workspace/services/long-form-content.service";
+import { generateSchemaMarkupRecommendations } from "@/features/ai-workspace/services/schema-markup-generator.service";
 import { LlmProviderError } from "@/lib/ai/providers/errors";
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
 
@@ -40,6 +44,7 @@ const mockMarkSucceeded = vi.mocked(markAiGenerationJobSucceeded);
 const mockMarkFailed = vi.mocked(markAiGenerationJobFailed);
 const mockGenerateContentBrief = vi.mocked(generateContentBrief);
 const mockGenerateLongFormContent = vi.mocked(generateLongFormContent);
+const mockGenerateSchemaMarkup = vi.mocked(generateSchemaMarkupRecommendations);
 const mockUpdatePartialText = vi.mocked(updateAiGenerationJobPartialText);
 
 const SEO_PROJECT = { id: "project-1", name: "Acme SEO", domain: "acme.example" };
@@ -246,6 +251,85 @@ describe("runAiGenerationJob — CONTENT_DRAFT", () => {
 
     expect(mockGenerateLongFormContent).not.toHaveBeenCalled();
     expect(mockMarkFailed).toHaveBeenCalledWith("job-7", "This content has no saved brief to generate an article from.", "UNKNOWN");
+  });
+});
+
+describe("runAiGenerationJob — SCHEMA_MARKUP_GENERATION", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const SCHEMA_MARKUP_RESULT = { recommendations: [{ schemaType: "LocalBusiness", reasoning: "Local service business.", exampleJsonLd: "{}" }] };
+
+  it("dispatches to generateSchemaMarkupRecommendations with the resolved SEO project and no content, marks the job SUCCEEDED", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-9",
+      taskType: "SCHEMA_MARKUP_GENERATION",
+      inputJson: { seoProjectId: "project-1" },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockGenerateSchemaMarkup.mockResolvedValue(SCHEMA_MARKUP_RESULT as never);
+
+    await runAiGenerationJob("job-9");
+
+    expect(mockGenerateSchemaMarkup).toHaveBeenCalledWith(
+      {
+        seoProjectId: "project-1",
+        seoProjectName: "Acme SEO",
+        domain: "acme.example",
+        content: null,
+        notes: undefined,
+      },
+      undefined
+    );
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-9", SCHEMA_MARKUP_RESULT);
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+  });
+
+  it("fetches and passes the target Content row's title/metaDescription/url when contentId is supplied", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-10",
+      taskType: "SCHEMA_MARKUP_GENERATION",
+      inputJson: { seoProjectId: "project-1", contentId: "content-1" },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindContent.mockResolvedValue({ title: "Emergency Plumbing", metaDescription: "24/7 service.", url: "https://acme.example/emergency" } as never);
+    mockGenerateSchemaMarkup.mockResolvedValue(SCHEMA_MARKUP_RESULT as never);
+
+    await runAiGenerationJob("job-10");
+
+    expect(mockGenerateSchemaMarkup).toHaveBeenCalledWith(
+      expect.objectContaining({ content: { title: "Emergency Plumbing", metaDescription: "24/7 service.", url: "https://acme.example/emergency" } }),
+      undefined
+    );
+  });
+
+  it("marks the job FAILED with a specific message when the referenced Content row no longer exists", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-11",
+      taskType: "SCHEMA_MARKUP_GENERATION",
+      inputJson: { seoProjectId: "project-1", contentId: "missing-content" },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindContent.mockResolvedValue(null);
+
+    await runAiGenerationJob("job-11");
+
+    expect(mockGenerateSchemaMarkup).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-11", "Content not found.", "UNKNOWN");
+  });
+
+  it("rejects an invalid inputJson shape without ever calling generateSchemaMarkupRecommendations", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-12",
+      taskType: "SCHEMA_MARKUP_GENERATION",
+      inputJson: { seoProjectId: "" },
+    } as never);
+
+    await runAiGenerationJob("job-12");
+
+    expect(mockGenerateSchemaMarkup).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-12", expect.any(String), "UNKNOWN");
   });
 });
 

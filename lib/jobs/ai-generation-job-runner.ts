@@ -11,10 +11,11 @@ import {
 } from "@/lib/jobs/ai-generation-job-table";
 import { generateContentBrief } from "@/features/ai-workspace/services/content-brief.service";
 import { generateLongFormContent } from "@/features/ai-workspace/services/long-form-content.service";
+import { generateSchemaMarkupRecommendations } from "@/features/ai-workspace/services/schema-markup-generator.service";
 import { contentBriefOutputSchema, type ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { externalSourceSchema, faqItemSchema, normalizeArray, normalizeInternalLinkSuggestions } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { contentBriefSettingsSchema, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
-import { validateContentBriefJobInput, validateLongFormJobInput } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
+import { validateContentBriefJobInput, validateLongFormJobInput, validateSchemaMarkupJobInput } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 
 /**
  * Reconstructs a ContentBriefOutput-shaped object from an already-saved
@@ -198,6 +199,37 @@ async function dispatchContentDraft(job: DispatchJob, onChunk?: (event: StreamEv
   return article as unknown as Prisma.InputJsonValue;
 }
 
+async function dispatchSchemaMarkup(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const parsed = validateSchemaMarkupJobInput(job.inputJson);
+  if (!parsed.success) throw new Error(parsed.message);
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
+  if (!seoProject) throw new Error("SEO project not found.");
+
+  let content: { title: string; metaDescription: string | null; url: string | null } | null = null;
+  if (parsed.data.contentId) {
+    const found = await prisma.content.findUnique({
+      where: { id: parsed.data.contentId },
+      select: { title: true, metaDescription: true, url: true },
+    });
+    if (!found) throw new Error("Content not found.");
+    content = found;
+  }
+
+  const result = await generateSchemaMarkupRecommendations(
+    {
+      seoProjectId: seoProject.id,
+      companyId: job.companyId,
+      seoProjectName: seoProject.name,
+      domain: seoProject.domain,
+      content,
+      notes: parsed.data.notes,
+    },
+    onChunk
+  );
+  return result as unknown as Prisma.InputJsonValue;
+}
+
 /**
  * Phase 30 Stage 10 — a per-taskType lookup table replacing what used to be
  * a hardcoded if/else chain in dispatch() below. Behavior for CONTENT_BRIEF
@@ -208,10 +240,13 @@ async function dispatchContentDraft(job: DispatchJob, onChunk?: (event: StreamEv
  * and one entry here instead of growing this if/else further. RECOMMENDATIONS
  * and CONTENT_INTELLIGENCE (Website Analysis's own AiTaskType values) are
  * deliberately absent — those are never dispatched through AiGenerationJob.
+ * SCHEMA_MARKUP_GENERATION added as the third AI Workspace tool, following
+ * this exact same additive pattern.
  */
 const TASK_HANDLERS: Partial<Record<AiTaskType, TaskHandler>> = {
   CONTENT_BRIEF: dispatchContentBrief,
   CONTENT_DRAFT: dispatchContentDraft,
+  SCHEMA_MARKUP_GENERATION: dispatchSchemaMarkup,
 };
 
 /**

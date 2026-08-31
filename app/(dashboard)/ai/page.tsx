@@ -24,8 +24,8 @@ import { requireUser } from "@/lib/auth";
 import { formatEnumLabel } from "@/lib/utils";
 
 /**
- * Phase 21 §17 — a navigation shell only. Two tools are real; the other
- * twelve are visibly-disabled placeholders so the layout doesn't need a
+ * Phase 21 §17 — a navigation shell only. Three tools are real; the other
+ * eleven are visibly-disabled placeholders so the layout doesn't need a
  * redesign as each one gets built out in a future phase (per the review's
  * item 18: deepen Content Brief/Draft now, don't build new shallow tools).
  */
@@ -36,7 +36,7 @@ const AI_TOOLS = [
   { name: "Internal Link Analyzer", description: "Suggest internal linking opportunities across your site.", href: null, icon: Link2, status: "coming-soon" as const },
   { name: "Content Gap Analysis", description: "Find topics competitors rank for that you don't cover yet.", href: null, icon: Search, status: "coming-soon" as const },
   { name: "Competitor Content Analysis", description: "Compare your content against top-ranking competitor pages.", href: null, icon: Users, status: "coming-soon" as const },
-  { name: "Schema Markup Generator", description: "Generate structured-data markup for existing pages.", href: null, icon: ShieldCheck, status: "coming-soon" as const },
+  { name: "Schema Markup Generator", description: "Generate structured-data markup for existing pages.", href: "/ai/schema-markup/new", icon: ShieldCheck, status: "available" as const },
   { name: "Content Rewriter", description: "Refresh and improve underperforming existing content.", href: null, icon: FileEdit, status: "coming-soon" as const },
   { name: "Topic Cluster Planner", description: "Plan pillar/cluster content structures around a topic.", href: null, icon: Network, status: "coming-soon" as const },
   { name: "Content Calendar Assistant", description: "Plan and schedule upcoming content topics.", href: null, icon: CalendarDays, status: "coming-soon" as const },

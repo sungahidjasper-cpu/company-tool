@@ -1119,6 +1119,10 @@ enum AiTaskType {
   /// body from an already-approved CONTENT_BRIEF; also scoped via
   /// AiUsageLog.seoProjectId, never websiteAnalysisJobId.
   CONTENT_DRAFT
+  /// The third AI Workspace tool — recommends schema.org structured-data
+  /// (JSON-LD) types for a business/page. Generate-and-display only, never
+  /// persisted, so it needs no new Content column.
+  SCHEMA_MARKUP_GENERATION
 }
 
 /// Phase 11C — one row per provider attempt (success or failure), for cost/

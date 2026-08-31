@@ -12,6 +12,7 @@ import { z as zv4 } from "zod/v4";
 import { generateStructuredOutput } from "@/lib/ai/structured-output";
 import { getKnowledgeSourceContextForSeoProject } from "@/features/seo/services/knowledge-source-context.service";
 import { generateContentBrief, PROMPT_VERSION, type ContentBriefContext } from "@/features/ai-workspace/services/content-brief.service";
+import { DEFAULT_CONTENT_BRIEF_SETTINGS } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 
 const mockGenerate = vi.mocked(generateStructuredOutput);
 const mockGetKnowledgeSourceContext = vi.mocked(getKnowledgeSourceContextForSeoProject);
@@ -156,6 +157,31 @@ describe("generateContentBrief", () => {
     const [, options] = mockGenerate.mock.calls[0];
     expect(options.prompt).toContain("emergency plumber near me");
     expect(options.prompt).toContain("COMMERCIAL");
+  });
+
+  it("[Phase 30 Stage 11] still includes secondary keywords, search intent, target country, language, brand name, and competitor URLs in the prompt — regression check for buildSettingsClauses now delegating these to the shared buildSharedContextClauses helper (also used by long-form generation)", async () => {
+    mockGenerate.mockResolvedValue(BRIEF_RESULT);
+
+    await generateContentBrief({
+      ...BASE_CTX,
+      settings: {
+        ...DEFAULT_CONTENT_BRIEF_SETTINGS,
+        secondaryKeywords: ["burst pipe repair", "24 hour plumber"],
+        searchIntent: "TRANSACTIONAL",
+        targetCountry: "United States",
+        language: "English",
+        brandName: "Acme Plumbing",
+        competitorUrls: ["https://competitor-a.example.com", "https://competitor-b.example.com"],
+      },
+    });
+
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("Secondary keywords to naturally incorporate: burst pipe repair, 24 hour plumber.");
+    expect(options.prompt).toContain("Requested search intent: TRANSACTIONAL.");
+    expect(options.prompt).toContain("Target country/market: United States.");
+    expect(options.prompt).toContain("Write in this language: English.");
+    expect(options.prompt).toContain("Brand name: Acme Plumbing.");
+    expect(options.prompt).toContain("Competitor pages to differentiate from (for context only — do not copy): https://competitor-a.example.com, https://competitor-b.example.com.");
   });
 
   it("instructs the model with the exact meta title/description character ranges, not a vague approximation", async () => {

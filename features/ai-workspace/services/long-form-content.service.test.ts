@@ -182,6 +182,41 @@ describe("generateLongFormContent", () => {
     expect(options.prompt).toContain("Use direct Q&A framing.");
   });
 
+  it("[Phase 30 Stage 11] does not add any secondary-keyword/search-intent/country/language/brand/competitor context clauses when none are configured (default settings)", async () => {
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent(BASE_CTX);
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).not.toContain("Secondary keywords to naturally incorporate");
+    expect(options.prompt).not.toContain("Requested search intent");
+    expect(options.prompt).not.toContain("Target country/market");
+    expect(options.prompt).not.toContain("Write in this language");
+    expect(options.prompt).not.toContain("Brand name:");
+    expect(options.prompt).not.toContain("Competitor pages to differentiate from");
+  });
+
+  it("[Phase 30 Stage 11] includes secondary keywords, search intent, target country, language, brand name, and competitor URLs in the prompt when configured — the context-parity fix (these previously reached the brief's own prompt but were silently dropped here)", async () => {
+    mockGenerate.mockResolvedValue(ARTICLE_RESULT);
+    await generateLongFormContent({
+      ...BASE_CTX,
+      settings: {
+        ...DEFAULT_CONTENT_BRIEF_SETTINGS,
+        secondaryKeywords: ["burst pipe repair", "24 hour plumber"],
+        searchIntent: "TRANSACTIONAL",
+        targetCountry: "United States",
+        language: "English",
+        brandName: "Acme Plumbing",
+        competitorUrls: ["https://competitor-a.example.com", "https://competitor-b.example.com"],
+      },
+    });
+    const [, options] = mockGenerate.mock.calls[0];
+    expect(options.prompt).toContain("Secondary keywords to naturally incorporate: burst pipe repair, 24 hour plumber.");
+    expect(options.prompt).toContain("Requested search intent: TRANSACTIONAL.");
+    expect(options.prompt).toContain("Target country/market: United States.");
+    expect(options.prompt).toContain("Write in this language: English.");
+    expect(options.prompt).toContain("Brand name: Acme Plumbing.");
+    expect(options.prompt).toContain("Competitor pages to differentiate from (for context only — do not copy): https://competitor-a.example.com, https://competitor-b.example.com.");
+  });
+
   it("still generates when no keyword is selected", async () => {
     mockGenerate.mockResolvedValue(ARTICLE_RESULT);
     await generateLongFormContent({ ...BASE_CTX, keyword: null });

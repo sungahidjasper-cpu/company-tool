@@ -1,18 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { cancelAiGenerationJobAction, getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
+import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import { previewContentBriefPromptAction, saveContentBriefAction, startContentBriefGenerationAction } from "@/features/ai-workspace/actions/content-brief.actions";
 import { saveLongFormAsNewContentAction, startLongFormGenerationAction } from "@/features/ai-workspace/actions/long-form-content.actions";
 import ContentBriefReview from "@/features/ai-workspace/components/ContentBriefReview";
 import LongFormContentReview, { type LongFormDraftExtras, type LongFormEditableFields } from "@/features/ai-workspace/components/LongFormContentReview";
+import { useAiGenerationLifecycle } from "@/features/ai-workspace/hooks/use-ai-generation-lifecycle";
 import {
   BRAND_VOICES,
   CONTENT_BRIEF_SEARCH_INTENTS,
@@ -26,12 +27,8 @@ import { validateContentBriefJobInput, validateLongFormJobInput } from "@/featur
 import type { InternalLinkSuggestion } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { CONTENT_BRIEF_TYPES, contentBriefOutputSchema, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { formatLongFormContentAsMarkdown, longFormContentOutputSchema } from "@/features/ai-workspace/schemas/long-form-content.schema";
-import { parsePreviewFields, type JsonValue } from "@/features/ai-workspace/services/partial-json-preview.service";
 import { type LlmErrorType } from "@/lib/ai/providers/errors";
 import { formatEnumLabel } from "@/lib/utils";
-
-const POLL_INTERVAL_MS = 3000;
-const MAX_POLL_MS = 5 * 60 * 1000;
 
 const selectClassName =
   "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm";
@@ -81,8 +78,6 @@ function NumberField({ label, value, onChange, min, max }: { label: string; valu
  */
 export default function ContentBriefPicker({ seoProjectOptions, keywordsByProject, canPreviewPrompt = false }: ContentBriefPickerProps) {
   const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
 
   const [seoProjectId, setSeoProjectId] = useState(seoProjectOptions[0]?.id ?? "");
   const [keywordId, setKeywordId] = useState("");
@@ -118,38 +113,6 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
 
   const keywordOptions = useMemo(() => keywordsByProject[seoProjectId] ?? [], [keywordsByProject, seoProjectId]);
   const targetKeyword = useMemo(() => keywordOptions.find((k) => k.id === keywordId)?.term, [keywordOptions, keywordId]);
-
-  // Phase 22 — a live preview layered on top of the poll loop below, never a
-  // replacement for it. streamCharCount/streamProgress are purely cosmetic;
-  // isSwitchingProvider briefly shows a wipe-and-restart message when the
-  // orchestrator falls back to a different provider mid-stream, so partial
-  // output from an abandoned attempt is never confused with the new one.
-  const [streamCharCount, setStreamCharCount] = useState<number | null>(null);
-  const [streamProgress, setStreamProgress] = useState<number | null>(null);
-  const [isSwitchingProvider, setIsSwitchingProvider] = useState(false);
-  // Phase 22 Stage 3 — a schema-agnostic scan of the same accumulated text,
-  // exposing whichever fields are already fully written. Strictly cosmetic,
-  // layered beneath the char-count line above; never a source of truth.
-  const [previewFields, setPreviewFields] = useState<Record<string, JsonValue> | null>(null);
-  const streamRef = useRef<EventSource | null>(null);
-
-  /**
-   * Phase 30 Stage 10 — the job currently being polled (if any), mirrored
-   * into the URL's ?jobId= query param via setActiveJob below so a browser
-   * refresh mid-generation (or even after SUCCEEDED/FAILED, before the user
-   * has navigated away) can reattach instead of orphaning the job. Also
-   * doubles as the target for the Cancel button.
-   */
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
-
-  function setActiveJob(jobId: string | null) {
-    setActiveJobId(jobId);
-    const params = new URLSearchParams(searchParams.toString());
-    if (jobId) params.set("jobId", jobId);
-    else params.delete("jobId");
-    const query = params.toString();
-    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
-  }
 
   /** Shared by runGenerate's poll success handler and resumeJob — no state dependency, so no stale-closure risk. */
   function applyBriefResult(resultJson: unknown) {
@@ -192,115 +155,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
     });
   }
 
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-      streamRef.current?.close();
-    };
-  }, []);
-
-  /**
-   * Phase 22 — best-effort only: if streaming is disabled server-side, this
-   * endpoint 404s and onerror below just closes the connection, leaving the
-   * existing poll-only experience completely unaffected. Never awaited,
-   * never a dependency of anything that detects job completion — that stays
-   * pollGenerationJob's job alone.
-   */
-  function openGenerationStream(jobId: string) {
-    streamRef.current?.close();
-    setStreamCharCount(null);
-    setStreamProgress(null);
-    setIsSwitchingProvider(false);
-    setPreviewFields(null);
-
-    const source = new EventSource(`/api/ai-workspace/jobs/${jobId}/stream`);
-    streamRef.current = source;
-
-    source.addEventListener("text", (event) => {
-      try {
-        const { text } = JSON.parse((event as MessageEvent).data);
-        setIsSwitchingProvider(false);
-        setStreamCharCount(typeof text === "string" ? text.length : null);
-        setPreviewFields(typeof text === "string" ? parsePreviewFields(text) : null);
-      } catch {
-        // Malformed event — ignore, this is a cosmetic preview only.
-      }
-    });
-    source.addEventListener("progress", (event) => {
-      try {
-        const { progress } = JSON.parse((event as MessageEvent).data);
-        setStreamProgress(typeof progress === "number" ? progress : null);
-      } catch {
-        // Ignore — cosmetic only.
-      }
-    });
-    source.addEventListener("reset", () => {
-      setIsSwitchingProvider(true);
-      setStreamCharCount(null);
-      setPreviewFields(null);
-    });
-    source.addEventListener("done", () => {
-      source.close();
-    });
-    source.onerror = () => {
-      source.close();
-    };
-  }
-
-  function closeGenerationStream() {
-    streamRef.current?.close();
-    streamRef.current = null;
-    setStreamCharCount(null);
-    setStreamProgress(null);
-    setIsSwitchingProvider(false);
-    setPreviewFields(null);
-  }
-
-  /**
-   * Phase 18 — polls an AiGenerationJob until it settles, then hands the
-   * parsed resultJson to onSucceeded. A max poll duration (well above the
-   * documented worst case with Phase 17 retries) stops an abandoned/stuck
-   * poll from running forever rather than leaving it open-ended.
-   */
-  function pollGenerationJob(jobId: string, onSucceeded: (resultJson: unknown) => void, onSettled: () => void) {
-    if (pollRef.current) clearInterval(pollRef.current);
-    const startedAt = Date.now();
-
-    pollRef.current = setInterval(async () => {
-      if (Date.now() - startedAt > MAX_POLL_MS) {
-        if (pollRef.current) clearInterval(pollRef.current);
-        onSettled();
-        setErrorType(null);
-        setError("This is taking longer than expected. Please check back shortly or try again.");
-        return;
-      }
-
-      const poll = await getAiGenerationJobAction(jobId);
-      if (!poll.success) {
-        if (pollRef.current) clearInterval(pollRef.current);
-        onSettled();
-        setErrorType(null);
-        setError(poll.message);
-        return;
-      }
-      if (!poll.data) return;
-
-      if (poll.data.status === "FAILED") {
-        if (pollRef.current) clearInterval(pollRef.current);
-        onSettled();
-        setErrorType(poll.data.errorType);
-        setError(poll.data.errorMessage ?? "Generation failed.");
-        return;
-      }
-
-      if (poll.data.status === "SUCCEEDED") {
-        if (pollRef.current) clearInterval(pollRef.current);
-        onSettled();
-        onSucceeded(poll.data.resultJson);
-      }
-    }, POLL_INTERVAL_MS);
-  }
+  const lifecycle = useAiGenerationLifecycle(resumeJob);
 
   async function runGenerate() {
     setError(null);
@@ -321,26 +176,33 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
       return;
     }
 
-    setActiveJob(result.data.jobId);
-    openGenerationStream(result.data.jobId);
-    pollGenerationJob(result.data.jobId, applyBriefResult, () => {
-      setIsGenerating(false);
-      closeGenerationStream();
+    lifecycle.setActiveJob(result.data.jobId);
+    lifecycle.openGenerationStream(result.data.jobId);
+    lifecycle.pollGenerationJob(result.data.jobId, {
+      onSucceeded: applyBriefResult,
+      onFailed: (type, message) => {
+        setErrorType(type);
+        setError(message);
+      },
+      onSettled: () => {
+        setIsGenerating(false);
+        lifecycle.closeGenerationStream();
+      },
     });
   }
 
   /**
-   * Phase 30 Stage 10 — reattaches to the job named in ?jobId=, whatever its
-   * current status: still resumes polling if it's PENDING/RUNNING, or
-   * immediately shows the SUCCEEDED/FAILED outcome the user would otherwise
-   * have missed by refreshing. A job that no longer exists, belongs to
-   * another company, or fails its own input-shape validation just clears
-   * the param and falls back to the empty form — never throws.
+   * Reattaches to the job named in ?jobId=, whatever its current status:
+   * still resumes polling if it's PENDING/RUNNING, or immediately shows the
+   * SUCCEEDED/FAILED outcome the user would otherwise have missed by
+   * refreshing. A job that no longer exists, belongs to another company, or
+   * fails its own input-shape validation just clears the param and falls
+   * back to the empty form — never throws.
    */
   async function resumeJob(jobId: string) {
     const poll = await getAiGenerationJobAction(jobId);
     if (!poll.success || !poll.data) {
-      setActiveJob(null);
+      lifecycle.setActiveJob(null);
       return;
     }
     const job = poll.data;
@@ -348,7 +210,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
     if (job.taskType === "CONTENT_BRIEF") {
       const parsedInput = validateContentBriefJobInput(job.inputJson);
       if (!parsedInput.success) {
-        setActiveJob(null);
+        lifecycle.setActiveJob(null);
         return;
       }
       const input = parsedInput.data;
@@ -357,7 +219,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
       setContentType(input.contentType);
       setNotes(input.notes ?? "");
       setSettings(input.settings ?? DEFAULT_CONTENT_BRIEF_SETTINGS);
-      setActiveJobId(jobId);
+      lifecycle.setActiveJob(jobId);
 
       if (job.status === "SUCCEEDED") {
         applyBriefResult(job.resultJson);
@@ -372,10 +234,17 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
         return;
       }
       setIsGenerating(true);
-      openGenerationStream(jobId);
-      pollGenerationJob(jobId, applyBriefResult, () => {
-        setIsGenerating(false);
-        closeGenerationStream();
+      lifecycle.openGenerationStream(jobId);
+      lifecycle.pollGenerationJob(jobId, {
+        onSucceeded: applyBriefResult,
+        onFailed: (type, message) => {
+          setErrorType(type);
+          setError(message);
+        },
+        onSettled: () => {
+          setIsGenerating(false);
+          lifecycle.closeGenerationStream();
+        },
       });
       return;
     }
@@ -383,7 +252,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
     if (job.taskType === "CONTENT_DRAFT") {
       const parsedInput = validateLongFormJobInput(job.inputJson);
       if (!parsedInput.success || parsedInput.data.mode !== "fromBrief") {
-        setActiveJob(null);
+        lifecycle.setActiveJob(null);
         return;
       }
       const input = parsedInput.data;
@@ -392,7 +261,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
       setKeywordId(input.keywordId ?? "");
       setBrief(input.brief);
       setSettings(resolvedSettings);
-      setActiveJobId(jobId);
+      lifecycle.setActiveJob(jobId);
 
       if (job.status === "SUCCEEDED") {
         applyLongFormResult(job.resultJson, input.brief, resolvedSettings);
@@ -407,45 +276,31 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
         return;
       }
       setIsGeneratingLongForm(true);
-      openGenerationStream(jobId);
-      pollGenerationJob(jobId, (resultJson) => applyLongFormResult(resultJson, input.brief, resolvedSettings), () => {
-        setIsGeneratingLongForm(false);
-        closeGenerationStream();
+      lifecycle.openGenerationStream(jobId);
+      lifecycle.pollGenerationJob(jobId, {
+        onSucceeded: (resultJson) => applyLongFormResult(resultJson, input.brief, resolvedSettings),
+        onFailed: (type, message) => {
+          setErrorType(type);
+          setError(message);
+        },
+        onSettled: () => {
+          setIsGeneratingLongForm(false);
+          lifecycle.closeGenerationStream();
+        },
       });
       return;
     }
 
     // A taskType this component never creates (e.g. Website Analysis's own
     // task types) — not ours to resume.
-    setActiveJob(null);
+    lifecycle.setActiveJob(null);
   }
 
-  useEffect(() => {
-    const resumeJobId = searchParams.get("jobId");
-    if (!resumeJobId) return;
-    // Deferred via setTimeout, matching this codebase's existing
-    // WebsiteAnalysisWorkspace.tsx pollJob pattern: resumeJob's own setState
-    // calls happen after an await, not synchronously in the effect body, so
-    // this must run as a genuinely separate task, not a direct call.
-    const timeoutId = setTimeout(() => {
-      void resumeJob(resumeJobId);
-    }, 0);
-    return () => clearTimeout(timeoutId);
-    // Only on mount — resumeJob itself drives every subsequent state change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  /** Phase 30 Stage 10 — a soft cancel; see cancelAiGenerationJob's comment for exactly what this does and doesn't stop. */
   async function handleCancel() {
-    if (!activeJobId) return;
-    const jobId = activeJobId;
-    if (pollRef.current) clearInterval(pollRef.current);
-    closeGenerationStream();
-    setIsGenerating(false);
-    setIsGeneratingLongForm(false);
-    setActiveJob(null);
-    await cancelAiGenerationJobAction(jobId);
-    toast.success("Generation cancelled.");
+    await lifecycle.cancel(() => {
+      setIsGenerating(false);
+      setIsGeneratingLongForm(false);
+    });
   }
 
   async function handlePreviewPrompt() {
@@ -508,11 +363,18 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
       return;
     }
 
-    setActiveJob(result.data.jobId);
-    openGenerationStream(result.data.jobId);
-    pollGenerationJob(result.data.jobId, (resultJson) => applyLongFormResult(resultJson, brief, settings), () => {
-      setIsGeneratingLongForm(false);
-      closeGenerationStream();
+    lifecycle.setActiveJob(result.data.jobId);
+    lifecycle.openGenerationStream(result.data.jobId);
+    lifecycle.pollGenerationJob(result.data.jobId, {
+      onSucceeded: (resultJson) => applyLongFormResult(resultJson, brief, settings),
+      onFailed: (type, message) => {
+        setErrorType(type);
+        setError(message);
+      },
+      onSettled: () => {
+        setIsGeneratingLongForm(false);
+        lifecycle.closeGenerationStream();
+      },
     });
   }
 
@@ -559,10 +421,10 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
         isSaving={isSavingLongForm}
         error={error}
         errorType={errorType}
-        streamCharCount={streamCharCount}
-        streamProgress={streamProgress}
-        isSwitchingProvider={isSwitchingProvider}
-        previewFields={previewFields}
+        streamCharCount={lifecycle.streamCharCount}
+        streamProgress={lifecycle.streamProgress}
+        isSwitchingProvider={lifecycle.isSwitchingProvider}
+        previewFields={lifecycle.previewFields}
       />
     );
   }
@@ -583,10 +445,10 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
         error={error}
         errorType={errorType}
         regenerateFieldContext={{ seoProjectId, keywordId: keywordId || undefined, contentType, notes: notes || undefined }}
-        streamCharCount={streamCharCount}
-        streamProgress={streamProgress}
-        isSwitchingProvider={isSwitchingProvider}
-        previewFields={previewFields}
+        streamCharCount={lifecycle.streamCharCount}
+        streamProgress={lifecycle.streamProgress}
+        isSwitchingProvider={lifecycle.isSwitchingProvider}
+        previewFields={lifecycle.previewFields}
       />
     );
   }
@@ -857,42 +719,42 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      {isGenerating && (isSwitchingProvider || streamCharCount !== null) && (
+      {isGenerating && (lifecycle.isSwitchingProvider || lifecycle.streamCharCount !== null) && (
         <p className="text-sm text-slate-500">
-          {isSwitchingProvider
+          {lifecycle.isSwitchingProvider
             ? "Switching to backup AI provider — restarting…"
-            : `Generating… ${streamCharCount} characters so far${streamProgress !== null ? ` (~${streamProgress}%)` : ""}`}
+            : `Generating… ${lifecycle.streamCharCount} characters so far${lifecycle.streamProgress !== null ? ` (~${lifecycle.streamProgress}%)` : ""}`}
         </p>
       )}
-      {isGenerating && !isSwitchingProvider && streamCharCount !== null && streamProgress !== null && (
-        <Progress value={streamProgress} aria-label="Generation progress" />
+      {isGenerating && !lifecycle.isSwitchingProvider && lifecycle.streamCharCount !== null && lifecycle.streamProgress !== null && (
+        <Progress value={lifecycle.streamProgress} aria-label="Generation progress" />
       )}
-      {isGenerating && !isSwitchingProvider && previewFields && Object.keys(previewFields).length > 0 && (
+      {isGenerating && !lifecycle.isSwitchingProvider && lifecycle.previewFields && Object.keys(lifecycle.previewFields).length > 0 && (
         <div className="space-y-1 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
-          {typeof previewFields.title === "string" && (
+          {typeof lifecycle.previewFields.title === "string" && (
             <p>
-              <span className="font-medium text-slate-700">Title:</span> {previewFields.title}
+              <span className="font-medium text-slate-700">Title:</span> {lifecycle.previewFields.title}
             </p>
           )}
-          {typeof previewFields.metaTitle === "string" && (
+          {typeof lifecycle.previewFields.metaTitle === "string" && (
             <p>
-              <span className="font-medium text-slate-700">Meta title:</span> {previewFields.metaTitle}
+              <span className="font-medium text-slate-700">Meta title:</span> {lifecycle.previewFields.metaTitle}
             </p>
           )}
-          {typeof previewFields.metaDescription === "string" && (
+          {typeof lifecycle.previewFields.metaDescription === "string" && (
             <p>
-              <span className="font-medium text-slate-700">Meta description:</span> {previewFields.metaDescription}
+              <span className="font-medium text-slate-700">Meta description:</span> {lifecycle.previewFields.metaDescription}
             </p>
           )}
-          {Array.isArray(previewFields.outline) && previewFields.outline.length > 0 && (
+          {Array.isArray(lifecycle.previewFields.outline) && lifecycle.previewFields.outline.length > 0 && (
             <p>
-              <span className="font-medium text-slate-700">Outline so far ({previewFields.outline.length}):</span>{" "}
-              {previewFields.outline.filter((item): item is string => typeof item === "string").join(", ")}
+              <span className="font-medium text-slate-700">Outline so far ({lifecycle.previewFields.outline.length}):</span>{" "}
+              {lifecycle.previewFields.outline.filter((item): item is string => typeof item === "string").join(", ")}
             </p>
           )}
-          {Array.isArray(previewFields.faq) && previewFields.faq.length > 0 && (
+          {Array.isArray(lifecycle.previewFields.faq) && lifecycle.previewFields.faq.length > 0 && (
             <p>
-              <span className="font-medium text-slate-700">FAQ items so far:</span> {previewFields.faq.length}
+              <span className="font-medium text-slate-700">FAQ items so far:</span> {lifecycle.previewFields.faq.length}
             </p>
           )}
         </div>

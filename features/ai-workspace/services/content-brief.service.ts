@@ -1,7 +1,7 @@
 import { generateStructuredOutput, generateStructuredOutputStreaming } from "@/lib/ai/structured-output";
 import type { StreamEvent } from "@/lib/ai/providers/types";
 import { buildContentBriefOutputSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
-import { DEFAULT_CONTENT_BRIEF_SETTINGS, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
+import { buildSharedContextClauses, DEFAULT_CONTENT_BRIEF_SETTINGS, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { contentBriefOutputSchema, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { looksLikeInstructionEcho, stripConfigurationArtifacts, stripHtmlTags } from "@/features/ai-workspace/services/content-sanitizer";
@@ -45,20 +45,8 @@ const FAQ_STYLE_INSTRUCTIONS: Record<string, string> = {
  * longer, still-linear builder, matching the plan's own framing.
  */
 function buildSettingsClauses(settings: ContentBriefSettings): string[] {
-  const lines: string[] = [];
+  const lines: string[] = [...buildSharedContextClauses(settings)];
 
-  if (settings.secondaryKeywords.length > 0) {
-    lines.push(`Secondary keywords to naturally incorporate: ${settings.secondaryKeywords.join(", ")}.`);
-  }
-  if (settings.searchIntent) {
-    lines.push(`Requested search intent: ${settings.searchIntent}.`);
-  }
-  if (settings.targetCountry) lines.push(`Target country/market: ${settings.targetCountry}.`);
-  if (settings.language) lines.push(`Write in this language: ${settings.language}.`);
-  if (settings.brandName) lines.push(`Brand name: ${settings.brandName}.`);
-  if (settings.competitorUrls.length > 0) {
-    lines.push(`Competitor pages to differentiate from (for context only — do not copy): ${settings.competitorUrls.join(", ")}.`);
-  }
   if (settings.existingUrl) {
     lines.push(
       `This brief is for OPTIMIZING an existing page at ${settings.existingUrl}, not writing brand-new content — frame the outline and recommendations as improvements to what likely already exists there.`

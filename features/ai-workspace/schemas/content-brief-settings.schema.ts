@@ -129,3 +129,36 @@ export const contentBriefSettingsSchema = z.object({
 export type ContentBriefSettings = z.infer<typeof contentBriefSettingsSchema>;
 
 export const DEFAULT_CONTENT_BRIEF_SETTINGS: ContentBriefSettings = contentBriefSettingsSchema.parse({});
+
+/**
+ * Phase 30 Stage 11 — the requester-supplied context fields that both
+ * content-brief.service.ts's buildPrompt and long-form-content.service.ts's
+ * buildPrompt need identically. Extracted here (not left duplicated in one
+ * of those two files, and not folded into content-brief.service.ts's own,
+ * larger buildSettingsClauses) because before this stage, long-form
+ * generation silently never saw secondaryKeywords/searchIntent/
+ * targetCountry/language/brandName/competitorUrls at all — only the brief
+ * stage did. `existingUrl` is deliberately excluded: it only reframes the
+ * BRIEF's own scope ("optimize this existing page" vs. "write new content"),
+ * and by the time long-form runs, that framing is already baked into the
+ * approved brief it's given — restating it here would be redundant, not
+ * missing context.
+ */
+export function buildSharedContextClauses(settings: ContentBriefSettings): string[] {
+  const lines: string[] = [];
+
+  if (settings.secondaryKeywords.length > 0) {
+    lines.push(`Secondary keywords to naturally incorporate: ${settings.secondaryKeywords.join(", ")}.`);
+  }
+  if (settings.searchIntent) {
+    lines.push(`Requested search intent: ${settings.searchIntent}.`);
+  }
+  if (settings.targetCountry) lines.push(`Target country/market: ${settings.targetCountry}.`);
+  if (settings.language) lines.push(`Write in this language: ${settings.language}.`);
+  if (settings.brandName) lines.push(`Brand name: ${settings.brandName}.`);
+  if (settings.competitorUrls.length > 0) {
+    lines.push(`Competitor pages to differentiate from (for context only — do not copy): ${settings.competitorUrls.join(", ")}.`);
+  }
+
+  return lines;
+}

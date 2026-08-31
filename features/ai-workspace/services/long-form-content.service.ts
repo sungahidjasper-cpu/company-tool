@@ -3,7 +3,7 @@ import { z as zv4 } from "zod/v4";
 import { generateStructuredOutput, generateStructuredOutputStreaming } from "@/lib/ai/structured-output";
 import type { StreamEvent } from "@/lib/ai/providers/types";
 import type { ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
-import { DEFAULT_CONTENT_BRIEF_SETTINGS, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
+import { buildSharedContextClauses, DEFAULT_CONTENT_BRIEF_SETTINGS, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { buildLongFormOutputSchema } from "@/features/ai-workspace/schemas/long-form-output-builder";
 import { formatLongFormContentAsMarkdown, longFormContentOutputSchema, type LongFormContentOutput } from "@/features/ai-workspace/schemas/long-form-content.schema";
 import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
@@ -16,7 +16,7 @@ import { getKnowledgeSourceContextForSeoProject } from "@/features/seo/services/
  * version from content-brief.service.ts's PROMPT_VERSION, same convention
  * as every existing AI task in this app keeping its own counter.
  */
-export const PROMPT_VERSION = 9;
+export const PROMPT_VERSION = 10;
 
 const LONG_FORM_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are a senior SEO content writer producing a DRAFT article for internal human review before anything is published. Never invent statistics, prices, dates, named clients, testimonials, certifications, or services/locations not present in the supplied context. Never state a specific market statistic, percentage, financial figure, or industry data point (e.g. typical unit sizes, utilization rates, market share) unless it is present in the supplied context — describe such things qualitatively instead of inventing a number. Never characterize a specific real company or brand name as a generic category, product type, or common noun — if a real company name appears in the supplied context, refer to it accurately as a company/provider, not as a type of product or service. Never invent a URL, citation, or source you cannot verify. Integrate the target keyword naturally — do not keyword-stuff. This is a draft; a human will fact-check it before it is ever published.`;
 
@@ -111,9 +111,11 @@ export function buildPrompt(ctx: LongFormContentContext, knowledgeSourceContext?
     );
   }
 
+  const sharedContextClauses = buildSharedContextClauses(settings);
+
   return `Website: ${ctx.domain} (SEO project: ${ctx.seoProjectName})
 ${keywordLine}
-
+${sharedContextClauses.length > 0 ? `${sharedContextClauses.join("\n")}\n` : ""}
 This article's APPROVED BRIEF (already reviewed and approved by a human — follow it, do not deviate from its scope):
 - Title: ${ctx.brief.title}
 - Outline: ${ctx.brief.outline.join(" | ") || "(none)"}

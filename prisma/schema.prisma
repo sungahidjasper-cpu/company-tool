@@ -1133,6 +1133,11 @@ enum AiTaskType {
   /// Generate-and-display only, never persisted, so it needs no new Content
   /// column.
   SOCIAL_SNIPPET_GENERATION
+  /// The sixth AI Workspace tool — suggests improved meta titles/
+  /// descriptions for a bulk-selected set of existing Content rows.
+  /// Generation only; applying an accepted suggestion is a separate,
+  /// later-stage action, never performed by this task itself.
+  META_TAG_OPTIMIZATION
 }
 
 /// Phase 11C — one row per provider attempt (success or failure), for cost/

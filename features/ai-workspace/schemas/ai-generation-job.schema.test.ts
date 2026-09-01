@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { validateContentBriefJobInput, validateLongFormJobInput } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
+import { validateContentBriefJobInput, validateLongFormJobInput, validateMetaTagOptimizerJobInput } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 
 const BRIEF_OUTPUT = {
   title: "Best Plumbers in Austin",
@@ -74,6 +74,38 @@ describe("validateLongFormJobInput — fromBrief mode", () => {
     if (!result.success) {
       expect(result.message).toMatch(/regenerate/i);
     }
+  });
+});
+
+describe("validateMetaTagOptimizerJobInput", () => {
+  const VALID_UUID_1 = "00000000-0000-4000-8000-000000000001";
+  const VALID_UUID_2 = "00000000-0000-4000-8000-000000000002";
+  const PROJECT_UUID = "00000000-0000-4000-8000-0000000000f0";
+
+  it("12. accepts a valid Meta Tag Optimizer job input shape", () => {
+    const result = validateMetaTagOptimizerJobInput({ seoProjectId: PROJECT_UUID, contentIds: [VALID_UUID_1, VALID_UUID_2] });
+    expect(result).toEqual({ success: true, data: { seoProjectId: PROJECT_UUID, contentIds: [VALID_UUID_1, VALID_UUID_2] } });
+  });
+
+  it("13. rejects invalid job input (missing contentIds, malformed seoProjectId)", () => {
+    expect(validateMetaTagOptimizerJobInput({ seoProjectId: PROJECT_UUID }).success).toBe(false);
+    expect(validateMetaTagOptimizerJobInput({ seoProjectId: "not-a-uuid", contentIds: [VALID_UUID_1] }).success).toBe(false);
+    expect(validateMetaTagOptimizerJobInput(null).success).toBe(false);
+    expect(validateMetaTagOptimizerJobInput("a string").success).toBe(false);
+  });
+
+  it("14. rejects an empty content selection", () => {
+    expect(validateMetaTagOptimizerJobInput({ seoProjectId: PROJECT_UUID, contentIds: [] }).success).toBe(false);
+  });
+
+  it("15. rejects a selection of more than 50 content ids", () => {
+    const tooMany = Array.from({ length: 51 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+    expect(validateMetaTagOptimizerJobInput({ seoProjectId: PROJECT_UUID, contentIds: tooMany }).success).toBe(false);
+  });
+
+  it("accepts exactly 50 content ids", () => {
+    const exactlyFifty = Array.from({ length: 50 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+    expect(validateMetaTagOptimizerJobInput({ seoProjectId: PROJECT_UUID, contentIds: exactlyFifty }).success).toBe(true);
   });
 });
 

@@ -14,6 +14,7 @@ import { generateLongFormContent } from "@/features/ai-workspace/services/long-f
 import { generateSchemaMarkupRecommendations } from "@/features/ai-workspace/services/schema-markup-generator.service";
 import { generateInternalLinkRecommendations } from "@/features/ai-workspace/services/internal-link-analyzer.service";
 import { generateSocialSnippets } from "@/features/ai-workspace/services/social-snippet-generator.service";
+import { generateMetaTagSuggestions } from "@/features/ai-workspace/services/meta-tag-optimizer.service";
 import { contentBriefOutputSchema, type ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { externalSourceSchema, faqItemSchema, normalizeArray, normalizeInternalLinkSuggestions } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { contentBriefSettingsSchema, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
@@ -23,6 +24,7 @@ import {
   validateSchemaMarkupJobInput,
   validateInternalLinkAnalyzerJobInput,
   validateSocialSnippetGeneratorJobInput,
+  validateMetaTagOptimizerJobInput,
 } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 import { listContentInventoryForProject } from "@/features/seo/services/content.service";
 
@@ -298,6 +300,53 @@ async function dispatchSocialSnippetGenerator(job: DispatchJob, onChunk?: (event
 }
 
 /**
+ * The sixth AI Workspace tool's dispatcher. Ownership of seoProjectId/
+ * contentIds was already verified by startMetaTagOptimizerAction before
+ * this job was ever created — this dispatcher, like every other one, only
+ * re-validates the job's shape, then re-fetches the authoritative Content
+ * rows itself (never trusting anything about their metadata from
+ * job.inputJson, which carries only ids). Content rows outside this
+ * project are simply absent from the query result, never included in the
+ * inventory handed to the AI — the same "thin dispatcher, no new business
+ * logic, but never trust stored JSON as already-safe" discipline every
+ * other dispatcher already follows. Generation only: nothing here writes
+ * to Content or creates a ContentRevision.
+ */
+async function dispatchMetaTagOptimizer(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const parsed = validateMetaTagOptimizerJobInput(job.inputJson);
+  if (!parsed.success) throw new Error(parsed.message);
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
+  if (!seoProject) throw new Error("SEO project not found.");
+
+  const contentRows = await prisma.content.findMany({
+    where: { id: { in: parsed.data.contentIds } },
+    select: { id: true, title: true, url: true, metaTitle: true, metaDescription: true },
+  });
+  if (contentRows.length === 0) throw new Error("Content not found.");
+
+  const inventory = contentRows.map((row) => ({
+    contentId: row.id,
+    title: row.title,
+    url: row.url,
+    currentMetaTitle: row.metaTitle,
+    currentMetaDescription: row.metaDescription,
+  }));
+
+  const result = await generateMetaTagSuggestions(
+    {
+      seoProjectId: seoProject.id,
+      companyId: job.companyId,
+      seoProjectName: seoProject.name,
+      domain: seoProject.domain,
+      inventory,
+    },
+    onChunk
+  );
+  return { suggestions: result } as unknown as Prisma.InputJsonValue;
+}
+
+/**
  * Phase 30 Stage 10 — a per-taskType lookup table replacing what used to be
  * a hardcoded if/else chain in dispatch() below. Behavior for CONTENT_BRIEF
  * and CONTENT_DRAFT is unchanged (dispatchContentBrief/dispatchContentDraft
@@ -307,9 +356,9 @@ async function dispatchSocialSnippetGenerator(job: DispatchJob, onChunk?: (event
  * and one entry here instead of growing this if/else further. RECOMMENDATIONS
  * and CONTENT_INTELLIGENCE (Website Analysis's own AiTaskType values) are
  * deliberately absent — those are never dispatched through AiGenerationJob.
- * SCHEMA_MARKUP_GENERATION, INTERNAL_LINK_ANALYSIS, and
- * SOCIAL_SNIPPET_GENERATION added as the third, fourth, and fifth AI
- * Workspace tools, following this exact same additive pattern.
+ * SCHEMA_MARKUP_GENERATION, INTERNAL_LINK_ANALYSIS, SOCIAL_SNIPPET_GENERATION,
+ * and META_TAG_OPTIMIZATION added as the third through sixth AI Workspace
+ * tools, following this exact same additive pattern.
  */
 const TASK_HANDLERS: Partial<Record<AiTaskType, TaskHandler>> = {
   CONTENT_BRIEF: dispatchContentBrief,
@@ -317,6 +366,7 @@ const TASK_HANDLERS: Partial<Record<AiTaskType, TaskHandler>> = {
   SCHEMA_MARKUP_GENERATION: dispatchSchemaMarkup,
   INTERNAL_LINK_ANALYSIS: dispatchInternalLinkAnalysis,
   SOCIAL_SNIPPET_GENERATION: dispatchSocialSnippetGenerator,
+  META_TAG_OPTIMIZATION: dispatchMetaTagOptimizer,
 };
 
 /**

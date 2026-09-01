@@ -4,7 +4,7 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     sEOProject: { findUnique: vi.fn() },
     keyword: { findUnique: vi.fn() },
-    content: { findUnique: vi.fn() },
+    content: { findUnique: vi.fn(), findMany: vi.fn() },
   },
 }));
 vi.mock("@/lib/jobs/ai-generation-job-table", () => ({
@@ -28,6 +28,9 @@ vi.mock("@/features/ai-workspace/services/internal-link-analyzer.service", () =>
 vi.mock("@/features/ai-workspace/services/social-snippet-generator.service", () => ({
   generateSocialSnippets: vi.fn(),
 }));
+vi.mock("@/features/ai-workspace/services/meta-tag-optimizer.service", () => ({
+  generateMetaTagSuggestions: vi.fn(),
+}));
 vi.mock("@/features/seo/services/content.service", () => ({
   listContentInventoryForProject: vi.fn(),
 }));
@@ -44,6 +47,7 @@ import { generateLongFormContent } from "@/features/ai-workspace/services/long-f
 import { generateSchemaMarkupRecommendations } from "@/features/ai-workspace/services/schema-markup-generator.service";
 import { generateInternalLinkRecommendations } from "@/features/ai-workspace/services/internal-link-analyzer.service";
 import { generateSocialSnippets } from "@/features/ai-workspace/services/social-snippet-generator.service";
+import { generateMetaTagSuggestions } from "@/features/ai-workspace/services/meta-tag-optimizer.service";
 import { listContentInventoryForProject } from "@/features/seo/services/content.service";
 import { LlmProviderError } from "@/lib/ai/providers/errors";
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
@@ -59,6 +63,8 @@ const mockGenerateLongFormContent = vi.mocked(generateLongFormContent);
 const mockGenerateSchemaMarkup = vi.mocked(generateSchemaMarkupRecommendations);
 const mockGenerateInternalLinks = vi.mocked(generateInternalLinkRecommendations);
 const mockGenerateSocialSnippets = vi.mocked(generateSocialSnippets);
+const mockGenerateMetaTagSuggestions = vi.mocked(generateMetaTagSuggestions);
+const mockFindManyContent = vi.mocked(prisma.content.findMany);
 const mockListContentInventory = vi.mocked(listContentInventoryForProject);
 const mockUpdatePartialText = vi.mocked(updateAiGenerationJobPartialText);
 
@@ -507,6 +513,144 @@ describe("runAiGenerationJob — SOCIAL_SNIPPET_GENERATION", () => {
 
     expect(mockGenerateSocialSnippets).not.toHaveBeenCalled();
     expect(mockMarkFailed).toHaveBeenCalledWith("job-20", expect.any(String), "UNKNOWN");
+  });
+});
+
+describe("runAiGenerationJob — META_TAG_OPTIMIZATION", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const SEO_PROJECT_UUID = "00000000-0000-4000-8000-0000000000f0";
+  const MISSING_SEO_PROJECT_UUID = "00000000-0000-4000-8000-0000000000ff";
+  const CONTENT_ID_1 = "00000000-0000-4000-8000-000000000001";
+  const CONTENT_ID_2 = "00000000-0000-4000-8000-000000000002";
+  const CONTENT_ROW_1 = { id: CONTENT_ID_1, title: "Emergency Plumbing Guide", url: "https://acme.example/emergency", metaTitle: "Old Title A", metaDescription: "Old description A." };
+  const CONTENT_ROW_2 = { id: CONTENT_ID_2, title: "Water Heater Repair", url: null, metaTitle: null, metaDescription: null };
+  const SUGGESTIONS = [
+    { contentId: CONTENT_ID_1, url: CONTENT_ROW_1.url, currentMetaTitle: CONTENT_ROW_1.metaTitle, suggestedMetaTitle: "New Title A", currentMetaDescription: CONTENT_ROW_1.metaDescription, suggestedMetaDescription: "New description A.", reasoning: "Clearer and more specific.", titleLengthGuidance: { length: 11, min: 50, max: 60, status: "TOO_SHORT" }, descriptionLengthGuidance: { length: 20, min: 120, max: 160, status: "TOO_SHORT" } },
+  ];
+
+  it("dispatches to generateMetaTagSuggestions with the resolved SEO project and a server-built inventory from the selected Content rows, marks the job SUCCEEDED", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-21",
+      taskType: "META_TAG_OPTIMIZATION",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, contentIds: [CONTENT_ID_1, CONTENT_ID_2] },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindManyContent.mockResolvedValue([CONTENT_ROW_1, CONTENT_ROW_2] as never);
+    mockGenerateMetaTagSuggestions.mockResolvedValue(SUGGESTIONS as never);
+
+    await runAiGenerationJob("job-21");
+
+    expect(mockGenerateMetaTagSuggestions).toHaveBeenCalledWith(
+      {
+        seoProjectId: "project-1",
+        seoProjectName: "Acme SEO",
+        domain: "acme.example",
+        inventory: [
+          { contentId: CONTENT_ID_1, title: CONTENT_ROW_1.title, url: CONTENT_ROW_1.url, currentMetaTitle: CONTENT_ROW_1.metaTitle, currentMetaDescription: CONTENT_ROW_1.metaDescription },
+          { contentId: CONTENT_ID_2, title: CONTENT_ROW_2.title, url: null, currentMetaTitle: null, currentMetaDescription: null },
+        ],
+      },
+      undefined
+    );
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-21", { suggestions: SUGGESTIONS });
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+  });
+
+  it("does NOT update Content and does NOT create a ContentRevision — the dispatcher's only prisma calls are the read-only SEO project and Content lookups", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-22",
+      taskType: "META_TAG_OPTIMIZATION",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, contentIds: [CONTENT_ID_1] },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindManyContent.mockResolvedValue([CONTENT_ROW_1] as never);
+    mockGenerateMetaTagSuggestions.mockResolvedValue([] as never);
+
+    await runAiGenerationJob("job-22");
+
+    // The mocked prisma client in this file exposes only read methods
+    // (findUnique/findMany) for sEOProject/content — there is no
+    // content.update or contentRevision mock at all, so a real write
+    // attempted here would throw "not a function", not silently succeed.
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-22", { suggestions: [] });
+  });
+
+  it("marks the job FAILED with a specific message when none of the selected Content rows exist", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-23",
+      taskType: "META_TAG_OPTIMIZATION",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, contentIds: [CONTENT_ID_1] },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindManyContent.mockResolvedValue([] as never);
+
+    await runAiGenerationJob("job-23");
+
+    expect(mockGenerateMetaTagSuggestions).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-23", "Content not found.", "UNKNOWN");
+  });
+
+  it("marks the job FAILED with a specific message when the SEO project no longer exists", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-24",
+      taskType: "META_TAG_OPTIMIZATION",
+      inputJson: { seoProjectId: MISSING_SEO_PROJECT_UUID, contentIds: [CONTENT_ID_1] },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(null);
+
+    await runAiGenerationJob("job-24");
+
+    expect(mockGenerateMetaTagSuggestions).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-24", "SEO project not found.", "UNKNOWN");
+  });
+
+  it("rejects an invalid inputJson shape (empty contentIds) without ever calling generateMetaTagSuggestions", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-25",
+      taskType: "META_TAG_OPTIMIZATION",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, contentIds: [] },
+    } as never);
+
+    await runAiGenerationJob("job-25");
+
+    expect(mockGenerateMetaTagSuggestions).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-25", expect.any(String), "UNKNOWN");
+  });
+
+  it("rejects an invalid inputJson shape (malformed content id) without ever calling generateMetaTagSuggestions", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-26",
+      taskType: "META_TAG_OPTIMIZATION",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, contentIds: ["not-a-uuid"] },
+    } as never);
+
+    await runAiGenerationJob("job-26");
+
+    expect(mockGenerateMetaTagSuggestions).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-26", expect.any(String), "UNKNOWN");
+  });
+
+  it("builds the inventory only from Content rows the database actually returns — never trusting job.inputJson's ids as already-safe metadata", async () => {
+    // Only one of the two requested ids resolves to a real row (e.g. the
+    // other was deleted between job creation and job execution) — the
+    // dispatcher must proceed with whatever real rows exist, never invent
+    // a placeholder inventory entry for the missing one.
+    mockMarkRunning.mockResolvedValue({
+      id: "job-27",
+      taskType: "META_TAG_OPTIMIZATION",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, contentIds: [CONTENT_ID_1, CONTENT_ID_2] },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindManyContent.mockResolvedValue([CONTENT_ROW_1] as never);
+    mockGenerateMetaTagSuggestions.mockResolvedValue([] as never);
+
+    await runAiGenerationJob("job-27");
+
+    const [passedCtx] = mockGenerateMetaTagSuggestions.mock.calls[0];
+    expect(passedCtx.inventory).toEqual([{ contentId: CONTENT_ID_1, title: CONTENT_ROW_1.title, url: CONTENT_ROW_1.url, currentMetaTitle: CONTENT_ROW_1.metaTitle, currentMetaDescription: CONTENT_ROW_1.metaDescription }]);
   });
 });
 

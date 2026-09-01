@@ -1,0 +1,137 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/auth", () => ({ requireUser: vi.fn() }));
+vi.mock("@/lib/jobs/ai-generation-job-table", () => ({
+  computeInputHash: vi.fn(),
+  createAiGenerationJob: vi.fn(),
+  findActiveAiGenerationJob: vi.fn(),
+}));
+vi.mock("@/lib/jobs/ai-generation-job-runner", () => ({ runAiGenerationJob: vi.fn() }));
+
+type MockPrisma = {
+  sEOProject: { findUnique: ReturnType<typeof vi.fn> };
+  content: { findUnique: ReturnType<typeof vi.fn> };
+};
+
+function createMockPrisma(): MockPrisma {
+  return {
+    sEOProject: { findUnique: vi.fn() },
+    content: { findUnique: vi.fn() },
+  };
+}
+
+vi.mock("@/lib/prisma", () => ({ prisma: createMockPrisma() }));
+
+import { requireUser } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+import { computeInputHash, createAiGenerationJob, findActiveAiGenerationJob } from "@/lib/jobs/ai-generation-job-table";
+import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
+import { startSocialSnippetGeneratorAction } from "@/features/ai-workspace/actions/social-snippet-generator.actions";
+
+const mockedRequireUser = requireUser as unknown as ReturnType<typeof vi.fn>;
+const mockedPrisma = prisma as unknown as MockPrisma;
+const mockedComputeInputHash = computeInputHash as unknown as ReturnType<typeof vi.fn>;
+const mockedCreateAiGenerationJob = createAiGenerationJob as unknown as ReturnType<typeof vi.fn>;
+const mockedFindActiveAiGenerationJob = findActiveAiGenerationJob as unknown as ReturnType<typeof vi.fn>;
+const mockedRunAiGenerationJob = runAiGenerationJob as unknown as ReturnType<typeof vi.fn>;
+
+const COMPANY_A = "company-a";
+const COMPANY_B = "company-b";
+
+const MANAGER = { id: "user-manager", role: "MANAGER", companyId: COMPANY_A };
+const EMPLOYEE = { id: "user-employee", role: "EMPLOYEE", companyId: COMPANY_A };
+
+const SEO_PROJECT = { id: "seo-1", companyId: COMPANY_A, name: "Acme SEO", domain: "acme.test" };
+const CONTENT_ROW = { id: "content-1", seoProjectId: "seo-1", seoProject: { companyId: COMPANY_A } };
+
+const VALID_INPUT = { seoProjectId: "seo-1", contentId: "content-1", platforms: ["X" as const] };
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockedRequireUser.mockResolvedValue(MANAGER);
+  mockedPrisma.sEOProject.findUnique.mockResolvedValue(SEO_PROJECT);
+  mockedPrisma.content.findUnique.mockResolvedValue(CONTENT_ROW);
+  mockedComputeInputHash.mockReturnValue("input-hash-1");
+  mockedFindActiveAiGenerationJob.mockResolvedValue(null);
+  mockedCreateAiGenerationJob.mockResolvedValue({ id: "job-1" });
+});
+
+describe("startSocialSnippetGeneratorAction", () => {
+  it("1. rejects an EMPLOYEE — below the manageSeoProjects (MANAGER) minimum", async () => {
+    mockedRequireUser.mockResolvedValue(EMPLOYEE);
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/permission/i);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("2. rejects invalid input (missing contentId) without any lookup", async () => {
+    const result = await startSocialSnippetGeneratorAction({ seoProjectId: "seo-1", platforms: ["X"] } as never);
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.sEOProject.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("3. rejects invalid input (empty platforms array)", async () => {
+    const result = await startSocialSnippetGeneratorAction({ seoProjectId: "seo-1", contentId: "content-1", platforms: [] });
+    expect(result.success).toBe(false);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("4. rejects invalid input (invalid platform value)", async () => {
+    const result = await startSocialSnippetGeneratorAction({ seoProjectId: "seo-1", contentId: "content-1", platforms: ["INSTAGRAM"] } as never);
+    expect(result.success).toBe(false);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("5. accepts an optional notes field", async () => {
+    const result = await startSocialSnippetGeneratorAction({ ...VALID_INPUT, notes: "keep it upbeat" });
+    expect(result.success).toBe(true);
+  });
+
+  it("6. rejects when the SEO project does not exist", async () => {
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue(null);
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(false);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("7. rejects when the SEO project belongs to another company", async () => {
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, companyId: COMPANY_B });
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(false);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("8. rejects when the content belongs to another company", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, seoProject: { companyId: COMPANY_B } });
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/not found/i);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("9. rejects when the content belongs to a different SEO project than the one selected", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, seoProjectId: "seo-2" });
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(false);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("10. creates a SOCIAL_SNIPPET_GENERATION job and kicks off runAiGenerationJob, unawaited", async () => {
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.jobId).toBe("job-1");
+    expect(mockedCreateAiGenerationJob).toHaveBeenCalledWith(
+      expect.objectContaining({ companyId: COMPANY_A, seoProjectId: "seo-1", contentId: "content-1", taskType: "SOCIAL_SNIPPET_GENERATION" })
+    );
+    expect(mockedRunAiGenerationJob).toHaveBeenCalledWith("job-1");
+  });
+
+  it("11. reuses an existing active job for the identical input instead of creating a second one", async () => {
+    mockedFindActiveAiGenerationJob.mockResolvedValue({ id: "existing-job" });
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.jobId).toBe("existing-job");
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+});

@@ -25,6 +25,9 @@ vi.mock("@/features/ai-workspace/services/schema-markup-generator.service", () =
 vi.mock("@/features/ai-workspace/services/internal-link-analyzer.service", () => ({
   generateInternalLinkRecommendations: vi.fn(),
 }));
+vi.mock("@/features/ai-workspace/services/social-snippet-generator.service", () => ({
+  generateSocialSnippets: vi.fn(),
+}));
 vi.mock("@/features/seo/services/content.service", () => ({
   listContentInventoryForProject: vi.fn(),
 }));
@@ -40,6 +43,7 @@ import { generateContentBrief } from "@/features/ai-workspace/services/content-b
 import { generateLongFormContent } from "@/features/ai-workspace/services/long-form-content.service";
 import { generateSchemaMarkupRecommendations } from "@/features/ai-workspace/services/schema-markup-generator.service";
 import { generateInternalLinkRecommendations } from "@/features/ai-workspace/services/internal-link-analyzer.service";
+import { generateSocialSnippets } from "@/features/ai-workspace/services/social-snippet-generator.service";
 import { listContentInventoryForProject } from "@/features/seo/services/content.service";
 import { LlmProviderError } from "@/lib/ai/providers/errors";
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
@@ -54,6 +58,7 @@ const mockGenerateContentBrief = vi.mocked(generateContentBrief);
 const mockGenerateLongFormContent = vi.mocked(generateLongFormContent);
 const mockGenerateSchemaMarkup = vi.mocked(generateSchemaMarkupRecommendations);
 const mockGenerateInternalLinks = vi.mocked(generateInternalLinkRecommendations);
+const mockGenerateSocialSnippets = vi.mocked(generateSocialSnippets);
 const mockListContentInventory = vi.mocked(listContentInventoryForProject);
 const mockUpdatePartialText = vi.mocked(updateAiGenerationJobPartialText);
 
@@ -425,6 +430,83 @@ describe("runAiGenerationJob — INTERNAL_LINK_ANALYSIS", () => {
 
     expect(mockGenerateInternalLinks).not.toHaveBeenCalled();
     expect(mockMarkFailed).toHaveBeenCalledWith("job-16", expect.any(String), "UNKNOWN");
+  });
+});
+
+describe("runAiGenerationJob — SOCIAL_SNIPPET_GENERATION", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const SOURCE_CONTENT = { title: "Emergency Plumbing Guide", url: "https://acme.example/emergency", metaDescription: "24/7 tips.", body: "Shut off the main valve." };
+  const SNIPPETS = [{ platform: "X", text: "Burst pipe? Here's what to do.", characterCount: 31 }];
+
+  it("dispatches to generateSocialSnippets with the resolved SEO project, source content, platforms, and notes, marks the job SUCCEEDED", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-17",
+      taskType: "SOCIAL_SNIPPET_GENERATION",
+      inputJson: { seoProjectId: "project-1", contentId: "content-1", platforms: ["X", "LINKEDIN"], notes: "keep it upbeat" },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindContent.mockResolvedValue(SOURCE_CONTENT as never);
+    mockGenerateSocialSnippets.mockResolvedValue(SNIPPETS as never);
+
+    await runAiGenerationJob("job-17");
+
+    expect(mockGenerateSocialSnippets).toHaveBeenCalledWith(
+      {
+        seoProjectId: "project-1",
+        seoProjectName: "Acme SEO",
+        domain: "acme.example",
+        sourceContent: SOURCE_CONTENT,
+        platforms: ["X", "LINKEDIN"],
+        notes: "keep it upbeat",
+      },
+      undefined
+    );
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-17", { snippets: SNIPPETS });
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+  });
+
+  it("marks the job FAILED with a specific message when the source Content row no longer exists", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-18",
+      taskType: "SOCIAL_SNIPPET_GENERATION",
+      inputJson: { seoProjectId: "project-1", contentId: "missing-content", platforms: ["X"] },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindContent.mockResolvedValue(null);
+
+    await runAiGenerationJob("job-18");
+
+    expect(mockGenerateSocialSnippets).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-18", "Content not found.", "UNKNOWN");
+  });
+
+  it("rejects an invalid inputJson shape (empty platforms) without ever calling generateSocialSnippets", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-19",
+      taskType: "SOCIAL_SNIPPET_GENERATION",
+      inputJson: { seoProjectId: "project-1", contentId: "content-1", platforms: [] },
+    } as never);
+
+    await runAiGenerationJob("job-19");
+
+    expect(mockGenerateSocialSnippets).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-19", expect.any(String), "UNKNOWN");
+  });
+
+  it("rejects an invalid platform value without ever calling generateSocialSnippets", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-20",
+      taskType: "SOCIAL_SNIPPET_GENERATION",
+      inputJson: { seoProjectId: "project-1", contentId: "content-1", platforms: ["INSTAGRAM"] },
+    } as never);
+
+    await runAiGenerationJob("job-20");
+
+    expect(mockGenerateSocialSnippets).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-20", expect.any(String), "UNKNOWN");
   });
 });
 

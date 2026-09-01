@@ -13,10 +13,17 @@ import { generateContentBrief } from "@/features/ai-workspace/services/content-b
 import { generateLongFormContent } from "@/features/ai-workspace/services/long-form-content.service";
 import { generateSchemaMarkupRecommendations } from "@/features/ai-workspace/services/schema-markup-generator.service";
 import { generateInternalLinkRecommendations } from "@/features/ai-workspace/services/internal-link-analyzer.service";
+import { generateSocialSnippets } from "@/features/ai-workspace/services/social-snippet-generator.service";
 import { contentBriefOutputSchema, type ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { externalSourceSchema, faqItemSchema, normalizeArray, normalizeInternalLinkSuggestions } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { contentBriefSettingsSchema, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
-import { validateContentBriefJobInput, validateLongFormJobInput, validateSchemaMarkupJobInput, validateInternalLinkAnalyzerJobInput } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
+import {
+  validateContentBriefJobInput,
+  validateLongFormJobInput,
+  validateSchemaMarkupJobInput,
+  validateInternalLinkAnalyzerJobInput,
+  validateSocialSnippetGeneratorJobInput,
+} from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 import { listContentInventoryForProject } from "@/features/seo/services/content.service";
 
 /**
@@ -262,6 +269,34 @@ async function dispatchInternalLinkAnalysis(job: DispatchJob, onChunk?: (event: 
   return { recommendations: result } as unknown as Prisma.InputJsonValue;
 }
 
+async function dispatchSocialSnippetGenerator(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const parsed = validateSocialSnippetGeneratorJobInput(job.inputJson);
+  if (!parsed.success) throw new Error(parsed.message);
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
+  if (!seoProject) throw new Error("SEO project not found.");
+
+  const sourceContent = await prisma.content.findUnique({
+    where: { id: parsed.data.contentId },
+    select: { title: true, url: true, metaDescription: true, body: true },
+  });
+  if (!sourceContent) throw new Error("Content not found.");
+
+  const result = await generateSocialSnippets(
+    {
+      seoProjectId: seoProject.id,
+      companyId: job.companyId,
+      seoProjectName: seoProject.name,
+      domain: seoProject.domain,
+      sourceContent,
+      platforms: parsed.data.platforms,
+      notes: parsed.data.notes,
+    },
+    onChunk
+  );
+  return { snippets: result } as unknown as Prisma.InputJsonValue;
+}
+
 /**
  * Phase 30 Stage 10 — a per-taskType lookup table replacing what used to be
  * a hardcoded if/else chain in dispatch() below. Behavior for CONTENT_BRIEF
@@ -272,14 +307,16 @@ async function dispatchInternalLinkAnalysis(job: DispatchJob, onChunk?: (event: 
  * and one entry here instead of growing this if/else further. RECOMMENDATIONS
  * and CONTENT_INTELLIGENCE (Website Analysis's own AiTaskType values) are
  * deliberately absent — those are never dispatched through AiGenerationJob.
- * SCHEMA_MARKUP_GENERATION and INTERNAL_LINK_ANALYSIS added as the third and
- * fourth AI Workspace tools, following this exact same additive pattern.
+ * SCHEMA_MARKUP_GENERATION, INTERNAL_LINK_ANALYSIS, and
+ * SOCIAL_SNIPPET_GENERATION added as the third, fourth, and fifth AI
+ * Workspace tools, following this exact same additive pattern.
  */
 const TASK_HANDLERS: Partial<Record<AiTaskType, TaskHandler>> = {
   CONTENT_BRIEF: dispatchContentBrief,
   CONTENT_DRAFT: dispatchContentDraft,
   SCHEMA_MARKUP_GENERATION: dispatchSchemaMarkup,
   INTERNAL_LINK_ANALYSIS: dispatchInternalLinkAnalysis,
+  SOCIAL_SNIPPET_GENERATION: dispatchSocialSnippetGenerator,
 };
 
 /**

@@ -2,6 +2,7 @@ import { contentBriefInputSchema, contentBriefOutputSchema, type ContentBriefInp
 import type { ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { generateLongFormFromBriefContextSchema } from "@/features/ai-workspace/schemas/long-form-content.schema";
 import { schemaMarkupInputSchema, type SchemaMarkupInput } from "@/features/ai-workspace/schemas/schema-markup-generator.schema";
+import { internalLinkAnalyzerInputSchema, type InternalLinkAnalyzerInput } from "@/features/ai-workspace/schemas/internal-link-analyzer.schema";
 
 /**
  * Validators for AiGenerationJob.inputJson, read back from the database by
@@ -23,6 +24,8 @@ export type ContentBriefJobInput = ContentBriefInput;
 
 export type SchemaMarkupJobInput = SchemaMarkupInput;
 
+export type InternalLinkAnalyzerJobInput = InternalLinkAnalyzerInput;
+
 export type LongFormJobInput =
   | { mode: "fromBrief"; seoProjectId: string; keywordId?: string; brief: ContentBriefOutput; settings?: ContentBriefSettings }
   | { mode: "fromContent"; contentId: string };
@@ -39,6 +42,14 @@ export function validateContentBriefJobInput(input: unknown): JobInputValidation
 
 export function validateSchemaMarkupJobInput(input: unknown): JobInputValidationResult<SchemaMarkupJobInput> {
   const parsed = schemaMarkupInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, message: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  return { success: true, data: parsed.data };
+}
+
+export function validateInternalLinkAnalyzerJobInput(input: unknown): JobInputValidationResult<InternalLinkAnalyzerJobInput> {
+  const parsed = internalLinkAnalyzerInputSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, message: parsed.error.issues[0]?.message ?? "Invalid input" };
   }

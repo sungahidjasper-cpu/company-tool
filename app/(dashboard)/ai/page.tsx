@@ -24,8 +24,8 @@ import { requireUser } from "@/lib/auth";
 import { formatEnumLabel } from "@/lib/utils";
 
 /**
- * Phase 21 §17 — a navigation shell only. Three tools are real; the other
- * eleven are visibly-disabled placeholders so the layout doesn't need a
+ * Phase 21 §17 — a navigation shell only. Four tools are real; the other
+ * ten are visibly-disabled placeholders so the layout doesn't need a
  * redesign as each one gets built out in a future phase (per the review's
  * item 18: deepen Content Brief/Draft now, don't build new shallow tools).
  */
@@ -33,7 +33,7 @@ const AI_TOOLS = [
   { name: "SEO Content Brief", description: "Configurable title, meta tags, outline, FAQ, and SEO/GEO/AEO suggestions for a target keyword.", href: "/ai/content-brief/new", icon: FileText, status: "available" as const },
   { name: "Long-Form Content Draft", description: "Generate a full draft article from an approved brief.", href: "/ai/content-brief/new", icon: FileEdit, status: "available" as const },
   { name: "Meta Tag Optimizer", description: "Bulk-review and improve meta titles/descriptions across existing content.", href: null, icon: Tags, status: "coming-soon" as const },
-  { name: "Internal Link Analyzer", description: "Suggest internal linking opportunities across your site.", href: null, icon: Link2, status: "coming-soon" as const },
+  { name: "Internal Link Analyzer", description: "Suggest internal linking opportunities across your site.", href: "/ai/internal-link-analyzer/new", icon: Link2, status: "available" as const },
   { name: "Content Gap Analysis", description: "Find topics competitors rank for that you don't cover yet.", href: null, icon: Search, status: "coming-soon" as const },
   { name: "Competitor Content Analysis", description: "Compare your content against top-ranking competitor pages.", href: null, icon: Users, status: "coming-soon" as const },
   { name: "Schema Markup Generator", description: "Generate structured-data markup for existing pages.", href: "/ai/schema-markup/new", icon: ShieldCheck, status: "available" as const },

@@ -22,6 +22,12 @@ vi.mock("@/features/ai-workspace/services/long-form-content.service", () => ({
 vi.mock("@/features/ai-workspace/services/schema-markup-generator.service", () => ({
   generateSchemaMarkupRecommendations: vi.fn(),
 }));
+vi.mock("@/features/ai-workspace/services/internal-link-analyzer.service", () => ({
+  generateInternalLinkRecommendations: vi.fn(),
+}));
+vi.mock("@/features/seo/services/content.service", () => ({
+  listContentInventoryForProject: vi.fn(),
+}));
 
 import { prisma } from "@/lib/prisma";
 import {
@@ -33,6 +39,8 @@ import {
 import { generateContentBrief } from "@/features/ai-workspace/services/content-brief.service";
 import { generateLongFormContent } from "@/features/ai-workspace/services/long-form-content.service";
 import { generateSchemaMarkupRecommendations } from "@/features/ai-workspace/services/schema-markup-generator.service";
+import { generateInternalLinkRecommendations } from "@/features/ai-workspace/services/internal-link-analyzer.service";
+import { listContentInventoryForProject } from "@/features/seo/services/content.service";
 import { LlmProviderError } from "@/lib/ai/providers/errors";
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
 
@@ -45,6 +53,8 @@ const mockMarkFailed = vi.mocked(markAiGenerationJobFailed);
 const mockGenerateContentBrief = vi.mocked(generateContentBrief);
 const mockGenerateLongFormContent = vi.mocked(generateLongFormContent);
 const mockGenerateSchemaMarkup = vi.mocked(generateSchemaMarkupRecommendations);
+const mockGenerateInternalLinks = vi.mocked(generateInternalLinkRecommendations);
+const mockListContentInventory = vi.mocked(listContentInventoryForProject);
 const mockUpdatePartialText = vi.mocked(updateAiGenerationJobPartialText);
 
 const SEO_PROJECT = { id: "project-1", name: "Acme SEO", domain: "acme.example" };
@@ -330,6 +340,91 @@ describe("runAiGenerationJob — SCHEMA_MARKUP_GENERATION", () => {
 
     expect(mockGenerateSchemaMarkup).not.toHaveBeenCalled();
     expect(mockMarkFailed).toHaveBeenCalledWith("job-12", expect.any(String), "UNKNOWN");
+  });
+});
+
+describe("runAiGenerationJob — INTERNAL_LINK_ANALYSIS", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const SOURCE_CONTENT = { title: "Emergency Plumbing Guide", url: "https://acme.example/emergency", metaDescription: "24/7 tips.", body: "Shut off the main valve." };
+  const INVENTORY = [
+    { id: "content-2", title: "Our Services", url: "https://acme.example/services" },
+    { id: "content-1", title: "Emergency Plumbing Guide", url: "https://acme.example/emergency" },
+  ];
+  const RECOMMENDATIONS = [{ anchorText: "our services", targetPage: "https://acme.example/services", reason: "Directly related.", placement: "intro", priority: "HIGH" }];
+
+  it("dispatches to generateInternalLinkRecommendations with the resolved SEO project, source content, and an inventory excluding the source page itself", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-13",
+      taskType: "INTERNAL_LINK_ANALYSIS",
+      inputJson: { seoProjectId: "project-1", contentId: "content-1" },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindContent.mockResolvedValue(SOURCE_CONTENT as never);
+    mockListContentInventory.mockResolvedValue(INVENTORY as never);
+    mockGenerateInternalLinks.mockResolvedValue(RECOMMENDATIONS as never);
+
+    await runAiGenerationJob("job-13");
+
+    expect(mockGenerateInternalLinks).toHaveBeenCalledWith(
+      {
+        seoProjectId: "project-1",
+        seoProjectName: "Acme SEO",
+        domain: "acme.example",
+        sourceContent: SOURCE_CONTENT,
+        inventory: [{ title: "Our Services", url: "https://acme.example/services" }],
+      },
+      undefined
+    );
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-13", { recommendations: RECOMMENDATIONS });
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+  });
+
+  it("excludes inventory pages with no url from the supplied inventory", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-14",
+      taskType: "INTERNAL_LINK_ANALYSIS",
+      inputJson: { seoProjectId: "project-1", contentId: "content-1" },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindContent.mockResolvedValue(SOURCE_CONTENT as never);
+    mockListContentInventory.mockResolvedValue([...INVENTORY, { id: "content-3", title: "Draft With No URL", url: null }] as never);
+    mockGenerateInternalLinks.mockResolvedValue([] as never);
+
+    await runAiGenerationJob("job-14");
+
+    const [passedCtx] = mockGenerateInternalLinks.mock.calls[0];
+    expect(passedCtx.inventory).toEqual([{ title: "Our Services", url: "https://acme.example/services" }]);
+  });
+
+  it("marks the job FAILED with a specific message when the source Content row no longer exists", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-15",
+      taskType: "INTERNAL_LINK_ANALYSIS",
+      inputJson: { seoProjectId: "project-1", contentId: "missing-content" },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindContent.mockResolvedValue(null);
+
+    await runAiGenerationJob("job-15");
+
+    expect(mockGenerateInternalLinks).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-15", "Content not found.", "UNKNOWN");
+  });
+
+  it("rejects an invalid inputJson shape (missing contentId) without ever calling generateInternalLinkRecommendations", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-16",
+      taskType: "INTERNAL_LINK_ANALYSIS",
+      inputJson: { seoProjectId: "project-1" },
+    } as never);
+
+    await runAiGenerationJob("job-16");
+
+    expect(mockGenerateInternalLinks).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-16", expect.any(String), "UNKNOWN");
   });
 });
 

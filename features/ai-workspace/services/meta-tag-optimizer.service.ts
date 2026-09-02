@@ -124,6 +124,13 @@ function checkGuidanceLength(value: string, min: number, max: number): LengthGui
  * Generator/Internal Link Analyzer/Social Snippet Generator: an
  * instruction-echoed suggestion is REJECTED outright, never repaired or
  * replaced with a substitute value.
+ *
+ * Also computes titleChanged/descriptionChanged (see the schema's own
+ * comment) — a deterministic string comparison against the real current
+ * value, never trusting the AI's own `reasoning` text to say whether it
+ * actually changed anything. A field being unchanged is never a rejection
+ * reason here either — matching "do not reject a suggestion merely because
+ * one field is unchanged" — it only changes what the UI presents.
  */
 export function filterValidSuggestions(rawSuggestions: unknown[], inventory: MetaTagInventoryItem[]): MetaTagSuggestion[] {
   const inventoryById = new Map(inventory.map((item) => [item.contentId, item]));
@@ -159,8 +166,14 @@ export function filterValidSuggestions(rawSuggestions: unknown[], inventory: Met
       url: inventoryItem.url,
       currentMetaTitle: inventoryItem.currentMetaTitle,
       suggestedMetaTitle: cleanedTitle,
+      // Deterministic string comparison — never derived from the AI's own
+      // `reasoning` text. A null current value can never strictly equal a
+      // real (non-empty, already-validated) suggested string, so the
+      // null-current case is correctly "changed" with no special-casing.
+      titleChanged: cleanedTitle !== inventoryItem.currentMetaTitle,
       currentMetaDescription: inventoryItem.currentMetaDescription,
       suggestedMetaDescription: cleanedDescription,
+      descriptionChanged: cleanedDescription !== inventoryItem.currentMetaDescription,
       reasoning: item.reasoning.trim(),
       titleLengthGuidance: checkGuidanceLength(cleanedTitle, META_TITLE_GUIDANCE.min, META_TITLE_GUIDANCE.max),
       descriptionLengthGuidance: checkGuidanceLength(cleanedDescription, META_DESCRIPTION_GUIDANCE.min, META_DESCRIPTION_GUIDANCE.max),

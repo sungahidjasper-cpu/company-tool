@@ -1,12 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
-import { startMetaTagOptimizerAction } from "@/features/ai-workspace/actions/meta-tag-optimizer.actions";
+import { applyMetaTagSuggestionAction, startMetaTagOptimizerAction } from "@/features/ai-workspace/actions/meta-tag-optimizer.actions";
 import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import { useAiGenerationLifecycle } from "@/features/ai-workspace/hooks/use-ai-generation-lifecycle";
 import {
@@ -70,6 +70,46 @@ export function computeOmittedContent<T extends { id: string }>(contentOptions: 
   return contentOptions.filter((c) => selectedIds.has(c.id) && !suggestedIds.has(c.id));
 }
 
+/**
+ * Decides what the "why this change" area may safely show, given only the
+ * two deterministic change flags — never the reasoning text itself, which
+ * this function never reads. The AI's `reasoning` is a single combined
+ * blob that can (and, live, does) make claims about BOTH fields regardless
+ * of which one actually changed — so it is only safe to show verbatim when
+ * BOTH fields changed, since then nothing it says about either field can be
+ * a false claim about an unchanged one. When only one field changed, the
+ * combined reasoning cannot be safely attributed to just that field (it may
+ * still describe the other, unchanged one), so this returns a plain,
+ * deterministic statement of WHAT changed instead — never a fabricated or
+ * inferred WHY, just the same titleChanged/descriptionChanged facts already
+ * computed server-side, restated in words. This is not "rewriting" the AI's
+ * reasoning — the reasoning text itself is never touched, edited, or
+ * partially shown; it is either displayed exactly as returned, or not
+ * displayed at all.
+ */
+export type ReasoningDisplay = "AI_REASONING" | "TITLE_ONLY" | "DESCRIPTION_ONLY" | "NO_CHANGE";
+
+export function computeReasoningDisplay(titleChanged: boolean, descriptionChanged: boolean): ReasoningDisplay {
+  if (titleChanged && descriptionChanged) return "AI_REASONING";
+  if (titleChanged) return "TITLE_ONLY";
+  if (descriptionChanged) return "DESCRIPTION_ONLY";
+  return "NO_CHANGE";
+}
+
+/**
+ * Whether the "Apply this suggestion" control should be shown at all. A
+ * suggestion with neither field changed has nothing to apply (applying it
+ * would be a literal no-op write), and a suggestion already applied this
+ * session shouldn't offer to be applied again — the user would need to
+ * regenerate to get a fresh suggestion. The server's own no-op detection
+ * (see applyMetaTagSuggestionAction) is the real safety net regardless; this
+ * only controls whether the button is worth showing.
+ */
+export function computeIsApplyEligible(titleChanged: boolean, descriptionChanged: boolean, alreadyApplied: boolean): boolean {
+  if (alreadyApplied) return false;
+  return titleChanged || descriptionChanged;
+}
+
 /** A small local badge — mirrors seo-checklist.service.ts's LengthCheck shape/status vocabulary (OK/TOO_SHORT/TOO_LONG), rendered here rather than importing that file's own component (which is Content-Brief-review-specific), per Stage B's own schema comment on why this tool computes its own guidance. */
 function GuidanceBadge({ guidance }: { guidance: LengthGuidance }) {
   const style =
@@ -83,6 +123,27 @@ function GuidanceBadge({ guidance }: { guidance: LengthGuidance }) {
     <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${style}`}>
       {guidance.length.toLocaleString()} / {guidance.min}-{guidance.max} chars — {label}
     </span>
+  );
+}
+
+/**
+ * Renders a suggested title/description field, honoring the deterministic
+ * titleChanged/descriptionChanged the service computed (a real string
+ * comparison, never the AI's own reasoning) — discovered live: the AI can
+ * return the exact current text back while its `reasoning` still claims a
+ * change was made. When unchanged, this shows "No change suggested"
+ * instead of repeating the identical text next to "Current," so nothing
+ * here implies a change happened when it didn't. The guidance badge is
+ * still shown either way — it's accurate, harmless information about the
+ * text's length regardless of whether it was actually changed.
+ */
+function SuggestedField({ label, changed, text, guidance }: { label: string; changed: boolean; text: string; guidance: LengthGuidance }) {
+  return (
+    <div className="flex flex-col gap-1 rounded-lg border border-slate-200 p-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+      {changed ? <p className="text-sm text-slate-800">{text}</p> : <p className="text-sm italic text-slate-500">No change suggested</p>}
+      <GuidanceBadge guidance={guidance} />
+    </div>
   );
 }
 
@@ -227,6 +288,35 @@ export default function MetaTagOptimizerPicker({ seoProjectOptions, contentByPro
   // this just names them so the user isn't left guessing why.
   const omittedContent = useMemo(() => (result ? computeOmittedContent(contentOptions, selectedIds, result.suggestions) : []), [result, contentOptions, selectedIds]);
 
+  const [appliedContentIds, setAppliedContentIds] = useState<Set<string>>(new Set());
+  const [applyingContentId, setApplyingContentId] = useState<string | null>(null);
+  const [isApplyPending, startApplyTransition] = useTransition();
+
+  /**
+   * The approval gate, client side: requires an explicit click AND an
+   * explicit confirm — never triggered by generation completing, never by
+   * any automatic effect. Sends only the two literal suggested strings plus
+   * the ids needed to re-verify ownership server-side; the server never
+   * trusts that the suggestion itself is still valid (see
+   * applyMetaTagSuggestionAction).
+   */
+  function handleApplySuggestion(contentId: string, pageTitle: string, metaTitle: string, metaDescription: string) {
+    const confirmed = window.confirm(`Apply this suggestion to "${pageTitle}"? The current meta title and description will be saved as a revision first, so this can be undone later.`);
+    if (!confirmed) return;
+
+    setApplyingContentId(contentId);
+    startApplyTransition(async () => {
+      const response = await applyMetaTagSuggestionAction({ seoProjectId, contentId, metaTitle, metaDescription });
+      setApplyingContentId(null);
+      if (!response.success) {
+        toast.error(response.message);
+        return;
+      }
+      toast.success(response.data.noOp ? "This page's meta title and description already match this suggestion." : "Applied — the previous version was saved so this can be undone later.");
+      setAppliedContentIds((current) => new Set(current).add(contentId));
+    });
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
@@ -325,11 +415,18 @@ export default function MetaTagOptimizerPicker({ seoProjectOptions, contentByPro
 
       {result && result.suggestions.length > 0 && (
         <div className="flex flex-col gap-4">
-          {result.suggestions.map((suggestion) => (
+          {result.suggestions.map((suggestion) => {
+            const pageTitle = contentOptions.find((c) => c.id === suggestion.contentId)?.title ?? suggestion.contentId;
+            const isApplied = appliedContentIds.has(suggestion.contentId);
+            return (
             <div key={suggestion.contentId} className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4">
               <div className="flex items-center justify-between gap-2">
-                <p className="font-semibold text-slate-800">{contentOptions.find((c) => c.id === suggestion.contentId)?.title ?? suggestion.contentId}</p>
-                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-500">Suggested metadata — not applied</span>
+                <p className="font-semibold text-slate-800">{pageTitle}</p>
+                <span
+                  className={`rounded-full border px-2 py-0.5 text-xs font-medium ${isApplied ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-500"}`}
+                >
+                  {isApplied ? "Applied" : "Suggested metadata — not applied"}
+                </span>
               </div>
               {suggestion.url && <p className="text-xs text-slate-400">{suggestion.url}</p>}
 
@@ -338,29 +435,63 @@ export default function MetaTagOptimizerPicker({ seoProjectOptions, contentByPro
                   <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Current meta title</p>
                   <p className="text-sm text-slate-600">{suggestion.currentMetaTitle ?? <span className="italic text-slate-400">none set</span>}</p>
                 </div>
-                <div className="flex flex-col gap-1 rounded-lg border border-slate-200 p-3">
-                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Suggested meta title</p>
-                  <p className="text-sm text-slate-800">{suggestion.suggestedMetaTitle}</p>
-                  <GuidanceBadge guidance={suggestion.titleLengthGuidance} />
-                </div>
+                <SuggestedField label="Suggested meta title" changed={suggestion.titleChanged} text={suggestion.suggestedMetaTitle} guidance={suggestion.titleLengthGuidance} />
 
                 <div className="flex flex-col gap-1 rounded-lg bg-slate-50 p-3">
                   <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Current meta description</p>
                   <p className="text-sm text-slate-600">{suggestion.currentMetaDescription ?? <span className="italic text-slate-400">none set</span>}</p>
                 </div>
-                <div className="flex flex-col gap-1 rounded-lg border border-slate-200 p-3">
-                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Suggested meta description</p>
-                  <p className="text-sm text-slate-800">{suggestion.suggestedMetaDescription}</p>
-                  <GuidanceBadge guidance={suggestion.descriptionLengthGuidance} />
-                </div>
+                <SuggestedField label="Suggested meta description" changed={suggestion.descriptionChanged} text={suggestion.suggestedMetaDescription} guidance={suggestion.descriptionLengthGuidance} />
               </div>
 
-              <div className="rounded-lg bg-slate-50 p-3">
-                <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Why this change</p>
-                <p className="text-sm text-slate-600">{suggestion.reasoning}</p>
-              </div>
+              {(() => {
+                const display = computeReasoningDisplay(suggestion.titleChanged, suggestion.descriptionChanged);
+                if (display === "AI_REASONING") {
+                  return (
+                    <div className="rounded-lg bg-slate-50 p-3">
+                      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Why this change</p>
+                      <p className="text-sm text-slate-600">{suggestion.reasoning}</p>
+                    </div>
+                  );
+                }
+                if (display === "NO_CHANGE") {
+                  return (
+                    <div className="rounded-lg bg-slate-50 p-3">
+                      <p className="text-sm italic text-slate-500">No change suggested for this page — the AI returned the same title and description already in place.</p>
+                    </div>
+                  );
+                }
+                // Only one field changed — the AI's reasoning is one combined
+                // blob that may describe BOTH fields, so it can't be safely
+                // attributed to just the one that actually changed. Never
+                // shown here; only the already-computed, deterministic fact
+                // of which field changed is stated.
+                return (
+                  <div className="rounded-lg bg-slate-50 p-3">
+                    <p className="text-sm italic text-slate-500">
+                      {display === "TITLE_ONLY"
+                        ? "Only the meta title changed for this page — see the suggested title above. The meta description is unchanged."
+                        : "Only the meta description changed for this page — see the suggested description above. The meta title is unchanged."}
+                    </p>
+                  </div>
+                );
+              })()}
+
+              {computeIsApplyEligible(suggestion.titleChanged, suggestion.descriptionChanged, isApplied) && (
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={isApplyPending}
+                    onClick={() => handleApplySuggestion(suggestion.contentId, pageTitle, suggestion.suggestedMetaTitle, suggestion.suggestedMetaDescription)}
+                  >
+                    {isApplyPending && applyingContentId === suggestion.contentId ? "Applying…" : "Apply this suggestion"}
+                  </Button>
+                </div>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

@@ -246,6 +246,137 @@ describe("filterValidSuggestions", () => {
 });
 
 /**
+ * Hardening — discovered live: the AI can return a suggestion
+ * byte-identical to the current metadata while its own `reasoning` still
+ * claims a change was made. titleChanged/descriptionChanged must be a real
+ * deterministic string comparison, completely independent of whatever the
+ * reasoning text says — these tests deliberately pair "changed" reasoning
+ * text with unchanged values (and vice versa) to prove the flags are never
+ * derived from the narrative.
+ */
+describe("filterValidSuggestions — deterministic change detection", () => {
+  it("title changed + description changed: both flags true", () => {
+    const suggestion = {
+      contentId: "content-1",
+      suggestedMetaTitle: "A genuinely different title",
+      suggestedMetaDescription: "A genuinely different description.",
+      reasoning: "Rewrote both for clarity.",
+    };
+    const [result] = filterValidSuggestions([suggestion], INVENTORY);
+    expect(result.titleChanged).toBe(true);
+    expect(result.descriptionChanged).toBe(true);
+  });
+
+  it("title unchanged + description changed: titleChanged false, descriptionChanged true — even though the reasoning falsely claims the title changed too", () => {
+    const suggestion = {
+      contentId: "content-1",
+      suggestedMetaTitle: INVENTORY[0].currentMetaTitle, // byte-identical to current
+      suggestedMetaDescription: "A genuinely different description.",
+      reasoning: "Shortened the title and rewrote the description for clarity.",
+    };
+    const [result] = filterValidSuggestions([suggestion], INVENTORY);
+    expect(result.titleChanged).toBe(false);
+    expect(result.descriptionChanged).toBe(true);
+  });
+
+  it("title changed + description unchanged: titleChanged true, descriptionChanged false — even though the reasoning falsely claims the description changed", () => {
+    const suggestion = {
+      contentId: "content-1",
+      suggestedMetaTitle: "A genuinely different title",
+      suggestedMetaDescription: INVENTORY[0].currentMetaDescription, // byte-identical to current
+      reasoning: "Improved the meta description by adding more detail and a call-to-action.",
+    };
+    const [result] = filterValidSuggestions([suggestion], INVENTORY);
+    expect(result.titleChanged).toBe(true);
+    expect(result.descriptionChanged).toBe(false);
+  });
+
+  it("title unchanged + description unchanged: both flags false — reproduces the exact live defect (identical text, reasoning claims a change)", () => {
+    const suggestion = {
+      contentId: "content-1",
+      suggestedMetaTitle: INVENTORY[0].currentMetaTitle,
+      suggestedMetaDescription: INVENTORY[0].currentMetaDescription,
+      reasoning: "I changed the meta description to focus on maximizing returns and minimizing risks, providing a more detailed and informative explanation.",
+    };
+    const [result] = filterValidSuggestions([suggestion], INVENTORY);
+    expect(result.titleChanged).toBe(false);
+    expect(result.descriptionChanged).toBe(false);
+    // The suggestion itself is still returned — an unchanged field is never a rejection reason.
+    expect(result.suggestedMetaTitle).toBe(INVENTORY[0].currentMetaTitle);
+    expect(result.suggestedMetaDescription).toBe(INVENTORY[0].currentMetaDescription);
+  });
+
+  it("null current title/description: a real generated value is always \"changed\", with no special-casing needed", () => {
+    const suggestion = {
+      contentId: "content-2", // INVENTORY[1] has null currentMetaTitle/currentMetaDescription
+      suggestedMetaTitle: "Water Heater Repair & Installation | Acme Plumbing",
+      suggestedMetaDescription: "Fast, licensed water heater repair and installation in Austin.",
+      reasoning: "Provides metadata where none existed before.",
+    };
+    const [result] = filterValidSuggestions([suggestion], INVENTORY);
+    expect(result.titleChanged).toBe(true);
+    expect(result.descriptionChanged).toBe(true);
+  });
+
+  it("a suggestion with one field unchanged is not rejected — it still appears in the result", () => {
+    const suggestion = {
+      contentId: "content-1",
+      suggestedMetaTitle: INVENTORY[0].currentMetaTitle,
+      suggestedMetaDescription: "A genuinely different description.",
+      reasoning: "Rewrote the description.",
+    };
+    const result = filterValidSuggestions([suggestion], INVENTORY);
+    expect(result).toHaveLength(1);
+  });
+
+  it("does not reject a suggestion where both fields are unchanged either", () => {
+    const suggestion = {
+      contentId: "content-1",
+      suggestedMetaTitle: INVENTORY[0].currentMetaTitle,
+      suggestedMetaDescription: INVENTORY[0].currentMetaDescription,
+      reasoning: "No real change, just a claim of one.",
+    };
+    const result = filterValidSuggestions([suggestion], INVENTORY);
+    expect(result).toHaveLength(1);
+  });
+
+  it("exact character counts remain correct regardless of changed status", () => {
+    const suggestion = {
+      contentId: "content-1",
+      suggestedMetaTitle: INVENTORY[0].currentMetaTitle,
+      suggestedMetaDescription: "A genuinely different description that is a bit longer than the original one.",
+      reasoning: "Rewrote the description.",
+    };
+    const [result] = filterValidSuggestions([suggestion], INVENTORY);
+    expect(result.titleLengthGuidance.length).toBe((INVENTORY[0].currentMetaTitle as string).length);
+    expect(result.descriptionLengthGuidance.length).toBe(suggestion.suggestedMetaDescription.length);
+  });
+
+  it("existing length-guidance (warning, never rejection) behavior is unaffected by changed status", () => {
+    const tooLongUnchangedText = "A".repeat(200); // outside both the 50-60 and 120-160 guidance ranges
+    const suggestion = {
+      contentId: "content-1",
+      suggestedMetaTitle: tooLongUnchangedText,
+      suggestedMetaDescription: tooLongUnchangedText,
+      reasoning: "n/a",
+    };
+    const [result] = filterValidSuggestions([suggestion], [{ ...INVENTORY[0], currentMetaTitle: tooLongUnchangedText, currentMetaDescription: tooLongUnchangedText }]);
+    expect(result.titleChanged).toBe(false);
+    expect(result.descriptionChanged).toBe(false);
+    expect(result.titleLengthGuidance.status).toBe("TOO_LONG");
+    expect(result.descriptionLengthGuidance.status).toBe("TOO_LONG");
+  });
+
+  it("existing valid (genuinely changed) suggestions continue to work exactly as before", () => {
+    const [result] = filterValidSuggestions([VALID_SUGGESTION_1], INVENTORY);
+    expect(result.titleChanged).toBe(true);
+    expect(result.descriptionChanged).toBe(true);
+    expect(result.suggestedMetaTitle).toBe(VALID_TITLE);
+    expect(result.suggestedMetaDescription).toBe(VALID_DESCRIPTION);
+  });
+});
+
+/**
  * Stage C — the wrapper deferred by Stage B's own comment, now that the
  * real META_TAG_OPTIMIZATION AiTaskType exists. filterValidSuggestions
  * itself is exercised in full detail above (unchanged by Stage C); these

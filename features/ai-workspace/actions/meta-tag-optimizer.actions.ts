@@ -1,12 +1,21 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
+
 import { actionError, actionSuccess, type ActionResult } from "@/lib/action-result";
+import { logActivity } from "@/lib/activity";
 import { requireUser } from "@/lib/auth";
 import { Permissions } from "@/lib/authorization";
 import { prisma } from "@/lib/prisma";
 import { computeInputHash, createAiGenerationJob, findActiveAiGenerationJob } from "@/lib/jobs/ai-generation-job-table";
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
-import { metaTagOptimizerInputSchema, type MetaTagOptimizerInput } from "@/features/ai-workspace/schemas/meta-tag-optimizer.schema";
+import { createContentRevisionSnapshot } from "@/features/seo/services/content-revision.service";
+import {
+  applyMetaTagSuggestionInputSchema,
+  metaTagOptimizerInputSchema,
+  type ApplyMetaTagSuggestionInput,
+  type MetaTagOptimizerInput,
+} from "@/features/ai-workspace/schemas/meta-tag-optimizer.schema";
 
 /**
  * Verifies the SEO project belongs to the actor's company — the same
@@ -52,7 +61,7 @@ async function getOwnedContentRows(contentIds: string[], companyId: string, seoP
  * ContentRevision — see meta-tag-optimizer.service.ts's own filter and
  * lib/jobs/ai-generation-job-runner.ts's dispatchMetaTagOptimizer, neither
  * of which touches the database beyond read-only lookups. Applying an
- * accepted suggestion is a separate, later-stage action.
+ * accepted suggestion is applyMetaTagSuggestionAction, below.
  */
 export async function startMetaTagOptimizerAction(input: MetaTagOptimizerInput): Promise<ActionResult<{ jobId: string }>> {
   const actor = await requireUser();
@@ -91,4 +100,122 @@ export async function startMetaTagOptimizerAction(input: MetaTagOptimizerInput):
   });
   void runAiGenerationJob(job.id);
   return actionSuccess({ jobId: job.id });
+}
+
+export type ApplyMetaTagSuggestionResult = {
+  contentId: string;
+  /** True when the requested metaTitle/metaDescription already exactly matched the current row — no revision was created and no write occurred. */
+  noOp: boolean;
+};
+
+/**
+ * The approval gate for a single suggestion — the first Meta Tag Optimizer
+ * action that ever writes to Content. Never automatic: this is only ever
+ * called from an explicit "Apply this suggestion" click (see
+ * MetaTagOptimizerPicker.tsx's computeIsApplyEligible + confirm dialog).
+ *
+ * Ownership is re-verified fresh against BOTH the actor's company and the
+ * exact seoProjectId the suggestion was generated under — reusing
+ * getOwnedSeoProject/getOwnedContentRows unchanged from
+ * startMetaTagOptimizerAction above, never trusting that the page still
+ * belongs to that project/company just because a suggestion for it exists in
+ * the caller's in-memory state.
+ *
+ * Same snapshot-before-overwrite discipline as updateLongFormContentAction/
+ * restoreContentRevisionAction: the CURRENT title/metaTitle/metaDescription/
+ * body are captured into a ContentRevision (changeSource: AI_REGENERATION,
+ * the same choice updateLongFormContentAction already made for an
+ * AI-proposed, human-approved write-back) inside the same transaction as the
+ * write, under a row lock, before anything is overwritten — so applying a
+ * suggestion is always reversible via the existing Version History/restore
+ * flow, no new undo mechanism needed. The update's data object lists ONLY
+ * metaTitle/metaDescription — title, body, status, url, keywords, authorId,
+ * seoProjectId are never touched, regardless of what the suggestion says.
+ */
+export async function applyMetaTagSuggestionAction(input: ApplyMetaTagSuggestionInput): Promise<ActionResult<ApplyMetaTagSuggestionResult>> {
+  const actor = await requireUser();
+  if (!Permissions.manageSeoProjects(actor.role)) {
+    return actionError("You do not have permission to edit content.");
+  }
+
+  const parsed = applyMetaTagSuggestionInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionError(parsed.error.issues[0]?.message ?? "Invalid input");
+  }
+
+  const seoProject = await getOwnedSeoProject(parsed.data.seoProjectId, actor.companyId);
+  if (!seoProject) {
+    return actionError("SEO project not found.");
+  }
+
+  const rows = await getOwnedContentRows([parsed.data.contentId], actor.companyId, seoProject.id);
+  if (!rows) {
+    return actionError("This page could not be found in the selected SEO project.");
+  }
+  const content = rows[0];
+
+  const newMetaTitle = parsed.data.metaTitle;
+  const newMetaDescription = parsed.data.metaDescription;
+
+  const preflight = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Content" WHERE id = ${content.id} FOR UPDATE`;
+    const current = await tx.content.findUnique({ where: { id: content.id } });
+    if (!current) {
+      return { kind: "not_found" as const };
+    }
+
+    if (current.metaTitle === newMetaTitle && current.metaDescription === newMetaDescription) {
+      return { kind: "no_op" as const };
+    }
+
+    await createContentRevisionSnapshot(tx, {
+      contentId: content.id,
+      companyId: actor.companyId,
+      title: current.title,
+      metaTitle: current.metaTitle,
+      metaDescription: current.metaDescription,
+      body: current.body,
+      changeSource: "AI_REGENERATION",
+      createdByUserId: actor.id,
+    });
+
+    const updated = await tx.content.update({
+      where: { id: content.id },
+      data: {
+        metaTitle: newMetaTitle,
+        metaDescription: newMetaDescription,
+      },
+    });
+    return { kind: "applied" as const, content: updated };
+  });
+
+  if (preflight.kind === "not_found") {
+    return actionError("This page could not be found in the selected SEO project.");
+  }
+  if (preflight.kind === "no_op") {
+    return actionSuccess({ contentId: content.id, noOp: true });
+  }
+
+  // Best-effort only, same reliability pattern restoreContentRevisionAction
+  // already established: a failure here must never turn an
+  // already-durably-persisted apply into a reported failure.
+  try {
+    await logActivity({
+      actorId: actor.id,
+      action: "content.ai_meta_tags_applied",
+      companyId: actor.companyId,
+      seoProjectId: seoProject.id,
+      contentId: content.id,
+      metadata: { metaTitle: newMetaTitle, metaDescription: newMetaDescription },
+    });
+  } catch (err) {
+    console.error("Meta Tag Optimizer apply: failed to record the activity log", {
+      contentId: content.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  revalidatePath(`/seo/${seoProject.id}/content`);
+  revalidatePath(`/seo/${seoProject.id}/content/${content.id}`);
+  return actionSuccess({ contentId: content.id, noOp: false });
 }

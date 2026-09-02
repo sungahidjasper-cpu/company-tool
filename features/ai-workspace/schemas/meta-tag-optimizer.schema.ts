@@ -97,14 +97,24 @@ export type LengthGuidance = zv4.infer<typeof lengthGuidanceSchema>;
  * model-reported value — and are informational only: see
  * filterValidSuggestions's own comment for why a suggestion is never
  * rejected merely for falling outside the advisory range.
+ *
+ * titleChanged/descriptionChanged are likewise always computed here from a
+ * deterministic string comparison against the real current value — never
+ * from the AI's own `reasoning` narrative. Discovered live: the model can
+ * return a suggestion byte-identical to the current value while its
+ * reasoning still claims a change was made. These two booleans let the UI
+ * tell the truth regardless of what the reasoning text says — see
+ * filterValidSuggestions's own comment for exactly how they're computed.
  */
 export const metaTagSuggestionSchema = zv4.object({
   contentId: zv4.string(),
   url: zv4.string().nullable(),
   currentMetaTitle: zv4.string().nullable(),
   suggestedMetaTitle: zv4.string(),
+  titleChanged: zv4.boolean(),
   currentMetaDescription: zv4.string().nullable(),
   suggestedMetaDescription: zv4.string(),
+  descriptionChanged: zv4.boolean(),
   reasoning: zv4.string(),
   titleLengthGuidance: lengthGuidanceSchema,
   descriptionLengthGuidance: lengthGuidanceSchema,
@@ -115,3 +125,21 @@ export const metaTagOptimizerResultSchema = zv4.object({
   suggestions: zv4.array(metaTagSuggestionSchema).default([]),
 });
 export type MetaTagOptimizerResult = zv4.infer<typeof metaTagOptimizerResultSchema>;
+
+/**
+ * The apply-one-suggestion input — a plain form-validated shape (regular
+ * zod), matching metaTagOptimizerInputSchema's own v3-input convention.
+ * Deliberately takes the approved metaTitle/metaDescription text directly
+ * (not a suggestion id or the whole MetaTagSuggestion object): the action
+ * re-verifies ownership of contentId against BOTH seoProjectId and the
+ * actor's company itself before writing anything, so it never trusts a
+ * client-supplied "this suggestion is valid" claim — only the two literal
+ * strings the user is choosing to apply.
+ */
+export const applyMetaTagSuggestionInputSchema = z.object({
+  seoProjectId: z.string().min(1, "Missing SEO project").uuid("Invalid SEO project id"),
+  contentId: z.string().min(1, "Missing content id").uuid("Invalid content id"),
+  metaTitle: z.string().min(1, "Meta title is required"),
+  metaDescription: z.string().min(1, "Meta description is required"),
+});
+export type ApplyMetaTagSuggestionInput = z.infer<typeof applyMetaTagSuggestionInputSchema>;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { computeOmittedContent, computeSelectAllCapped, computeSelectionAfterToggle } from "@/features/ai-workspace/components/MetaTagOptimizerPicker";
+import { computeIsApplyEligible, computeOmittedContent, computeReasoningDisplay, computeSelectAllCapped, computeSelectionAfterToggle } from "@/features/ai-workspace/components/MetaTagOptimizerPicker";
 
 /**
  * This repository has no React component-rendering test setup anywhere
@@ -102,5 +102,64 @@ describe("computeOmittedContent", () => {
 
   it("returns an empty array when nothing is selected", () => {
     expect(computeOmittedContent(CONTENT, new Set(), [])).toEqual([]);
+  });
+});
+
+/**
+ * Hardening — the AI's `reasoning` is one combined blob that can describe
+ * BOTH fields regardless of which one actually changed (live-observed: a
+ * reasoning claiming "the title is 2 characters shorter" when the title was
+ * byte-identical). It is only safe to show verbatim when BOTH fields
+ * changed; otherwise it cannot be safely attributed to just the one field
+ * that did change, so a plain, deterministic "what changed" statement must
+ * be shown instead — never the reasoning text itself, and never a new,
+ * inferred explanation.
+ */
+describe("computeReasoningDisplay", () => {
+  it("both fields changed: AI reasoning may be shown", () => {
+    expect(computeReasoningDisplay(true, true)).toBe("AI_REASONING");
+  });
+
+  it("only title changed: reasoning is withheld, not attributed to just the title", () => {
+    expect(computeReasoningDisplay(true, false)).toBe("TITLE_ONLY");
+  });
+
+  it("only description changed: reasoning is withheld, not attributed to just the description", () => {
+    expect(computeReasoningDisplay(false, true)).toBe("DESCRIPTION_ONLY");
+  });
+
+  it("neither field changed: no change", () => {
+    expect(computeReasoningDisplay(false, false)).toBe("NO_CHANGE");
+  });
+});
+
+/**
+ * Apply eligibility — governs whether "Apply this suggestion" is shown at
+ * all. Nothing here decides whether an apply actually succeeds (that's the
+ * server's job, re-verified fresh in applyMetaTagSuggestionAction); this
+ * only decides whether offering the button makes sense in the first place.
+ */
+describe("computeIsApplyEligible", () => {
+  it("only the title changed, not yet applied: eligible", () => {
+    expect(computeIsApplyEligible(true, false, false)).toBe(true);
+  });
+
+  it("only the description changed, not yet applied: eligible", () => {
+    expect(computeIsApplyEligible(false, true, false)).toBe(true);
+  });
+
+  it("both changed, not yet applied: eligible", () => {
+    expect(computeIsApplyEligible(true, true, false)).toBe(true);
+  });
+
+  it("neither changed: never eligible, regardless of applied state — nothing to apply", () => {
+    expect(computeIsApplyEligible(false, false, false)).toBe(false);
+    expect(computeIsApplyEligible(false, false, true)).toBe(false);
+  });
+
+  it("already applied this session: not eligible even though a field changed", () => {
+    expect(computeIsApplyEligible(true, false, true)).toBe(false);
+    expect(computeIsApplyEligible(false, true, true)).toBe(false);
+    expect(computeIsApplyEligible(true, true, true)).toBe(false);
   });
 });

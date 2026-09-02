@@ -31,6 +31,9 @@ vi.mock("@/features/ai-workspace/services/social-snippet-generator.service", () 
 vi.mock("@/features/ai-workspace/services/meta-tag-optimizer.service", () => ({
   generateMetaTagSuggestions: vi.fn(),
 }));
+vi.mock("@/features/ai-workspace/services/content-rewriter.service", () => ({
+  generateContentRewrite: vi.fn(),
+}));
 vi.mock("@/features/seo/services/content.service", () => ({
   listContentInventoryForProject: vi.fn(),
 }));
@@ -48,6 +51,7 @@ import { generateSchemaMarkupRecommendations } from "@/features/ai-workspace/ser
 import { generateInternalLinkRecommendations } from "@/features/ai-workspace/services/internal-link-analyzer.service";
 import { generateSocialSnippets } from "@/features/ai-workspace/services/social-snippet-generator.service";
 import { generateMetaTagSuggestions } from "@/features/ai-workspace/services/meta-tag-optimizer.service";
+import { generateContentRewrite } from "@/features/ai-workspace/services/content-rewriter.service";
 import { listContentInventoryForProject } from "@/features/seo/services/content.service";
 import { LlmProviderError } from "@/lib/ai/providers/errors";
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
@@ -64,6 +68,7 @@ const mockGenerateSchemaMarkup = vi.mocked(generateSchemaMarkupRecommendations);
 const mockGenerateInternalLinks = vi.mocked(generateInternalLinkRecommendations);
 const mockGenerateSocialSnippets = vi.mocked(generateSocialSnippets);
 const mockGenerateMetaTagSuggestions = vi.mocked(generateMetaTagSuggestions);
+const mockGenerateContentRewrite = vi.mocked(generateContentRewrite);
 const mockFindManyContent = vi.mocked(prisma.content.findMany);
 const mockListContentInventory = vi.mocked(listContentInventoryForProject);
 const mockUpdatePartialText = vi.mocked(updateAiGenerationJobPartialText);
@@ -651,6 +656,201 @@ describe("runAiGenerationJob — META_TAG_OPTIMIZATION", () => {
 
     const [passedCtx] = mockGenerateMetaTagSuggestions.mock.calls[0];
     expect(passedCtx.inventory).toEqual([{ contentId: CONTENT_ID_1, title: CONTENT_ROW_1.title, url: CONTENT_ROW_1.url, currentMetaTitle: CONTENT_ROW_1.metaTitle, currentMetaDescription: CONTENT_ROW_1.metaDescription }]);
+  });
+});
+
+describe("runAiGenerationJob — CONTENT_REWRITE", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const SEO_PROJECT_UUID = "00000000-0000-4000-8000-0000000000f0";
+  const MISSING_SEO_PROJECT_UUID = "00000000-0000-4000-8000-0000000000ff";
+  const OTHER_SEO_PROJECT_UUID = "00000000-0000-4000-8000-0000000000fe";
+  const CONTENT_ID = "00000000-0000-4000-8000-000000000001";
+  /** The dispatcher cross-checks content.seoProjectId against the resolved project's own id, so — unlike the other describe blocks above, whose dispatchers never make that comparison — this project's id must actually equal CONTENT_ROW.seoProjectId below. */
+  const SEO_PROJECT_FOR_REWRITE = { ...SEO_PROJECT, id: SEO_PROJECT_UUID };
+  const CONTENT_ROW = {
+    id: CONTENT_ID,
+    seoProjectId: SEO_PROJECT_UUID,
+    title: "Emergency Plumbing Guide",
+    metaTitle: "Old Meta Title",
+    metaDescription: "Old meta description.",
+    body: "## Introduction\n\nReal article body text.",
+  };
+  const REWRITE_RESULT = {
+    contentId: CONTENT_ID,
+    currentTitle: CONTENT_ROW.title,
+    rewrittenTitle: "Emergency Plumbing Guide for Austin Homeowners",
+    titleChanged: true,
+    currentMetaTitle: CONTENT_ROW.metaTitle,
+    rewrittenMetaTitle: "24/7 Emergency Plumbing | Acme",
+    metaTitleChanged: true,
+    currentMetaDescription: CONTENT_ROW.metaDescription,
+    rewrittenMetaDescription: "Fast, licensed 24/7 emergency plumbing repair across Austin.",
+    metaDescriptionChanged: true,
+    currentBody: CONTENT_ROW.body,
+    rewrittenBody: "## Introduction\n\nAcme Plumbing provides round-the-clock emergency repair.",
+    bodyChanged: true,
+    reasoning: "Clarified the audience and tightened the introduction.",
+  };
+
+  it("re-fetches the Content row fresh from the database and dispatches to generateContentRewrite with only authoritative values, marks the job SUCCEEDED", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-30",
+      taskType: "CONTENT_REWRITE",
+      companyId: "company-9",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, contentId: CONTENT_ID },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT_FOR_REWRITE as never);
+    mockFindContent.mockResolvedValue(CONTENT_ROW as never);
+    mockGenerateContentRewrite.mockResolvedValue(REWRITE_RESULT as never);
+
+    await runAiGenerationJob("job-30");
+
+    expect(mockGenerateContentRewrite).toHaveBeenCalledWith(
+      {
+        contentId: CONTENT_ID,
+        seoProjectId: SEO_PROJECT_UUID,
+        companyId: "company-9",
+        seoProjectName: "Acme SEO",
+        domain: "acme.example",
+        currentTitle: CONTENT_ROW.title,
+        currentMetaTitle: CONTENT_ROW.metaTitle,
+        currentMetaDescription: CONTENT_ROW.metaDescription,
+        currentBody: CONTENT_ROW.body,
+      },
+      undefined
+    );
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-30", { result: REWRITE_RESULT });
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+  });
+
+  it("does NOT update Content and does NOT create a ContentRevision — the dispatcher's only prisma calls are the read-only SEO project and Content lookups", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-31",
+      taskType: "CONTENT_REWRITE",
+      companyId: "company-9",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, contentId: CONTENT_ID },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT_FOR_REWRITE as never);
+    mockFindContent.mockResolvedValue(CONTENT_ROW as never);
+    mockGenerateContentRewrite.mockResolvedValue(null as never);
+
+    await runAiGenerationJob("job-31");
+
+    // The mocked prisma client in this file exposes only read methods
+    // (findUnique/findMany) for sEOProject/content — there is no
+    // content.update or contentRevision mock at all, so a real write
+    // attempted here would throw "not a function", not silently succeed.
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-31", { result: null });
+  });
+
+  it("marks the job FAILED with a specific message when the SEO project no longer exists", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-32",
+      taskType: "CONTENT_REWRITE",
+      companyId: "company-9",
+      inputJson: { seoProjectId: MISSING_SEO_PROJECT_UUID, contentId: CONTENT_ID },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(null);
+
+    await runAiGenerationJob("job-32");
+
+    expect(mockGenerateContentRewrite).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-32", "SEO project not found.", "UNKNOWN");
+  });
+
+  it("marks the job FAILED when the content id does not exist at all", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-33",
+      taskType: "CONTENT_REWRITE",
+      companyId: "company-9",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, contentId: CONTENT_ID },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT_FOR_REWRITE as never);
+    mockFindContent.mockResolvedValue(null);
+
+    await runAiGenerationJob("job-33");
+
+    expect(mockGenerateContentRewrite).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-33", "Content not found.", "UNKNOWN");
+  });
+
+  it("marks the job FAILED (re-validating ownership) when the fetched Content row belongs to a different SEO project than inputJson named", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-34",
+      taskType: "CONTENT_REWRITE",
+      companyId: "company-9",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, contentId: CONTENT_ID },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT_FOR_REWRITE as never);
+    mockFindContent.mockResolvedValue({ ...CONTENT_ROW, seoProjectId: OTHER_SEO_PROJECT_UUID } as never);
+
+    await runAiGenerationJob("job-34");
+
+    expect(mockGenerateContentRewrite).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-34", "Content not found.", "UNKNOWN");
+  });
+
+  it("marks the job FAILED (re-checking body eligibility) when the fetched Content row has a null body", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-35",
+      taskType: "CONTENT_REWRITE",
+      companyId: "company-9",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, contentId: CONTENT_ID },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT_FOR_REWRITE as never);
+    mockFindContent.mockResolvedValue({ ...CONTENT_ROW, body: null } as never);
+
+    await runAiGenerationJob("job-35");
+
+    expect(mockGenerateContentRewrite).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-35", "This page has no body text to rewrite.", "UNKNOWN");
+  });
+
+  it("marks the job FAILED (re-checking body eligibility) when the fetched Content row has a whitespace-only body", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-36",
+      taskType: "CONTENT_REWRITE",
+      companyId: "company-9",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, contentId: CONTENT_ID },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT_FOR_REWRITE as never);
+    mockFindContent.mockResolvedValue({ ...CONTENT_ROW, body: "   " } as never);
+
+    await runAiGenerationJob("job-36");
+
+    expect(mockGenerateContentRewrite).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-36", "This page has no body text to rewrite.", "UNKNOWN");
+  });
+
+  it("rejects an invalid inputJson shape (malformed contentId) without ever calling generateContentRewrite — re-validates job input, never trusts the stored shape", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-37",
+      taskType: "CONTENT_REWRITE",
+      companyId: "company-9",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, contentId: "not-a-uuid" },
+    } as never);
+
+    await runAiGenerationJob("job-37");
+
+    expect(mockGenerateContentRewrite).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-37", expect.any(String), "UNKNOWN");
+  });
+
+  it("rejects an invalid inputJson shape (missing contentId) without ever calling generateContentRewrite", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-38",
+      taskType: "CONTENT_REWRITE",
+      companyId: "company-9",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID },
+    } as never);
+
+    await runAiGenerationJob("job-38");
+
+    expect(mockGenerateContentRewrite).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-38", expect.any(String), "UNKNOWN");
   });
 });
 

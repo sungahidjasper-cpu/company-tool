@@ -15,6 +15,7 @@ import { generateSchemaMarkupRecommendations } from "@/features/ai-workspace/ser
 import { generateInternalLinkRecommendations } from "@/features/ai-workspace/services/internal-link-analyzer.service";
 import { generateSocialSnippets } from "@/features/ai-workspace/services/social-snippet-generator.service";
 import { generateMetaTagSuggestions } from "@/features/ai-workspace/services/meta-tag-optimizer.service";
+import { generateContentRewrite } from "@/features/ai-workspace/services/content-rewriter.service";
 import { contentBriefOutputSchema, type ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { externalSourceSchema, faqItemSchema, normalizeArray, normalizeInternalLinkSuggestions } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { contentBriefSettingsSchema, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
@@ -25,6 +26,7 @@ import {
   validateInternalLinkAnalyzerJobInput,
   validateSocialSnippetGeneratorJobInput,
   validateMetaTagOptimizerJobInput,
+  validateContentRewriterJobInput,
 } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 import { listContentInventoryForProject } from "@/features/seo/services/content.service";
 
@@ -347,6 +349,48 @@ async function dispatchMetaTagOptimizer(job: DispatchJob, onChunk?: (event: Stre
 }
 
 /**
+ * The seventh AI Workspace tool's dispatcher. Ownership of seoProjectId/
+ * contentId was already verified by startContentRewriteAction before this
+ * job was ever created — this dispatcher, like every other one, only
+ * re-validates the job's shape, then re-fetches the authoritative Content
+ * row itself (never trusting anything about its title/meta/body from
+ * job.inputJson, which carries only ids). Re-checks the same non-empty-body
+ * eligibility rule the action already enforced — defense in depth, matching
+ * every other dispatcher's own "never trust stored JSON as already-safe"
+ * discipline, not duplicated business logic. Generation only: nothing here
+ * writes to Content or creates a ContentRevision — see
+ * content-rewriter.actions.ts (Stage C) and content-revision.service.ts
+ * (Stage E), neither touched by this stage.
+ */
+async function dispatchContentRewriter(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const parsed = validateContentRewriterJobInput(job.inputJson);
+  if (!parsed.success) throw new Error(parsed.message);
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
+  if (!seoProject) throw new Error("SEO project not found.");
+
+  const content = await prisma.content.findUnique({ where: { id: parsed.data.contentId } });
+  if (!content || content.seoProjectId !== seoProject.id) throw new Error("Content not found.");
+  if (!content.body || !content.body.trim()) throw new Error("This page has no body text to rewrite.");
+
+  const result = await generateContentRewrite(
+    {
+      contentId: content.id,
+      seoProjectId: seoProject.id,
+      companyId: job.companyId,
+      seoProjectName: seoProject.name,
+      domain: seoProject.domain,
+      currentTitle: content.title,
+      currentMetaTitle: content.metaTitle,
+      currentMetaDescription: content.metaDescription,
+      currentBody: content.body,
+    },
+    onChunk
+  );
+  return { result } as unknown as Prisma.InputJsonValue;
+}
+
+/**
  * Phase 30 Stage 10 — a per-taskType lookup table replacing what used to be
  * a hardcoded if/else chain in dispatch() below. Behavior for CONTENT_BRIEF
  * and CONTENT_DRAFT is unchanged (dispatchContentBrief/dispatchContentDraft
@@ -357,8 +401,8 @@ async function dispatchMetaTagOptimizer(job: DispatchJob, onChunk?: (event: Stre
  * and CONTENT_INTELLIGENCE (Website Analysis's own AiTaskType values) are
  * deliberately absent — those are never dispatched through AiGenerationJob.
  * SCHEMA_MARKUP_GENERATION, INTERNAL_LINK_ANALYSIS, SOCIAL_SNIPPET_GENERATION,
- * and META_TAG_OPTIMIZATION added as the third through sixth AI Workspace
- * tools, following this exact same additive pattern.
+ * META_TAG_OPTIMIZATION, and CONTENT_REWRITE added as the third through
+ * seventh AI Workspace tools, following this exact same additive pattern.
  */
 const TASK_HANDLERS: Partial<Record<AiTaskType, TaskHandler>> = {
   CONTENT_BRIEF: dispatchContentBrief,
@@ -367,6 +411,7 @@ const TASK_HANDLERS: Partial<Record<AiTaskType, TaskHandler>> = {
   INTERNAL_LINK_ANALYSIS: dispatchInternalLinkAnalysis,
   SOCIAL_SNIPPET_GENERATION: dispatchSocialSnippetGenerator,
   META_TAG_OPTIMIZATION: dispatchMetaTagOptimizer,
+  CONTENT_REWRITE: dispatchContentRewriter,
 };
 
 /**

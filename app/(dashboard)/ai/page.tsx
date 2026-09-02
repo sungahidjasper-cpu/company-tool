@@ -24,8 +24,8 @@ import { requireUser } from "@/lib/auth";
 import { formatEnumLabel } from "@/lib/utils";
 
 /**
- * Phase 21 §17 — a navigation shell only. Six tools are real; the other
- * eight are visibly-disabled placeholders so the layout doesn't need a
+ * Phase 21 §17 — a navigation shell only. Seven tools are real; the other
+ * seven are visibly-disabled placeholders so the layout doesn't need a
  * redesign as each one gets built out in a future phase (per the review's
  * item 18: deepen Content Brief/Draft now, don't build new shallow tools).
  */
@@ -37,7 +37,7 @@ const AI_TOOLS = [
   { name: "Content Gap Analysis", description: "Find topics competitors rank for that you don't cover yet.", href: null, icon: Search, status: "coming-soon" as const },
   { name: "Competitor Content Analysis", description: "Compare your content against top-ranking competitor pages.", href: null, icon: Users, status: "coming-soon" as const },
   { name: "Schema Markup Generator", description: "Generate structured-data markup for existing pages.", href: "/ai/schema-markup/new", icon: ShieldCheck, status: "available" as const },
-  { name: "Content Rewriter", description: "Refresh and improve underperforming existing content.", href: null, icon: FileEdit, status: "coming-soon" as const },
+  { name: "Content Rewriter", description: "Rewrite and refresh one existing page's title, meta tags, and body.", href: "/ai/content-rewriter/new", icon: FileEdit, status: "available" as const },
   { name: "Topic Cluster Planner", description: "Plan pillar/cluster content structures around a topic.", href: null, icon: Network, status: "coming-soon" as const },
   { name: "Content Calendar Assistant", description: "Plan and schedule upcoming content topics.", href: null, icon: CalendarDays, status: "coming-soon" as const },
   { name: "Image Alt Text Generator", description: "Generate SEO-friendly alt text for existing images.", href: null, icon: ImageIcon, status: "coming-soon" as const },

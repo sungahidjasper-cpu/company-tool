@@ -24,8 +24,8 @@ import { requireUser } from "@/lib/auth";
 import { formatEnumLabel } from "@/lib/utils";
 
 /**
- * Phase 21 §17 — a navigation shell only. Seven tools are real; the other
- * seven are visibly-disabled placeholders so the layout doesn't need a
+ * Phase 21 §17 — a navigation shell only. Eight tools are real; the other
+ * six are visibly-disabled placeholders so the layout doesn't need a
  * redesign as each one gets built out in a future phase (per the review's
  * item 18: deepen Content Brief/Draft now, don't build new shallow tools).
  */
@@ -42,7 +42,7 @@ const AI_TOOLS = [
   { name: "Content Calendar Assistant", description: "Plan and schedule upcoming content topics.", href: null, icon: CalendarDays, status: "coming-soon" as const },
   { name: "Image Alt Text Generator", description: "Generate SEO-friendly alt text for existing images.", href: null, icon: ImageIcon, status: "coming-soon" as const },
   { name: "Social Snippet Generator", description: "Turn published content into social media posts.", href: "/ai/social-snippet-generator/new", icon: MessageSquareText, status: "available" as const },
-  { name: "Press Release Generator", description: "Draft press releases grounded in verified facts.", href: null, icon: Newspaper, status: "coming-soon" as const },
+  { name: "Press Release Generator", description: "Draft press releases grounded in verified facts.", href: "/ai/press-release-generator/new", icon: Newspaper, status: "available" as const },
   { name: "Email Newsletter Drafter", description: "Summarize recent content into a newsletter draft.", href: null, icon: Mail, status: "coming-soon" as const },
 ] as const;
 

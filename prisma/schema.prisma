@@ -1144,6 +1144,12 @@ enum AiTaskType {
   /// is a separate, later-stage action (Stage E), never performed by this
   /// task itself.
   CONTENT_REWRITE
+  /// The eighth AI Workspace tool — drafts a press release from
+  /// user-supplied announcement facts plus optional Brand Profile context.
+  /// Never grounded in any existing Content row and never persists
+  /// anything beyond the AiGenerationJob result — no Content row is ever
+  /// created, and no ContentRevision is ever involved.
+  PRESS_RELEASE_GENERATION
 }
 
 /// Phase 11C — one row per provider attempt (success or failure), for cost/

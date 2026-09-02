@@ -16,6 +16,7 @@ import { generateInternalLinkRecommendations } from "@/features/ai-workspace/ser
 import { generateSocialSnippets } from "@/features/ai-workspace/services/social-snippet-generator.service";
 import { generateMetaTagSuggestions } from "@/features/ai-workspace/services/meta-tag-optimizer.service";
 import { generateContentRewrite } from "@/features/ai-workspace/services/content-rewriter.service";
+import { generatePressRelease } from "@/features/ai-workspace/services/press-release-generator.service";
 import { contentBriefOutputSchema, type ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { externalSourceSchema, faqItemSchema, normalizeArray, normalizeInternalLinkSuggestions } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { contentBriefSettingsSchema, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
@@ -27,6 +28,7 @@ import {
   validateSocialSnippetGeneratorJobInput,
   validateMetaTagOptimizerJobInput,
   validateContentRewriterJobInput,
+  validatePressReleaseGeneratorJobInput,
 } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 import { listContentInventoryForProject } from "@/features/seo/services/content.service";
 
@@ -391,6 +393,41 @@ async function dispatchContentRewriter(job: DispatchJob, onChunk?: (event: Strea
 }
 
 /**
+ * The eighth AI Workspace tool's dispatcher. Ownership of seoProjectId was
+ * already verified by startPressReleaseGenerationAction before this job was
+ * ever created — this dispatcher, like every other one, only re-validates
+ * the job's shape, then re-fetches the authoritative SEO project itself
+ * (never trusting anything about it from job.inputJson beyond its id).
+ * Never reads or writes Content or ContentRevision — this tool has no
+ * contentId in its input at all, so there is nothing to fetch beyond the
+ * SEO project.
+ */
+async function dispatchPressReleaseGenerator(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const parsed = validatePressReleaseGeneratorJobInput(job.inputJson);
+  if (!parsed.success) throw new Error(parsed.message);
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
+  if (!seoProject) throw new Error("SEO project not found.");
+
+  const result = await generatePressRelease(
+    {
+      seoProjectId: seoProject.id,
+      companyId: job.companyId,
+      seoProjectName: seoProject.name,
+      domain: seoProject.domain,
+      headline: parsed.data.headline,
+      keyFacts: parsed.data.keyFacts,
+      quote: parsed.data.quote,
+      dateline: parsed.data.dateline,
+      callToAction: parsed.data.callToAction,
+      notes: parsed.data.notes,
+    },
+    onChunk
+  );
+  return { result } as unknown as Prisma.InputJsonValue;
+}
+
+/**
  * Phase 30 Stage 10 — a per-taskType lookup table replacing what used to be
  * a hardcoded if/else chain in dispatch() below. Behavior for CONTENT_BRIEF
  * and CONTENT_DRAFT is unchanged (dispatchContentBrief/dispatchContentDraft
@@ -401,8 +438,9 @@ async function dispatchContentRewriter(job: DispatchJob, onChunk?: (event: Strea
  * and CONTENT_INTELLIGENCE (Website Analysis's own AiTaskType values) are
  * deliberately absent — those are never dispatched through AiGenerationJob.
  * SCHEMA_MARKUP_GENERATION, INTERNAL_LINK_ANALYSIS, SOCIAL_SNIPPET_GENERATION,
- * META_TAG_OPTIMIZATION, and CONTENT_REWRITE added as the third through
- * seventh AI Workspace tools, following this exact same additive pattern.
+ * META_TAG_OPTIMIZATION, CONTENT_REWRITE, and PRESS_RELEASE_GENERATION added
+ * as the third through eighth AI Workspace tools, following this exact same
+ * additive pattern.
  */
 const TASK_HANDLERS: Partial<Record<AiTaskType, TaskHandler>> = {
   CONTENT_BRIEF: dispatchContentBrief,
@@ -412,6 +450,7 @@ const TASK_HANDLERS: Partial<Record<AiTaskType, TaskHandler>> = {
   SOCIAL_SNIPPET_GENERATION: dispatchSocialSnippetGenerator,
   META_TAG_OPTIMIZATION: dispatchMetaTagOptimizer,
   CONTENT_REWRITE: dispatchContentRewriter,
+  PRESS_RELEASE_GENERATION: dispatchPressReleaseGenerator,
 };
 
 /**

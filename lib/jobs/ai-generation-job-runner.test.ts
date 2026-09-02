@@ -34,6 +34,9 @@ vi.mock("@/features/ai-workspace/services/meta-tag-optimizer.service", () => ({
 vi.mock("@/features/ai-workspace/services/content-rewriter.service", () => ({
   generateContentRewrite: vi.fn(),
 }));
+vi.mock("@/features/ai-workspace/services/press-release-generator.service", () => ({
+  generatePressRelease: vi.fn(),
+}));
 vi.mock("@/features/seo/services/content.service", () => ({
   listContentInventoryForProject: vi.fn(),
 }));
@@ -52,6 +55,7 @@ import { generateInternalLinkRecommendations } from "@/features/ai-workspace/ser
 import { generateSocialSnippets } from "@/features/ai-workspace/services/social-snippet-generator.service";
 import { generateMetaTagSuggestions } from "@/features/ai-workspace/services/meta-tag-optimizer.service";
 import { generateContentRewrite } from "@/features/ai-workspace/services/content-rewriter.service";
+import { generatePressRelease } from "@/features/ai-workspace/services/press-release-generator.service";
 import { listContentInventoryForProject } from "@/features/seo/services/content.service";
 import { LlmProviderError } from "@/lib/ai/providers/errors";
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
@@ -69,6 +73,7 @@ const mockGenerateInternalLinks = vi.mocked(generateInternalLinkRecommendations)
 const mockGenerateSocialSnippets = vi.mocked(generateSocialSnippets);
 const mockGenerateMetaTagSuggestions = vi.mocked(generateMetaTagSuggestions);
 const mockGenerateContentRewrite = vi.mocked(generateContentRewrite);
+const mockGeneratePressRelease = vi.mocked(generatePressRelease);
 const mockFindManyContent = vi.mocked(prisma.content.findMany);
 const mockListContentInventory = vi.mocked(listContentInventoryForProject);
 const mockUpdatePartialText = vi.mocked(updateAiGenerationJobPartialText);
@@ -851,6 +856,142 @@ describe("runAiGenerationJob — CONTENT_REWRITE", () => {
 
     expect(mockGenerateContentRewrite).not.toHaveBeenCalled();
     expect(mockMarkFailed).toHaveBeenCalledWith("job-38", expect.any(String), "UNKNOWN");
+  });
+});
+
+describe("runAiGenerationJob — PRESS_RELEASE_GENERATION", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const SEO_PROJECT_UUID = "00000000-0000-4000-8000-0000000000f0";
+  const MISSING_SEO_PROJECT_UUID = "00000000-0000-4000-8000-0000000000ff";
+  const RELEASE_RESULT = {
+    headline: "Acme Launches New Product",
+    subheadline: "Available starting next month",
+    dateline: "",
+    leadParagraph: "Acme today announced a new product.",
+    bodyParagraphs: ["The product will be available in March."],
+    quoteSection: "",
+    boilerplate: "Acme is a plumbing company.",
+    callToAction: "",
+    reasoning: "Structured as a standard launch announcement.",
+  };
+
+  it("re-fetches the SEO project fresh from the database and dispatches to generatePressRelease with only authoritative values, marks the job SUCCEEDED", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-40",
+      taskType: "PRESS_RELEASE_GENERATION",
+      companyId: "company-9",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, headline: "Acme Launches New Product", keyFacts: "Acme is launching a new product line." },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockGeneratePressRelease.mockResolvedValue(RELEASE_RESULT as never);
+
+    await runAiGenerationJob("job-40");
+
+    expect(mockGeneratePressRelease).toHaveBeenCalledWith(
+      {
+        seoProjectId: "project-1",
+        companyId: "company-9",
+        seoProjectName: "Acme SEO",
+        domain: "acme.example",
+        headline: "Acme Launches New Product",
+        keyFacts: "Acme is launching a new product line.",
+        quote: undefined,
+        dateline: undefined,
+        callToAction: undefined,
+        notes: undefined,
+      },
+      undefined
+    );
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-40", { result: RELEASE_RESULT });
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+  });
+
+  it("passes through optional quote/dateline/callToAction/notes when present in inputJson", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-41",
+      taskType: "PRESS_RELEASE_GENERATION",
+      companyId: "company-9",
+      inputJson: {
+        seoProjectId: SEO_PROJECT_UUID,
+        headline: "Acme Launches New Product",
+        keyFacts: "Acme is launching a new product line.",
+        quote: '"Great news" - Jane Doe',
+        dateline: "Austin, TX",
+        callToAction: "Visit acme.example.com",
+        notes: "Keep it concise.",
+      },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockGeneratePressRelease.mockResolvedValue(RELEASE_RESULT as never);
+
+    await runAiGenerationJob("job-41");
+
+    const [passedCtx] = mockGeneratePressRelease.mock.calls[0];
+    expect(passedCtx.quote).toBe('"Great news" - Jane Doe');
+    expect(passedCtx.dateline).toBe("Austin, TX");
+    expect(passedCtx.callToAction).toBe("Visit acme.example.com");
+    expect(passedCtx.notes).toBe("Keep it concise.");
+  });
+
+  it("does NOT touch Content or ContentRevision — no such mock exists at all, so a real attempt would throw, not silently succeed", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-42",
+      taskType: "PRESS_RELEASE_GENERATION",
+      companyId: "company-9",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, headline: "Acme Launches New Product", keyFacts: "Acme is launching a new product line." },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockGeneratePressRelease.mockResolvedValue(null as never);
+
+    await runAiGenerationJob("job-42");
+
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-42", { result: null });
+  });
+
+  it("marks the job FAILED with a specific message when the SEO project no longer exists", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-43",
+      taskType: "PRESS_RELEASE_GENERATION",
+      companyId: "company-9",
+      inputJson: { seoProjectId: MISSING_SEO_PROJECT_UUID, headline: "Acme Launches New Product", keyFacts: "Acme is launching a new product line." },
+    } as never);
+    mockFindSeoProject.mockResolvedValue(null);
+
+    await runAiGenerationJob("job-43");
+
+    expect(mockGeneratePressRelease).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-43", "SEO project not found.", "UNKNOWN");
+  });
+
+  it("rejects an invalid inputJson shape (missing headline) without ever calling generatePressRelease — re-validates job input, never trusts the stored shape", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-44",
+      taskType: "PRESS_RELEASE_GENERATION",
+      companyId: "company-9",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, keyFacts: "Acme is launching a new product line." },
+    } as never);
+
+    await runAiGenerationJob("job-44");
+
+    expect(mockGeneratePressRelease).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-44", expect.any(String), "UNKNOWN");
+  });
+
+  it("rejects an invalid inputJson shape (missing keyFacts) without ever calling generatePressRelease", async () => {
+    mockMarkRunning.mockResolvedValue({
+      id: "job-45",
+      taskType: "PRESS_RELEASE_GENERATION",
+      companyId: "company-9",
+      inputJson: { seoProjectId: SEO_PROJECT_UUID, headline: "Acme Launches New Product" },
+    } as never);
+
+    await runAiGenerationJob("job-45");
+
+    expect(mockGeneratePressRelease).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-45", expect.any(String), "UNKNOWN");
   });
 });
 

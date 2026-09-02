@@ -6,6 +6,7 @@ import { internalLinkAnalyzerInputSchema, type InternalLinkAnalyzerInput } from 
 import { socialSnippetGeneratorInputSchema, type SocialSnippetGeneratorInput } from "@/features/ai-workspace/schemas/social-snippet-generator.schema";
 import { metaTagOptimizerInputSchema, type MetaTagOptimizerInput } from "@/features/ai-workspace/schemas/meta-tag-optimizer.schema";
 import { contentRewriterInputSchema, type ContentRewriterInput } from "@/features/ai-workspace/schemas/content-rewriter.schema";
+import { pressReleaseGeneratorInputSchema, type PressReleaseGeneratorInput } from "@/features/ai-workspace/schemas/press-release-generator.schema";
 
 /**
  * Validators for AiGenerationJob.inputJson, read back from the database by
@@ -34,6 +35,8 @@ export type SocialSnippetGeneratorJobInput = SocialSnippetGeneratorInput;
 export type MetaTagOptimizerJobInput = MetaTagOptimizerInput;
 
 export type ContentRewriterJobInput = ContentRewriterInput;
+
+export type PressReleaseGeneratorJobInput = PressReleaseGeneratorInput;
 
 export type LongFormJobInput =
   | { mode: "fromBrief"; seoProjectId: string; keywordId?: string; brief: ContentBriefOutput; settings?: ContentBriefSettings }
@@ -83,6 +86,14 @@ export function validateMetaTagOptimizerJobInput(input: unknown): JobInputValida
 
 export function validateContentRewriterJobInput(input: unknown): JobInputValidationResult<ContentRewriterJobInput> {
   const parsed = contentRewriterInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, message: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  return { success: true, data: parsed.data };
+}
+
+export function validatePressReleaseGeneratorJobInput(input: unknown): JobInputValidationResult<PressReleaseGeneratorJobInput> {
+  const parsed = pressReleaseGeneratorInputSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, message: parsed.error.issues[0]?.message ?? "Invalid input" };
   }

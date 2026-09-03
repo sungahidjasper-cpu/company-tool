@@ -7,6 +7,7 @@ import { socialSnippetGeneratorInputSchema, type SocialSnippetGeneratorInput } f
 import { metaTagOptimizerInputSchema, type MetaTagOptimizerInput } from "@/features/ai-workspace/schemas/meta-tag-optimizer.schema";
 import { contentRewriterInputSchema, type ContentRewriterInput } from "@/features/ai-workspace/schemas/content-rewriter.schema";
 import { pressReleaseGeneratorInputSchema, type PressReleaseGeneratorInput } from "@/features/ai-workspace/schemas/press-release-generator.schema";
+import { contentGapAnalysisJobInputSchema, type ContentGapAnalysisJobInput } from "@/features/ai-workspace/schemas/content-gap-analysis.schema";
 
 /**
  * Validators for AiGenerationJob.inputJson, read back from the database by
@@ -94,6 +95,23 @@ export function validateContentRewriterJobInput(input: unknown): JobInputValidat
 
 export function validatePressReleaseGeneratorJobInput(input: unknown): JobInputValidationResult<PressReleaseGeneratorJobInput> {
   const parsed = pressReleaseGeneratorInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, message: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  return { success: true, data: parsed.data };
+}
+
+/**
+ * The ninth AI Workspace tool's job-input shape differs from every prior
+ * one validated in this file: it's richer than its own form input
+ * (contentGapAnalysisInputSchema is just {seoProjectId}), since the action
+ * that creates the job also resolves and stores the specific
+ * websiteAnalysisJobId it used — see content-gap-analysis.actions.ts.
+ * Validated here against contentGapAnalysisJobInputSchema, the stored-shape
+ * schema, not the form schema.
+ */
+export function validateContentGapAnalysisJobInput(input: unknown): JobInputValidationResult<ContentGapAnalysisJobInput> {
+  const parsed = contentGapAnalysisJobInputSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, message: parsed.error.issues[0]?.message ?? "Invalid input" };
   }

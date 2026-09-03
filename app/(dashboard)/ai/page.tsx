@@ -24,8 +24,8 @@ import { requireUser } from "@/lib/auth";
 import { formatEnumLabel } from "@/lib/utils";
 
 /**
- * Phase 21 §17 — a navigation shell only. Eight tools are real; the other
- * six are visibly-disabled placeholders so the layout doesn't need a
+ * Phase 21 §17 — a navigation shell only. Nine tools are real; the other
+ * five are visibly-disabled placeholders so the layout doesn't need a
  * redesign as each one gets built out in a future phase (per the review's
  * item 18: deepen Content Brief/Draft now, don't build new shallow tools).
  */
@@ -34,7 +34,7 @@ const AI_TOOLS = [
   { name: "Long-Form Content Draft", description: "Generate a full draft article from an approved brief.", href: "/ai/content-brief/new", icon: FileEdit, status: "available" as const },
   { name: "Meta Tag Optimizer", description: "Bulk-review and improve meta titles/descriptions across existing content.", href: "/ai/meta-tag-optimizer/new", icon: Tags, status: "available" as const },
   { name: "Internal Link Analyzer", description: "Suggest internal linking opportunities across your site.", href: "/ai/internal-link-analyzer/new", icon: Link2, status: "available" as const },
-  { name: "Content Gap Analysis", description: "Find topics competitors rank for that you don't cover yet.", href: null, icon: Search, status: "coming-soon" as const },
+  { name: "Content Gap Analysis", description: "Surface content opportunities from your SEO audit, checked against your existing content.", href: "/ai/content-gap-analysis/new", icon: Search, status: "available" as const },
   { name: "Competitor Content Analysis", description: "Compare your content against top-ranking competitor pages.", href: null, icon: Users, status: "coming-soon" as const },
   { name: "Schema Markup Generator", description: "Generate structured-data markup for existing pages.", href: "/ai/schema-markup/new", icon: ShieldCheck, status: "available" as const },
   { name: "Content Rewriter", description: "Rewrite and refresh one existing page's title, meta tags, and body.", href: "/ai/content-rewriter/new", icon: FileEdit, status: "available" as const },

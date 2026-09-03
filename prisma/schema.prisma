@@ -1150,6 +1150,14 @@ enum AiTaskType {
   /// anything beyond the AiGenerationJob result — no Content row is ever
   /// created, and no ContentRevision is ever involved.
   PRESS_RELEASE_GENERATION
+  /// The ninth AI Workspace tool — classifies content-gap opportunities
+  /// already identified by a project's existing Website Analysis audit
+  /// (contentGaps/keywordIntelligence.contentClusters), cross-referenced
+  /// against real existing Content/crawled-page titles. Never invents a new
+  /// gap, never claims competitor/ranking/volume/traffic data (none is
+  /// supplied). Generate-and-display only, never persisted — no Content row
+  /// is ever created or modified, and no ContentRevision is ever involved.
+  CONTENT_GAP_ANALYSIS
 }
 
 /// Phase 11C — one row per provider attempt (success or failure), for cost/

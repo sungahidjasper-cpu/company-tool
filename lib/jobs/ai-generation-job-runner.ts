@@ -17,6 +17,7 @@ import { generateSocialSnippets } from "@/features/ai-workspace/services/social-
 import { generateMetaTagSuggestions } from "@/features/ai-workspace/services/meta-tag-optimizer.service";
 import { generateContentRewrite } from "@/features/ai-workspace/services/content-rewriter.service";
 import { generatePressRelease } from "@/features/ai-workspace/services/press-release-generator.service";
+import { generateContentGapAnalysis, extractContentGapsFromAudit, extractContentClustersFromAudit, extractCrawledPageTitles } from "@/features/ai-workspace/services/content-gap-analysis.service";
 import { contentBriefOutputSchema, type ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { externalSourceSchema, faqItemSchema, normalizeArray, normalizeInternalLinkSuggestions } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { contentBriefSettingsSchema, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
@@ -29,6 +30,7 @@ import {
   validateMetaTagOptimizerJobInput,
   validateContentRewriterJobInput,
   validatePressReleaseGeneratorJobInput,
+  validateContentGapAnalysisJobInput,
 } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 import { listContentInventoryForProject } from "@/features/seo/services/content.service";
 
@@ -428,6 +430,54 @@ async function dispatchPressReleaseGenerator(job: DispatchJob, onChunk?: (event:
 }
 
 /**
+ * The ninth AI Workspace tool's dispatcher. Ownership of seoProjectId was
+ * already verified by startContentGapAnalysisAction before this job was
+ * ever created, and the specific websiteAnalysisJobId it resolved was
+ * already confirmed to have real content-gap data at that time — this
+ * dispatcher, like every other one, only re-validates the job's shape, then
+ * re-fetches and re-checks both rows itself (never trusting anything about
+ * them from job.inputJson beyond their ids). Content rows are read here
+ * read-only, for the existing-coverage cross-reference only — nothing here
+ * writes to Content or creates a ContentRevision.
+ */
+async function dispatchContentGapAnalysis(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const parsed = validateContentGapAnalysisJobInput(job.inputJson);
+  if (!parsed.success) throw new Error(parsed.message);
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
+  if (!seoProject) throw new Error("SEO project not found.");
+
+  const analysisJob = await prisma.websiteAnalysisJob.findUnique({ where: { id: parsed.data.websiteAnalysisJobId } });
+  if (!analysisJob || analysisJob.seoProjectId !== seoProject.id) throw new Error("Website analysis not found.");
+
+  const gaps = extractContentGapsFromAudit(analysisJob.resultJson);
+  if (gaps.length === 0) throw new Error("This SEO audit has no content-gap data.");
+
+  const contentClusters = extractContentClustersFromAudit(analysisJob.resultJson);
+  const crawledTitles = extractCrawledPageTitles(analysisJob.resultJson);
+
+  const contentRows = await prisma.content.findMany({
+    where: { seoProjectId: seoProject.id, deletedAt: null },
+    select: { title: true },
+  });
+  const existingTitles = [...new Set([...contentRows.map((row) => row.title), ...crawledTitles])];
+
+  const result = await generateContentGapAnalysis(
+    {
+      seoProjectId: seoProject.id,
+      companyId: job.companyId,
+      seoProjectName: seoProject.name,
+      domain: seoProject.domain,
+      gaps,
+      contentClusters,
+      existingTitles,
+    },
+    onChunk
+  );
+  return { result } as unknown as Prisma.InputJsonValue;
+}
+
+/**
  * Phase 30 Stage 10 — a per-taskType lookup table replacing what used to be
  * a hardcoded if/else chain in dispatch() below. Behavior for CONTENT_BRIEF
  * and CONTENT_DRAFT is unchanged (dispatchContentBrief/dispatchContentDraft
@@ -438,9 +488,9 @@ async function dispatchPressReleaseGenerator(job: DispatchJob, onChunk?: (event:
  * and CONTENT_INTELLIGENCE (Website Analysis's own AiTaskType values) are
  * deliberately absent — those are never dispatched through AiGenerationJob.
  * SCHEMA_MARKUP_GENERATION, INTERNAL_LINK_ANALYSIS, SOCIAL_SNIPPET_GENERATION,
- * META_TAG_OPTIMIZATION, CONTENT_REWRITE, and PRESS_RELEASE_GENERATION added
- * as the third through eighth AI Workspace tools, following this exact same
- * additive pattern.
+ * META_TAG_OPTIMIZATION, CONTENT_REWRITE, PRESS_RELEASE_GENERATION, and
+ * CONTENT_GAP_ANALYSIS added as the third through ninth AI Workspace tools,
+ * following this exact same additive pattern.
  */
 const TASK_HANDLERS: Partial<Record<AiTaskType, TaskHandler>> = {
   CONTENT_BRIEF: dispatchContentBrief,
@@ -451,6 +501,7 @@ const TASK_HANDLERS: Partial<Record<AiTaskType, TaskHandler>> = {
   META_TAG_OPTIMIZATION: dispatchMetaTagOptimizer,
   CONTENT_REWRITE: dispatchContentRewriter,
   PRESS_RELEASE_GENERATION: dispatchPressReleaseGenerator,
+  CONTENT_GAP_ANALYSIS: dispatchContentGapAnalysis,
 };
 
 /**

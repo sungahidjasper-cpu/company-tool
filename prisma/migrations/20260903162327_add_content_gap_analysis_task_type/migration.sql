@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "AiTaskType" ADD VALUE 'CONTENT_GAP_ANALYSIS';

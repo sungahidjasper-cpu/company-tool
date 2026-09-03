@@ -40,6 +40,15 @@ type FormState = {
 const EMPTY_FORM: FormState = { headline: "", keyFacts: "", quote: "", dateline: "", callToAction: "", notes: "" };
 
 /**
+ * Shown when generation completes but produces no valid result. Deliberately
+ * does not imply the supplied announcement details were insufficient — the
+ * real cause is usually a fallback provider's response not meeting our
+ * deterministic quality checks, not a lack of input (see the Press Release
+ * Generator false-failure investigation).
+ */
+export const PRESS_RELEASE_NULL_RESULT_MESSAGE = "The AI response didn't meet our quality requirements this time. Please try generating again.";
+
+/**
  * Pure guard for the Generate button's enabled state, extracted so it's
  * directly unit-testable without mounting the component (this repository
  * has no React component-rendering test setup — see
@@ -274,7 +283,7 @@ export default function PressReleaseGeneratorPicker({ seoProjectOptions }: Press
       </div>
 
       {jobResult && jobResult.result === null && !isGenerating && (
-        <p className="text-sm text-slate-500">No valid press release could be generated from these details. Try adding more announcement facts and regenerating.</p>
+        <p className="text-sm text-slate-500">{PRESS_RELEASE_NULL_RESULT_MESSAGE}</p>
       )}
 
       {jobResult && jobResult.result && <PressReleaseReview result={jobResult.result} />}

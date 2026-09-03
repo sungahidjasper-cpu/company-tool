@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { buildPressReleaseRequest, computeCanGenerateRelease } from "@/features/ai-workspace/components/PressReleaseGeneratorPicker";
+import {
+  buildPressReleaseRequest,
+  computeCanGenerateRelease,
+  PRESS_RELEASE_NULL_RESULT_MESSAGE,
+} from "@/features/ai-workspace/components/PressReleaseGeneratorPicker";
 
 /**
  * This repository has no React component-rendering test setup (no .test.tsx
@@ -67,5 +71,36 @@ describe("buildPressReleaseRequest", () => {
   it("9. includes the given seoProjectId unchanged", () => {
     const request = buildPressReleaseRequest("project-42", FULL_FORM);
     expect(request.seoProjectId).toBe("project-42");
+  });
+});
+
+/**
+ * Regression coverage for the false-failure investigation: a real user
+ * submitted a fully adequate, detailed announcement and got a null result
+ * (Gemini's quota was exhausted, forcing fallback to a weak local model
+ * whose output correctly failed buildPressReleaseResult's deterministic
+ * quality checks) — but the old message ("...from these details. Try
+ * adding more announcement facts...") told the user their INPUT was the
+ * problem, which was false and misleading. This message must never imply
+ * insufficient input, missing facts, or "add more information" as the fix.
+ */
+describe("PRESS_RELEASE_NULL_RESULT_MESSAGE — null-result wording", () => {
+  it("10. does not imply the announcement details were insufficient", () => {
+    expect(PRESS_RELEASE_NULL_RESULT_MESSAGE).not.toMatch(/insufficient/i);
+    expect(PRESS_RELEASE_NULL_RESULT_MESSAGE).not.toMatch(/these details/i);
+  });
+
+  it("11. does not imply facts are missing", () => {
+    expect(PRESS_RELEASE_NULL_RESULT_MESSAGE).not.toMatch(/missing/i);
+    expect(PRESS_RELEASE_NULL_RESULT_MESSAGE).not.toMatch(/\bfacts\b/i);
+  });
+
+  it("12. does not suggest adding more information as the solution", () => {
+    expect(PRESS_RELEASE_NULL_RESULT_MESSAGE).not.toMatch(/add(ing)?\s+more/i);
+    expect(PRESS_RELEASE_NULL_RESULT_MESSAGE).not.toMatch(/more\s+information/i);
+  });
+
+  it("13. displays the approved quality-oriented message", () => {
+    expect(PRESS_RELEASE_NULL_RESULT_MESSAGE).toBe("The AI response didn't meet our quality requirements this time. Please try generating again.");
   });
 });

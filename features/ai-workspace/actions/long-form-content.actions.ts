@@ -47,6 +47,9 @@ async function getOwnedContent(contentId: string, companyId: string) {
     include: { seoProject: { select: { id: true, name: true, domain: true, companyId: true } }, keywords: { select: { id: true, term: true, intent: true } } },
   });
   if (!content || content.seoProject.companyId !== companyId) return null;
+  // Phase B M2 — a trashed page is neither a valid generation source nor a
+  // valid write target; the pickers already exclude these when listing.
+  if (content.deletedAt) return null;
   return content;
 }
 
@@ -329,6 +332,21 @@ export async function saveLongFormAsNewContentAction(input: SaveLongFormAsNewCon
     return actionError(parsedFields.error.issues[0]?.message ?? "Invalid input");
   }
 
+  // Phase B M3 — longFormSaveFieldsSchema covers the four Content columns
+  // but never the brief that is persisted into aiBriefDetails below, which
+  // was written straight from unvalidated client input. Validated here with
+  // the same contentBriefOutputSchema this file already uses at :136.
+  const parsedBrief = contentBriefOutputSchema.safeParse(input?.brief);
+  if (!parsedBrief.success) {
+    return actionError("The brief is missing required fields — regenerate it before saving.");
+  }
+  const parsedSettings = input?.settings === undefined ? undefined : contentBriefSettingsSchema.safeParse(input.settings);
+  if (parsedSettings && !parsedSettings.success) {
+    return actionError("The brief settings are invalid — regenerate the brief before saving.");
+  }
+  const brief = parsedBrief.data;
+  const settings = parsedSettings?.data;
+
   const seoProject = await getOwnedSeoProject(input.seoProjectId, actor.companyId);
   if (!seoProject) {
     return actionError("SEO project not found.");
@@ -352,34 +370,44 @@ export async function saveLongFormAsNewContentAction(input: SaveLongFormAsNewCon
       generatedByAi: true,
       body: parsedFields.data.body,
       aiBriefDetails: {
-        outline: input.brief.outline,
-        suggestedHeadings: input.brief.suggestedHeadings,
-        internalLinkSuggestions: input.brief.internalLinkSuggestions,
-        seoRecommendations: input.brief.seoRecommendations,
-        geoAeoNotes: input.brief.geoAeoNotes,
-        suggestedSearchIntent: input.brief.suggestedSearchIntent,
-        conclusion: input.brief.conclusion,
-        ctaPlacementSuggestion: input.brief.ctaPlacementSuggestion,
-        externalSources: input.brief.externalSources,
-        faq: input.brief.faq,
-        keyTakeaways: input.brief.keyTakeaways,
-        schemaSuggestions: input.brief.schemaSuggestions,
-        statistics: input.brief.statistics,
-        examples: input.brief.examples,
-        briefSettings: input.settings,
+        outline: brief.outline,
+        suggestedHeadings: brief.suggestedHeadings,
+        internalLinkSuggestions: brief.internalLinkSuggestions,
+        seoRecommendations: brief.seoRecommendations,
+        geoAeoNotes: brief.geoAeoNotes,
+        suggestedSearchIntent: brief.suggestedSearchIntent,
+        conclusion: brief.conclusion,
+        ctaPlacementSuggestion: brief.ctaPlacementSuggestion,
+        externalSources: brief.externalSources,
+        faq: brief.faq,
+        keyTakeaways: brief.keyTakeaways,
+        schemaSuggestions: brief.schemaSuggestions,
+        statistics: brief.statistics,
+        examples: brief.examples,
+        briefSettings: settings,
       },
       keywords: input.keywordId ? { connect: [{ id: input.keywordId }] } : undefined,
     },
   });
 
-  await logActivity({
-    actorId: actor.id,
-    action: "content.ai_long_form_saved",
-    companyId: actor.companyId,
-    seoProjectId: seoProject.id,
-    contentId: content.id,
-    metadata: { title: content.title },
-  });
+  // Phase B B3.5 — best-effort, same reasoning as updateLongFormContentAction:
+  // the Content row already exists by this point, so a logging failure must
+  // not report the save as failed.
+  try {
+    await logActivity({
+      actorId: actor.id,
+      action: "content.ai_long_form_saved",
+      companyId: actor.companyId,
+      seoProjectId: seoProject.id,
+      contentId: content.id,
+      metadata: { title: content.title },
+    });
+  } catch (err) {
+    console.error("Long-Form save: failed to record the activity log", {
+      contentId: content.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   revalidatePath(`/seo/${seoProject.id}/content`);
   revalidatePath(`/seo/${seoProject.id}/content/${content.id}`);
@@ -430,7 +458,9 @@ export async function updateLongFormContentAction(input: UpdateLongFormContentIn
   const preflight = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "Content" WHERE id = ${content.id} FOR UPDATE`;
     const current = await tx.content.findUnique({ where: { id: content.id } });
-    if (!current) {
+    // Phase B M2 — re-checked inside the lock: the page can be trashed
+    // between the ownership check and this write (stale editor screen).
+    if (!current || current.deletedAt) {
       return { kind: "not_found" as const };
     }
 
@@ -469,14 +499,26 @@ export async function updateLongFormContentAction(input: UpdateLongFormContentIn
     return actionError("Content not found.");
   }
 
-  await logActivity({
-    actorId: actor.id,
-    action: "content.ai_long_form_saved",
-    companyId: actor.companyId,
-    seoProjectId: content.seoProject.id,
-    contentId: content.id,
-    metadata: { title: parsedFields.data.title },
-  });
+  // Phase B B3.5 — the Content write above has already committed. Activity
+  // logging is best-effort telemetry, so a logging failure must never turn a
+  // successful, already-persisted save into a reported failure. Same
+  // try/catch shape applyContentRewriteAction and applyMetaTagSuggestionAction
+  // already use for their own post-commit logs.
+  try {
+    await logActivity({
+      actorId: actor.id,
+      action: "content.ai_long_form_saved",
+      companyId: actor.companyId,
+      seoProjectId: content.seoProject.id,
+      contentId: content.id,
+      metadata: { title: parsedFields.data.title },
+    });
+  } catch (err) {
+    console.error("Long-Form update: failed to record the activity log", {
+      contentId: content.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   revalidatePath(`/seo/${content.seoProject.id}/content`);
   revalidatePath(`/seo/${content.seoProject.id}/content/${content.id}`);

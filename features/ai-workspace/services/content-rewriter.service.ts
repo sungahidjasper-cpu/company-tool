@@ -1,11 +1,11 @@
 import { generateStructuredOutput, generateStructuredOutputStreaming } from "@/lib/ai/structured-output";
 import type { StreamEvent } from "@/lib/ai/providers/types";
 import { contentRewriterProviderOutputSchema, type ContentRewriteResult } from "@/features/ai-workspace/schemas/content-rewriter.schema";
-import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
+import { CONTENT_QUALITY_DOCTRINE, SEO_METRIC_GROUNDING_GUARD } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { looksLikeInstructionEcho, stripConfigurationArtifacts, stripHtmlTags } from "@/features/ai-workspace/services/content-sanitizer";
 
 /** Bumped whenever the prompt template below changes — same convention as every other AI Workspace service's PROMPT_VERSION. */
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 2;
 
 /** Matches every other AI Workspace service's own token ceiling (Long-Form Content uses the same 4000 even for a full article) — a known, shared, honest limitation, not scaled per request size by any tool in this app. */
 const MAX_OUTPUT_TOKENS = 4000;
@@ -29,7 +29,9 @@ export type ContentRewriterContext = {
   currentBody: string;
 };
 
-export const CONTENT_REWRITER_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are an SEO editor rewriting and improving ONE existing page that has already been written. The page's real, current title, meta title, meta description, and full body text are supplied below — this is the ONLY source of truth for what this page is about. Rewrite the title, meta title, meta description, and body to be clearer, more engaging, and more effective, while staying strictly grounded in the facts, claims, topics, and structure already present in the supplied current content — never invent a new fact, statistic, example, claim, product, service, credential, or detail that is not already stated in the current title, meta fields, or body. Preserve the page's actual subject and intent; never change what the page is fundamentally about. The rewritten body must remain valid Markdown, using the same general heading/paragraph/list conventions the current body already uses, and must never include instruction text, configuration labels, a character or word count, or a JSON wrapper as part of the visible text. If a field is already effective as written, return it unchanged rather than changing it just for the sake of change — an unnecessary change is not an improvement.`;
+export const CONTENT_REWRITER_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are an SEO editor rewriting and improving ONE existing page that has already been written. The page's real, current title, meta title, meta description, and full body text are supplied below — this is the ONLY source of truth for what this page is about. Rewrite the title, meta title, meta description, and body to be clearer, more engaging, and more effective, while staying strictly grounded in the facts, claims, topics, and structure already present in the supplied current content — never invent a new fact, statistic, example, claim, product, service, credential, or detail that is not already stated in the current title, meta fields, or body. Preserve the page's actual subject and intent; never change what the page is fundamentally about. The rewritten body must remain valid Markdown, using the same general heading/paragraph/list conventions the current body already uses, and must never include instruction text, configuration labels, a character or word count, or a JSON wrapper as part of the visible text. If a field is already effective as written, return it unchanged rather than changing it just for the sake of change — an unnecessary change is not an improvement.
+
+${SEO_METRIC_GROUNDING_GUARD}`;
 
 /**
  * Mirrors every other AI Workspace service's one-function-per-task pattern:

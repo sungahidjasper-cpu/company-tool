@@ -126,6 +126,7 @@ function makeOwnedContent(overrides: Partial<Record<string, unknown>> = {}) {
     metaDescription: "Old Meta Description",
     body: "Old body",
     aiBriefDetails: null,
+    deletedAt: null,
     keywords: [],
     seoProject: { id: "seo-1", name: "Project", domain: "example.com", companyId: COMPANY_A },
     ...overrides,
@@ -165,6 +166,55 @@ describe("updateLongFormContentAction", () => {
     const result = await updateLongFormContentAction(makeInput());
     expect(result.success).toBe(false);
     expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+  });
+
+  /** Phase B M2 — a trashed page must never be written to, whether the id arrives from a stale screen or a direct call. */
+  it("rejects updating a SOFT-DELETED page (direct invocation)", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeOwnedContent({ deletedAt: new Date("2026-09-01T00:00:00Z") }));
+    const result = await updateLongFormContentAction(makeInput({ body: "New body" }));
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+    expect(mockedPrisma.contentRevision.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the page is trashed AFTER the ownership check but before the write (stale state)", async () => {
+    mockedPrisma.content.findUnique
+      .mockResolvedValueOnce(makeOwnedContent())
+      .mockResolvedValue(makeOwnedContent({ deletedAt: new Date("2026-09-01T00:00:00Z") }));
+    const result = await updateLongFormContentAction(makeInput({ body: "New body" }));
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+    expect(mockedPrisma.contentRevision.create).not.toHaveBeenCalled();
+  });
+
+  it("still updates an ACTIVE page normally (no regression)", async () => {
+    const result = await updateLongFormContentAction(makeInput({ body: "New body" }));
+    expect(result.success).toBe(true);
+    expect(mockedPrisma.content.update).toHaveBeenCalled();
+  });
+
+  /**
+   * Phase B B3.5 — the Content write commits before activity logging runs.
+   * Logging is best-effort telemetry, so its failure must never turn an
+   * already-persisted save into a reported failure. Its two apply-path peers
+   * already guarded this; this path did not.
+   */
+  it("B3.5. returns success when logActivity throws — the committed write is authoritative", async () => {
+    mockedLogActivity.mockRejectedValueOnce(new Error("activity log unavailable"));
+    const result = await updateLongFormContentAction(makeInput({ body: "New body" }));
+    expect(result.success).toBe(true);
+    expect(mockedPrisma.content.update).toHaveBeenCalled();
+  });
+
+  it("B3.5. a logActivity failure does not roll back or suppress the revision snapshot", async () => {
+    mockedLogActivity.mockRejectedValueOnce(new Error("activity log unavailable"));
+    await updateLongFormContentAction(makeInput({ body: "New body" }));
+    expect(mockedPrisma.contentRevision.create).toHaveBeenCalled();
+  });
+
+  it("B3.5. still records the activity log normally when it succeeds", async () => {
+    await updateLongFormContentAction(makeInput({ body: "New body" }));
+    expect(mockedLogActivity).toHaveBeenCalledWith(expect.objectContaining({ action: "content.ai_long_form_saved" }));
   });
 
   describe("2. AI regeneration creates an AI_REGENERATION revision with exact pre-change values", () => {
@@ -679,5 +729,50 @@ describe("saveLongFormAsNewContentAction", () => {
   it("36. returns the id of the newly created Content row", async () => {
     const result = await saveLongFormAsNewContentAction(makeSaveInput());
     expect(result).toEqual({ success: true, data: { id: "content-new" } });
+  });
+
+  /**
+   * Phase B M3 — longFormSaveFieldsSchema validated the four Content columns
+   * but never the brief persisted into aiBriefDetails, which came straight
+   * from unvalidated client input.
+   */
+  it("M3h. rejects a brief missing required fields, without creating any Content row", async () => {
+    const withoutMetaTitle: Record<string, unknown> = { ...(VALID_BRIEF as Record<string, unknown>) };
+    delete withoutMetaTitle.metaTitle;
+    const result = await saveLongFormAsNewContentAction(makeSaveInput({ brief: withoutMetaTitle }) as never);
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("M3i. rejects a brief with wrong field types, without creating any Content row", async () => {
+    const result = await saveLongFormAsNewContentAction(makeSaveInput({ brief: { ...VALID_BRIEF, outline: "not-an-array" } }) as never);
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("M3j. rejects a non-object / missing brief, without creating any Content row", async () => {
+    expect((await saveLongFormAsNewContentAction(makeSaveInput({ brief: null }) as never)).success).toBe(false);
+    expect((await saveLongFormAsNewContentAction(makeSaveInput({ brief: "a string" }) as never)).success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("M3k. rejects malformed settings, without creating any Content row", async () => {
+    const result = await saveLongFormAsNewContentAction(makeSaveInput({ settings: { wordCount: "lots" } }) as never);
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("M3l. still saves a fully valid brief (no regression)", async () => {
+    const result = await saveLongFormAsNewContentAction(makeSaveInput());
+    expect(result.success).toBe(true);
+    expect(mockedPrisma.content.create).toHaveBeenCalled();
+  });
+
+  /** Phase B B3.5 — same reasoning as the update path: the Content row already exists by the time logging runs. */
+  it("B3.5. returns success when logActivity throws — the created Content row is authoritative", async () => {
+    mockedLogActivity.mockRejectedValueOnce(new Error("activity log unavailable"));
+    const result = await saveLongFormAsNewContentAction(makeSaveInput());
+    expect(result.success).toBe(true);
+    expect(mockedPrisma.content.create).toHaveBeenCalled();
   });
 });

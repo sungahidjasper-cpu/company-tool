@@ -2,7 +2,7 @@ import type { BrandProfile } from "@/lib/generated/prisma/client";
 import { generateStructuredOutput, generateStructuredOutputStreaming } from "@/lib/ai/structured-output";
 import type { StreamEvent } from "@/lib/ai/providers/types";
 import { schemaMarkupOutputSchema, type SchemaMarkupOutput } from "@/features/ai-workspace/schemas/schema-markup-generator.schema";
-import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
+import { CONTENT_QUALITY_DOCTRINE, SEO_METRIC_GROUNDING_GUARD } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { getBrandProfileByCompanyId } from "@/features/companies/services/brand-profile.service";
 
 /**
@@ -21,7 +21,7 @@ import { getBrandProfileByCompanyId } from "@/features/companies/services/brand-
  * a business with no supplied product data). Rewrote the anti-fabrication
  * and evidence-only instructions accordingly.
  */
-export const PROMPT_VERSION = 3;
+export const PROMPT_VERSION = 4;
 
 /**
  * Live verification against the local Ollama fallback (engaged when Gemini
@@ -43,7 +43,9 @@ Never invent a product, service, entity, author, publisher, date, price, rating,
 
 State each recommendation's reasoning as a direct connection to something actually present in the supplied context — never speculative phrasing like "may contain," "is likely to," "could potentially," or "might have." If you would need speculative phrasing to justify a recommendation, that is a sign the evidence is insufficient and the recommendation should be omitted instead.
 
-Every exampleJsonLd must be syntactically valid JSON-LD — a proper "@context"/"@type" object, not prose describing one.`;
+Every exampleJsonLd must be syntactically valid JSON-LD — a proper "@context"/"@type" object, not prose describing one.
+
+${SEO_METRIC_GROUNDING_GUARD}`;
 
 export type SchemaMarkupContext = {
   /** Provenance for the AiUsageLog row. */

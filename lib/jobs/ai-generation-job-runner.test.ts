@@ -5,6 +5,7 @@ vi.mock("@/lib/prisma", () => ({
     sEOProject: { findUnique: vi.fn() },
     keyword: { findUnique: vi.fn() },
     content: { findUnique: vi.fn(), findMany: vi.fn() },
+    websiteAnalysisJob: { findUnique: vi.fn() },
   },
 }));
 vi.mock("@/lib/jobs/ai-generation-job-table", () => ({
@@ -37,6 +38,15 @@ vi.mock("@/features/ai-workspace/services/content-rewriter.service", () => ({
 vi.mock("@/features/ai-workspace/services/press-release-generator.service", () => ({
   generatePressRelease: vi.fn(),
 }));
+/**
+ * Only the AI call is mocked here. The audit extractors stay REAL, so these
+ * tests exercise the dispatcher's actual reading of WebsiteAnalysisJob.resultJson
+ * (the part unique to this tool) rather than a stubbed stand-in for it.
+ */
+vi.mock("@/features/ai-workspace/services/content-gap-analysis.service", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/ai-workspace/services/content-gap-analysis.service")>()),
+  generateContentGapAnalysis: vi.fn(),
+}));
 vi.mock("@/features/seo/services/content.service", () => ({
   listContentInventoryForProject: vi.fn(),
 }));
@@ -56,6 +66,7 @@ import { generateSocialSnippets } from "@/features/ai-workspace/services/social-
 import { generateMetaTagSuggestions } from "@/features/ai-workspace/services/meta-tag-optimizer.service";
 import { generateContentRewrite } from "@/features/ai-workspace/services/content-rewriter.service";
 import { generatePressRelease } from "@/features/ai-workspace/services/press-release-generator.service";
+import { generateContentGapAnalysis } from "@/features/ai-workspace/services/content-gap-analysis.service";
 import { listContentInventoryForProject } from "@/features/seo/services/content.service";
 import { LlmProviderError } from "@/lib/ai/providers/errors";
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
@@ -74,6 +85,8 @@ const mockGenerateSocialSnippets = vi.mocked(generateSocialSnippets);
 const mockGenerateMetaTagSuggestions = vi.mocked(generateMetaTagSuggestions);
 const mockGenerateContentRewrite = vi.mocked(generateContentRewrite);
 const mockGeneratePressRelease = vi.mocked(generatePressRelease);
+const mockGenerateContentGapAnalysis = vi.mocked(generateContentGapAnalysis);
+const mockFindWebsiteAnalysisJob = vi.mocked(prisma.websiteAnalysisJob.findUnique);
 const mockFindManyContent = vi.mocked(prisma.content.findMany);
 const mockListContentInventory = vi.mocked(listContentInventoryForProject);
 const mockUpdatePartialText = vi.mocked(updateAiGenerationJobPartialText);
@@ -1085,5 +1098,185 @@ describe("runAiGenerationJob — Phase 22 streaming wiring", () => {
     await runAiGenerationJob("job-8");
 
     expect(mockMarkSucceeded).toHaveBeenCalledWith("job-8", BRIEF_OUTPUT);
+  });
+});
+
+/**
+ * Phase B B2 — CONTENT_GAP_ANALYSIS was the only AI Workspace task type with
+ * no dispatcher coverage here, while all eight peers had 4-10 cases each.
+ * These pin down the behaviour unique to this dispatcher: it resolves a SECOND
+ * row (WebsiteAnalysisJob) beyond the SEO project, re-verifies that row belongs
+ * to the project, reads gap/cluster/crawled-page data out of an untyped Json
+ * column, and reads Content strictly for the coverage cross-reference.
+ */
+describe("runAiGenerationJob — CONTENT_GAP_ANALYSIS", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const SEO_PROJECT_UUID = "00000000-0000-4000-8000-0000000000f0";
+  const WAJ_UUID = "00000000-0000-4000-8000-0000000000a1";
+
+  const AUDIT_RESULT_JSON = {
+    crawledPages: [
+      { url: "https://acme.example/", title: "Acme Home" },
+      { url: "https://acme.example/about", title: "About Acme" },
+    ],
+    audit: {
+      contentGaps: [{ title: "Success Stories", description: "Case studies from customers.", reasoning: "Builds trust." }],
+      keywordIntelligence: {
+        contentClusters: [{ clusterName: "Customer Proof", keywords: ["case studies", "testimonials"] }],
+      },
+    },
+  };
+
+  const GAP_RESULT = {
+    opportunities: [
+      {
+        topic: "Success Stories",
+        opportunity: "Case studies from customers.",
+        reason: "Builds trust.",
+        relatedCluster: "Customer Proof",
+        existingCoverageStatus: "NOT_FOUND",
+        matchedExistingTitle: null,
+        suggestedContentType: "CASE_STUDY",
+        recommendedNextAction: null,
+      },
+    ],
+  };
+
+  function runningJob(id: string, inputJson: unknown) {
+    mockMarkRunning.mockResolvedValue({ id, taskType: "CONTENT_GAP_ANALYSIS", companyId: "company-9", inputJson } as never);
+  }
+
+  function auditRow(overrides: Record<string, unknown> = {}) {
+    return { id: WAJ_UUID, seoProjectId: "project-1", resultJson: AUDIT_RESULT_JSON, ...overrides } as never;
+  }
+
+  it("dispatches CONTENT_GAP_ANALYSIS to the gap-analysis handler and marks the job SUCCEEDED with the wrapped result", async () => {
+    runningJob("job-gap-1", { seoProjectId: SEO_PROJECT_UUID, websiteAnalysisJobId: WAJ_UUID });
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindWebsiteAnalysisJob.mockResolvedValue(auditRow());
+    mockFindManyContent.mockResolvedValue([{ title: "An Existing Page" }] as never);
+    mockGenerateContentGapAnalysis.mockResolvedValue(GAP_RESULT as never);
+
+    await runAiGenerationJob("job-gap-1");
+
+    expect(mockGenerateContentGapAnalysis).toHaveBeenCalledTimes(1);
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-gap-1", { result: GAP_RESULT });
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+    // Isolation: no other tool's service is engaged by this task type.
+    expect(mockGeneratePressRelease).not.toHaveBeenCalled();
+    expect(mockGenerateSchemaMarkup).not.toHaveBeenCalled();
+    expect(mockGenerateContentBrief).not.toHaveBeenCalled();
+  });
+
+  it("passes only authoritative values — name/domain from the re-fetched project, companyId from the job, never from inputJson", async () => {
+    runningJob("job-gap-2", {
+      seoProjectId: SEO_PROJECT_UUID,
+      websiteAnalysisJobId: WAJ_UUID,
+      seoProjectName: "SPOOFED NAME",
+      domain: "spoofed.example",
+      companyId: "spoofed-company",
+    });
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindWebsiteAnalysisJob.mockResolvedValue(auditRow());
+    mockFindManyContent.mockResolvedValue([] as never);
+    mockGenerateContentGapAnalysis.mockResolvedValue(GAP_RESULT as never);
+
+    await runAiGenerationJob("job-gap-2");
+
+    const [ctx] = mockGenerateContentGapAnalysis.mock.calls[0];
+    expect(ctx.seoProjectId).toBe("project-1");
+    expect(ctx.seoProjectName).toBe("Acme SEO");
+    expect(ctx.domain).toBe("acme.example");
+    expect(ctx.companyId).toBe("company-9");
+  });
+
+  it("extracts gaps, clusters and crawled-page titles from the audit Json and combines them with Content titles", async () => {
+    runningJob("job-gap-3", { seoProjectId: SEO_PROJECT_UUID, websiteAnalysisJobId: WAJ_UUID });
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindWebsiteAnalysisJob.mockResolvedValue(auditRow());
+    mockFindManyContent.mockResolvedValue([{ title: "An Existing Page" }] as never);
+    mockGenerateContentGapAnalysis.mockResolvedValue(GAP_RESULT as never);
+
+    await runAiGenerationJob("job-gap-3");
+
+    const [ctx] = mockGenerateContentGapAnalysis.mock.calls[0];
+    expect(ctx.gaps).toEqual([{ title: "Success Stories", description: "Case studies from customers.", reasoning: "Builds trust." }]);
+    expect(ctx.contentClusters).toEqual([{ clusterName: "Customer Proof", keywords: ["case studies", "testimonials"] }]);
+    expect(ctx.existingTitles).toEqual(["An Existing Page", "Acme Home", "About Acme"]);
+  });
+
+  it("reads Content strictly for the coverage cross-reference — project-scoped, excluding soft-deleted rows, titles only", async () => {
+    runningJob("job-gap-4", { seoProjectId: SEO_PROJECT_UUID, websiteAnalysisJobId: WAJ_UUID });
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindWebsiteAnalysisJob.mockResolvedValue(auditRow());
+    mockFindManyContent.mockResolvedValue([] as never);
+    mockGenerateContentGapAnalysis.mockResolvedValue(GAP_RESULT as never);
+
+    await runAiGenerationJob("job-gap-4");
+
+    expect(mockFindManyContent).toHaveBeenCalledWith({
+      where: { seoProjectId: "project-1", deletedAt: null },
+      select: { title: true },
+    });
+  });
+
+  it("fails the job when the website analysis belongs to a different SEO project (re-verified, never trusted from inputJson)", async () => {
+    runningJob("job-gap-5", { seoProjectId: SEO_PROJECT_UUID, websiteAnalysisJobId: WAJ_UUID });
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindWebsiteAnalysisJob.mockResolvedValue(auditRow({ seoProjectId: "some-other-project" }));
+
+    await runAiGenerationJob("job-gap-5");
+
+    expect(mockGenerateContentGapAnalysis).not.toHaveBeenCalled();
+    expect(mockMarkSucceeded).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-gap-5", expect.stringMatching(/website analysis/i), "UNKNOWN");
+  });
+
+  it("fails the job when the website analysis row no longer exists", async () => {
+    runningJob("job-gap-6", { seoProjectId: SEO_PROJECT_UUID, websiteAnalysisJobId: WAJ_UUID });
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindWebsiteAnalysisJob.mockResolvedValue(null as never);
+
+    await runAiGenerationJob("job-gap-6");
+
+    expect(mockGenerateContentGapAnalysis).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-gap-6", expect.stringMatching(/website analysis/i), "UNKNOWN");
+  });
+
+  it("fails the job when the audit carries no content-gap data, without calling the AI", async () => {
+    runningJob("job-gap-7", { seoProjectId: SEO_PROJECT_UUID, websiteAnalysisJobId: WAJ_UUID });
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindWebsiteAnalysisJob.mockResolvedValue(auditRow({ resultJson: { audit: null } }));
+
+    await runAiGenerationJob("job-gap-7");
+
+    expect(mockGenerateContentGapAnalysis).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-gap-7", expect.stringMatching(/content-gap data/i), "UNKNOWN");
+  });
+
+  it("fails the job on a malformed inputJson without touching the database", async () => {
+    runningJob("job-gap-8", { seoProjectId: "not-a-uuid" });
+
+    await runAiGenerationJob("job-gap-8");
+
+    expect(mockFindSeoProject).not.toHaveBeenCalled();
+    expect(mockGenerateContentGapAnalysis).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-gap-8", expect.any(String), "UNKNOWN");
+  });
+
+  it("maps a provider failure to the job's real error type rather than UNKNOWN", async () => {
+    runningJob("job-gap-9", { seoProjectId: SEO_PROJECT_UUID, websiteAnalysisJobId: WAJ_UUID });
+    mockFindSeoProject.mockResolvedValue(SEO_PROJECT as never);
+    mockFindWebsiteAnalysisJob.mockResolvedValue(auditRow());
+    mockFindManyContent.mockResolvedValue([] as never);
+    mockGenerateContentGapAnalysis.mockRejectedValue(new LlmProviderError("took too long", "TIMEOUT", "ollama"));
+
+    await runAiGenerationJob("job-gap-9");
+
+    expect(mockMarkSucceeded).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalledWith("job-gap-9", expect.any(String), "TIMEOUT");
   });
 });

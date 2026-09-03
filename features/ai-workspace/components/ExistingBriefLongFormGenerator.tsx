@@ -9,6 +9,7 @@ import { Progress } from "@/components/ui/progress";
 import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import { startLongFormGenerationAction, updateLongFormContentAction } from "@/features/ai-workspace/actions/long-form-content.actions";
 import LongFormContentReview, { type LongFormDraftExtras, type LongFormEditableFields } from "@/features/ai-workspace/components/LongFormContentReview";
+import AiGenerationError from "@/features/ai-workspace/components/AiGenerationError";
 import { useAiGenerationLifecycle } from "@/features/ai-workspace/hooks/use-ai-generation-lifecycle";
 import { validateLongFormJobInput } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 import type { InternalLinkSuggestion } from "@/features/ai-workspace/schemas/content-brief-output-builder";
@@ -204,7 +205,7 @@ export default function ExistingBriefLongFormGenerator({
       <p className="text-sm text-slate-500">
         This generates a full draft article from the brief already saved for &quot;{title}.&quot; Nothing is saved until you review it and click Save as Draft.
       </p>
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      <AiGenerationError error={error} errorType={errorType} />
       {isGenerating && (lifecycle.isSwitchingProvider || lifecycle.streamCharCount !== null) && (
         <p className="text-sm text-slate-500">
           {lifecycle.isSwitchingProvider

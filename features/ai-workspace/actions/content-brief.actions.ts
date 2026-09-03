@@ -14,9 +14,10 @@ import { computeInputHash, createAiGenerationJob, findActiveAiGenerationJob } fr
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
 import { buildPrompt, CONTENT_BRIEF_SYSTEM_PROMPT, generateContentBrief, PROMPT_VERSION } from "@/features/ai-workspace/services/content-brief.service";
 import { faqItemSchema, type RegenerateBriefField } from "@/features/ai-workspace/schemas/content-brief-output-builder";
-import type { ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
+import { contentBriefSettingsSchema, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import {
   contentBriefInputSchema,
+  contentBriefOutputSchema,
   type ContentBriefInput,
   type ContentBriefOutput,
 } from "@/features/ai-workspace/schemas/content-brief.schema";
@@ -163,6 +164,23 @@ export async function saveContentBriefAction(input: SaveContentBriefInput): Prom
     return actionError("You do not have permission to save content.");
   }
 
+  // Phase B M3 — a server action receives whatever the client sends, and
+  // TypeScript types are erased at runtime, so the brief must be parsed
+  // before any of it reaches a database write. Reuses the existing
+  // contentBriefOutputSchema (the same schema generateLongFormFromBriefAction
+  // and ai-generation-job.schema.ts already validate a brief against) rather
+  // than introducing a second, parallel definition of the same shape.
+  const parsedBrief = contentBriefOutputSchema.safeParse(input?.brief);
+  if (!parsedBrief.success) {
+    return actionError("The brief is missing required fields — regenerate it before saving.");
+  }
+  const parsedSettings = input?.settings === undefined ? undefined : contentBriefSettingsSchema.safeParse(input.settings);
+  if (parsedSettings && !parsedSettings.success) {
+    return actionError("The brief settings are invalid — regenerate the brief before saving.");
+  }
+  const brief = parsedBrief.data;
+  const settings = parsedSettings?.data;
+
   const seoProject = await getOwnedSeoProject(input.seoProjectId, actor.companyId);
   if (!seoProject) {
     return actionError("SEO project not found.");
@@ -179,28 +197,28 @@ export async function saveContentBriefAction(input: SaveContentBriefInput): Prom
     data: {
       seoProjectId: seoProject.id,
       authorId: actor.id,
-      title: input.brief.title,
+      title: brief.title,
       status: "DRAFT",
-      metaTitle: input.brief.metaTitle,
-      metaDescription: input.brief.metaDescription,
+      metaTitle: brief.metaTitle,
+      metaDescription: brief.metaDescription,
       generatedByAi: true,
       aiBriefDetails: {
-        outline: input.brief.outline,
-        suggestedHeadings: input.brief.suggestedHeadings,
-        internalLinkSuggestions: input.brief.internalLinkSuggestions,
-        seoRecommendations: input.brief.seoRecommendations,
-        geoAeoNotes: input.brief.geoAeoNotes,
-        suggestedSearchIntent: input.brief.suggestedSearchIntent,
-        conclusion: input.brief.conclusion,
-        ctaPlacementSuggestion: input.brief.ctaPlacementSuggestion,
-        externalSources: input.brief.externalSources,
-        faq: input.brief.faq,
-        keyTakeaways: input.brief.keyTakeaways,
-        schemaSuggestions: input.brief.schemaSuggestions,
-        statistics: input.brief.statistics,
-        examples: input.brief.examples,
-        sourcesReferenced: input.brief.sourcesReferenced,
-        briefSettings: input.settings,
+        outline: brief.outline,
+        suggestedHeadings: brief.suggestedHeadings,
+        internalLinkSuggestions: brief.internalLinkSuggestions,
+        seoRecommendations: brief.seoRecommendations,
+        geoAeoNotes: brief.geoAeoNotes,
+        suggestedSearchIntent: brief.suggestedSearchIntent,
+        conclusion: brief.conclusion,
+        ctaPlacementSuggestion: brief.ctaPlacementSuggestion,
+        externalSources: brief.externalSources,
+        faq: brief.faq,
+        keyTakeaways: brief.keyTakeaways,
+        schemaSuggestions: brief.schemaSuggestions,
+        statistics: brief.statistics,
+        examples: brief.examples,
+        sourcesReferenced: brief.sourcesReferenced,
+        briefSettings: settings,
       },
       keywords: input.keywordId ? { connect: [{ id: input.keywordId }] } : undefined,
     },

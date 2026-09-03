@@ -61,8 +61,8 @@ const CONTENT_ID_1 = "00000000-0000-4000-8000-000000000001";
 const CONTENT_ID_2 = "00000000-0000-4000-8000-000000000002";
 const SEO_PROJECT_ID = "00000000-0000-4000-8000-0000000000f0";
 
-const CONTENT_ROW_1 = { id: CONTENT_ID_1, seoProjectId: SEO_PROJECT_ID, seoProject: { companyId: COMPANY_A } };
-const CONTENT_ROW_2 = { id: CONTENT_ID_2, seoProjectId: SEO_PROJECT_ID, seoProject: { companyId: COMPANY_A } };
+const CONTENT_ROW_1 = { id: CONTENT_ID_1, seoProjectId: SEO_PROJECT_ID, deletedAt: null, seoProject: { companyId: COMPANY_A } };
+const CONTENT_ROW_2 = { id: CONTENT_ID_2, seoProjectId: SEO_PROJECT_ID, deletedAt: null, seoProject: { companyId: COMPANY_A } };
 
 const VALID_INPUT = { seoProjectId: SEO_PROJECT_ID, contentIds: [CONTENT_ID_1, CONTENT_ID_2] };
 
@@ -187,6 +187,7 @@ function makeCurrentContentRow(overrides: Partial<Record<string, unknown>> = {})
     metaTitle: "Current Meta Title",
     metaDescription: "Current Meta Description",
     body: "Current body",
+    deletedAt: null,
     ...overrides,
   };
 }
@@ -372,5 +373,28 @@ describe("applyMetaTagSuggestionAction", () => {
     mockedPrisma.content.update.mockRejectedValue(new Error("simulated DB failure"));
     await expect(applyMetaTagSuggestionAction(APPLY_INPUT)).rejects.toThrow("simulated DB failure");
     expect(mockedLogActivity).not.toHaveBeenCalled();
+  });
+
+  /** Phase B M2 — see content-rewriter.actions.test.ts for the same pair of cases; a trashed page must never be written to. */
+  it("rejects applying to a SOFT-DELETED page (direct invocation)", async () => {
+    mockedPrisma.content.findMany.mockResolvedValue([{ ...CONTENT_ROW_1, deletedAt: new Date("2026-09-01T00:00:00Z") }]);
+    const result = await applyMetaTagSuggestionAction(APPLY_INPUT);
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+    expect(mockedPrisma.contentRevision.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the page is trashed AFTER the ownership check but before the write (stale review state)", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeCurrentContentRow({ deletedAt: new Date("2026-09-01T00:00:00Z") }));
+    const result = await applyMetaTagSuggestionAction(APPLY_INPUT);
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+    expect(mockedPrisma.contentRevision.create).not.toHaveBeenCalled();
+  });
+
+  it("still applies normally to an ACTIVE page (no regression)", async () => {
+    const result = await applyMetaTagSuggestionAction(APPLY_INPUT);
+    expect(result.success).toBe(true);
+    expect(mockedPrisma.content.update).toHaveBeenCalled();
   });
 });

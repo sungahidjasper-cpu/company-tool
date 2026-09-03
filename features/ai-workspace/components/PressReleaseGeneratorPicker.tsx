@@ -8,6 +8,8 @@ import { startPressReleaseGenerationAction } from "@/features/ai-workspace/actio
 import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import PressReleaseReview from "@/features/ai-workspace/components/PressReleaseReview";
 import { useAiGenerationLifecycle } from "@/features/ai-workspace/hooks/use-ai-generation-lifecycle";
+import AiGenerationError from "@/features/ai-workspace/components/AiGenerationError";
+import AiGenerationStatusNote from "@/features/ai-workspace/components/AiGenerationStatusNote";
 import {
   pressReleaseGeneratorInputSchema,
   pressReleaseJobResultSchema,
@@ -81,6 +83,9 @@ export function buildPressReleaseRequest(seoProjectId: string, form: FormState):
   };
 }
 
+/** Phase B B5.1 — shown while no SEO project is chosen. A prompt to choose, never a claim that the project is invalid (only the server can determine that). */
+export const SELECT_PROJECT_HINT = "Select an SEO project before generating.";
+
 /**
  * The eighth AI Workspace tool's UI — a plain announcement form, NOT a
  * Content/page picker: this tool never grounds in or selects an existing
@@ -91,7 +96,10 @@ export function buildPressReleaseRequest(seoProjectId: string, form: FormState):
  * ContentRevision.
  */
 export default function PressReleaseGeneratorPicker({ seoProjectOptions }: PressReleaseGeneratorPickerProps) {
-  const [seoProjectId, setSeoProjectId] = useState(seoProjectOptions[0]?.id ?? "");
+  // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
+  // let a user generate against a project they never consciously chose; the
+  // server still re-derives and enforces ownership regardless of this value.
+  const [seoProjectId, setSeoProjectId] = useState("");
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
 
   const [jobResult, setJobResult] = useState<PressReleaseJobResult | null>(null);
@@ -209,12 +217,14 @@ export default function PressReleaseGeneratorPicker({ seoProjectOptions }: Press
           SEO project
         </label>
         <select id="seoProjectId" className={selectClassName} value={seoProjectId} onChange={(e) => setSeoProjectId(e.target.value)}>
+          <option value="">Select an SEO project…</option>
           {seoProjectOptions.map((option) => (
             <option key={option.id} value={option.id}>
               {option.name}
             </option>
           ))}
         </select>
+        {!seoProjectId && <p className="text-xs text-slate-500">{SELECT_PROJECT_HINT}</p>}
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -262,14 +272,12 @@ export default function PressReleaseGeneratorPicker({ seoProjectOptions }: Press
         <textarea id="notes" className={textareaClassName} value={form.notes} onChange={(e) => updateField("notes", e.target.value)} />
       </div>
 
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {error}
-          {errorType && <span className="ml-1 text-xs text-red-500">({errorType})</span>}
-        </div>
-      )}
+      <AiGenerationError error={error} errorType={errorType} />
 
-      {isGenerating && lifecycle.streamProgress !== null && <Progress value={lifecycle.streamProgress} aria-label="Generation progress" />}
+      <AiGenerationStatusNote isSwitchingProvider={lifecycle.isSwitchingProvider} />
+      {isGenerating && !lifecycle.isSwitchingProvider && lifecycle.streamProgress !== null && (
+        <Progress value={lifecycle.streamProgress} aria-label="Generation progress" />
+      )}
 
       <div className="flex gap-2">
         <Button type="button" onClick={runGenerate} disabled={isGenerating || !seoProjectId || !canGenerate}>

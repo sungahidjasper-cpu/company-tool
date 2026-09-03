@@ -333,6 +333,58 @@ describe("saveContentBriefAction", () => {
     expect(result).toEqual({ success: true, data: { id: "new-content-1" } });
   });
 
+  /**
+   * Phase B M3 — this action previously performed ownership checks but never
+   * validated `input.brief` at runtime. TypeScript types are erased, and a
+   * server action receives whatever the client sends, so malformed AI data
+   * flowed straight into title/metaTitle/metaDescription/aiBriefDetails.
+   * Validation must run BEFORE any write and must reject rather than coerce.
+   */
+  it("M3a. rejects a brief that is missing required fields, without writing", async () => {
+    const withoutMetaTitle: Record<string, unknown> = makeBrief();
+    delete withoutMetaTitle.metaTitle;
+    const result = await saveContentBriefAction({ seoProjectId: "seo-1", brief: withoutMetaTitle } as never);
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("M3b. rejects a brief with wrong field types, without writing", async () => {
+    expect((await saveContentBriefAction({ seoProjectId: "seo-1", brief: makeBrief({ title: 42 }) } as never)).success).toBe(false);
+    expect((await saveContentBriefAction({ seoProjectId: "seo-1", brief: makeBrief({ outline: "not-an-array" }) } as never)).success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("M3c. rejects a non-object / malformed brief payload, without writing", async () => {
+    expect((await saveContentBriefAction({ seoProjectId: "seo-1", brief: null } as never)).success).toBe(false);
+    expect((await saveContentBriefAction({ seoProjectId: "seo-1", brief: "a string" } as never)).success).toBe(false);
+    expect((await saveContentBriefAction({ seoProjectId: "seo-1" } as never)).success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("M3d. rejects malformed nested brief data (bad faq/externalSources entries), without writing", async () => {
+    const result = await saveContentBriefAction({ seoProjectId: "seo-1", brief: makeBrief({ faq: [{ question: 5 }] }) } as never);
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("M3e. rejects malformed settings, without writing", async () => {
+    const result = await saveContentBriefAction({ seoProjectId: "seo-1", brief: makeBrief(), settings: { wordCount: "lots" } } as never);
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("M3f. validates the brief BEFORE ownership resolution is trusted — an invalid brief never reaches the write even for a valid owner", async () => {
+    const result = await saveContentBriefAction({ seoProjectId: "seo-1", brief: makeBrief({ metaDescription: null }) } as never);
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("M3g. still saves a fully valid brief (no regression)", async () => {
+    const result = await saveContentBriefAction(SAVE_INPUT);
+    expect(result.success).toBe(true);
+    expect(mockedPrisma.content.create).toHaveBeenCalled();
+  });
+
   it("8. [Phase 30 Stage 4] persists the brief's sourcesReferenced inside aiBriefDetails", async () => {
     const sourcesReferenced = [{ title: "Google Search Central", url: "https://developers.google.com/search" }];
     await saveContentBriefAction({ seoProjectId: "seo-1", brief: makeBrief({ title: "Saved Title", sourcesReferenced }) });

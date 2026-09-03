@@ -4,7 +4,7 @@ import type { StreamEvent } from "@/lib/ai/providers/types";
 import { buildContentBriefOutputSchema } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { buildSharedContextClauses, DEFAULT_CONTENT_BRIEF_SETTINGS, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { contentBriefOutputSchema, type ContentBriefOutput, type ContentBriefType } from "@/features/ai-workspace/schemas/content-brief.schema";
-import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
+import { CONTENT_QUALITY_DOCTRINE, SEO_METRIC_GROUNDING_GUARD } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { looksLikeInstructionEcho, stripConfigurationArtifacts, stripHtmlTags } from "@/features/ai-workspace/services/content-sanitizer";
 import { getBrandProfileByCompanyId } from "@/features/companies/services/brand-profile.service";
 import { getKnowledgeSourceContextForSeoProject } from "@/features/seo/services/knowledge-source-context.service";
@@ -16,9 +16,11 @@ import { getKnowledgeSourceContextForSeoProject } from "@/features/seo/services/
  * equivalent exists for this task; every "Generate"/"Regenerate" click is
  * a fresh call).
  */
-export const PROMPT_VERSION = 6;
+export const PROMPT_VERSION = 7;
 
-export const CONTENT_BRIEF_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are a senior SEO content strategist. Produce a practical, concrete content brief grounded strictly in the provided project/keyword context. Never invent products, services, or facts not evidenced in the input. Never state a specific market statistic, percentage, financial figure, or industry data point (e.g. occupancy rates, unit pricing, market share) unless it is present in the supplied context — describe such things qualitatively instead of inventing a number, including inside FAQ answers and statistic angles. Never characterize a specific real company or brand name as a generic category, product type, or common noun — if a real company name appears in the supplied context, refer to it accurately as a company/organization, not as a type of product or service. Never invent a URL, citation, or source you cannot verify — describe what kind of source to add instead. This is a BRIEF — outlines, headings, and suggestions, not a full drafted article body.`;
+export const CONTENT_BRIEF_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are a senior SEO content strategist. Produce a practical, concrete content brief grounded strictly in the provided project/keyword context. Never invent products, services, or facts not evidenced in the input. Never state a specific market statistic, percentage, financial figure, or industry data point (e.g. occupancy rates, unit pricing, market share) unless it is present in the supplied context — describe such things qualitatively instead of inventing a number, including inside FAQ answers and statistic angles. Never characterize a specific real company or brand name as a generic category, product type, or common noun — if a real company name appears in the supplied context, refer to it accurately as a company/organization, not as a type of product or service. Never invent a URL, citation, or source you cannot verify — describe what kind of source to add instead. This is a BRIEF — outlines, headings, and suggestions, not a full drafted article body.
+
+${SEO_METRIC_GROUNDING_GUARD}`;
 
 export type ContentBriefContext = {
   /** Provenance for the AiUsageLog row — the project this brief is for. Never a WebsiteAnalysisJob, since this task has none. */

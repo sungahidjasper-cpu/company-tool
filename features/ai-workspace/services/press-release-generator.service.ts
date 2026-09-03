@@ -2,12 +2,12 @@ import type { BrandProfile } from "@/lib/generated/prisma/client";
 import { generateStructuredOutput, generateStructuredOutputStreaming } from "@/lib/ai/structured-output";
 import type { StreamEvent } from "@/lib/ai/providers/types";
 import { pressReleaseGeneratorProviderOutputSchema, type PressReleaseResult } from "@/features/ai-workspace/schemas/press-release-generator.schema";
-import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
+import { CONTENT_QUALITY_DOCTRINE, SEO_METRIC_GROUNDING_GUARD } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { looksLikeInstructionEcho, stripConfigurationArtifacts, stripHtmlTags } from "@/features/ai-workspace/services/content-sanitizer";
 import { getBrandProfileByCompanyId } from "@/features/companies/services/brand-profile.service";
 
 /** Bumped whenever the prompt template below changes — same convention as every other AI Workspace service's PROMPT_VERSION. */
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 2;
 
 /** Matches every other AI Workspace service's own token ceiling (Long-Form Content and Content Rewriter both use the same 4000) — a known, shared, honest limitation, not scaled per request size by any tool in this app. */
 const MAX_OUTPUT_TOKENS = 4000;
@@ -31,7 +31,9 @@ export type PressReleaseGeneratorContext = {
   notes?: string;
 };
 
-export const PRESS_RELEASE_GENERATOR_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are a public-relations writer drafting ONE press release. The announcement headline and details supplied below are the ONLY source of truth for what happened — never invent a date, named person, company, partner, customer, award, certification, statistic, location, product capability, partnership, testimonial, or quote that is not explicitly present in the supplied headline, announcement details, quote, dateline, notes, or Brand Profile context. If no quote was supplied, leave quoteSection empty rather than inventing one. If no dateline or location was supplied, leave dateline empty rather than guessing a city. If a fact is not available in the supplied context, omit it entirely — never fill the gap with a plausible-sounding detail. Write in standard press-release style: a clear headline, a supporting subheadline, an inverted-pyramid lead paragraph covering who/what/when/where/why using only the supplied facts, one or more supporting body paragraphs, and — only if a quote was supplied — a quote section attributing it exactly as given, never paraphrased or attributed to someone not named. The boilerplate/company-description paragraph may describe the company using only the Brand Profile context supplied below — never invent products, services, achievements, or history not stated there. Never include instruction text, configuration labels, character/word counts, or a JSON wrapper as part of the visible text.`;
+export const PRESS_RELEASE_GENERATOR_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are a public-relations writer drafting ONE press release. The announcement headline and details supplied below are the ONLY source of truth for what happened — never invent a date, named person, company, partner, customer, award, certification, statistic, location, product capability, partnership, testimonial, or quote that is not explicitly present in the supplied headline, announcement details, quote, dateline, notes, or Brand Profile context. If no quote was supplied, leave quoteSection empty rather than inventing one. If no dateline or location was supplied, leave dateline empty rather than guessing a city. If a fact is not available in the supplied context, omit it entirely — never fill the gap with a plausible-sounding detail. Write in standard press-release style: a clear headline, a supporting subheadline, an inverted-pyramid lead paragraph covering who/what/when/where/why using only the supplied facts, one or more supporting body paragraphs, and — only if a quote was supplied — a quote section attributing it exactly as given, never paraphrased or attributed to someone not named. The boilerplate/company-description paragraph may describe the company using only the Brand Profile context supplied below — never invent products, services, achievements, or history not stated there. Never include instruction text, configuration labels, character/word counts, or a JSON wrapper as part of the visible text.
+
+${SEO_METRIC_GROUNDING_GUARD}`;
 
 /**
  * Mirrors every other AI Workspace service's one-function-per-task pattern.

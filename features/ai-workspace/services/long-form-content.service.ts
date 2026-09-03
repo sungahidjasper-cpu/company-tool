@@ -7,7 +7,7 @@ import type { ContentBriefOutput } from "@/features/ai-workspace/schemas/content
 import { buildSharedContextClauses, DEFAULT_CONTENT_BRIEF_SETTINGS, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
 import { buildLongFormOutputSchema } from "@/features/ai-workspace/schemas/long-form-output-builder";
 import { formatLongFormContentAsMarkdown, longFormContentOutputSchema, type LongFormContentOutput } from "@/features/ai-workspace/schemas/long-form-content.schema";
-import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
+import { CONTENT_QUALITY_DOCTRINE, SEO_METRIC_GROUNDING_GUARD } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { filterReservedSections, stripConfigurationArtifacts, stripHtmlTags } from "@/features/ai-workspace/services/content-sanitizer";
 import { computeWordCount } from "@/features/ai-workspace/services/seo-checklist.service";
 import { getBrandProfileByCompanyId } from "@/features/companies/services/brand-profile.service";
@@ -18,9 +18,11 @@ import { getKnowledgeSourceContextForSeoProject } from "@/features/seo/services/
  * version from content-brief.service.ts's PROMPT_VERSION, same convention
  * as every existing AI task in this app keeping its own counter.
  */
-export const PROMPT_VERSION = 10;
+export const PROMPT_VERSION = 11;
 
-const LONG_FORM_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are a senior SEO content writer producing a DRAFT article for internal human review before anything is published. Never invent statistics, prices, dates, named clients, testimonials, certifications, or services/locations not present in the supplied context. Never state a specific market statistic, percentage, financial figure, or industry data point (e.g. typical unit sizes, utilization rates, market share) unless it is present in the supplied context — describe such things qualitatively instead of inventing a number. Never characterize a specific real company or brand name as a generic category, product type, or common noun — if a real company name appears in the supplied context, refer to it accurately as a company/provider, not as a type of product or service. Never invent a URL, citation, or source you cannot verify. Integrate the target keyword naturally — do not keyword-stuff. This is a draft; a human will fact-check it before it is ever published.`;
+const LONG_FORM_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are a senior SEO content writer producing a DRAFT article for internal human review before anything is published. Never invent statistics, prices, dates, named clients, testimonials, certifications, or services/locations not present in the supplied context. Never state a specific market statistic, percentage, financial figure, or industry data point (e.g. typical unit sizes, utilization rates, market share) unless it is present in the supplied context — describe such things qualitatively instead of inventing a number. Never characterize a specific real company or brand name as a generic category, product type, or common noun — if a real company name appears in the supplied context, refer to it accurately as a company/provider, not as a type of product or service. Never invent a URL, citation, or source you cannot verify. Integrate the target keyword naturally — do not keyword-stuff. This is a draft; a human will fact-check it before it is ever published.
+
+${SEO_METRIC_GROUNDING_GUARD}`;
 
 /**
  * Shared by buildPrompt (what the model is told) and the Phase 4 refinement

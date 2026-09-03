@@ -9,6 +9,8 @@ import { Progress } from "@/components/ui/progress";
 import { startSocialSnippetGeneratorAction } from "@/features/ai-workspace/actions/social-snippet-generator.actions";
 import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import { useAiGenerationLifecycle } from "@/features/ai-workspace/hooks/use-ai-generation-lifecycle";
+import AiGenerationError from "@/features/ai-workspace/components/AiGenerationError";
+import AiGenerationStatusNote from "@/features/ai-workspace/components/AiGenerationStatusNote";
 import {
   SOCIAL_SNIPPET_CHARACTER_LIMITS,
   SOCIAL_SNIPPET_PLATFORMS,
@@ -54,6 +56,39 @@ function CharacterCount({ platform, count }: { platform: SocialSnippetPlatform; 
 }
 
 /**
+ * Phase B B3.1 — shown when generation completes but yields nothing usable.
+ * Deliberately neutral: an empty result almost always means the AI response
+ * failed our deterministic quality checks (often after a fallback to a weaker
+ * provider), not that the user chose the wrong page, project or platforms.
+ * Wording matches PRESS_RELEASE_NULL_RESULT_MESSAGE, which fixed this same
+ * defect class. Genuine validation failures keep their own specific messages.
+ */
+export const SOCIAL_SNIPPET_EMPTY_RESULT_MESSAGE = "No snippets were returned — the AI response didn't meet our quality requirements this time. Please try generating again.";
+
+/**
+ * Phase B B3.2 — which requested platforms produced no snippet.
+ *
+ * filterValidSnippets in the service is authoritative and unchanged: it
+ * normalizes TWITTER to X, rejects fabricated URLs and over-length text, and
+ * keeps only the first valid snippet per platform. That correctly means a
+ * requested platform can legitimately produce nothing. Previously the UI just
+ * rendered whatever came back, so a user who asked for three platforms and
+ * received one had no way to tell the other two had been dropped rather than
+ * never requested. This only reports that difference — it never invents a
+ * snippet and never marks a missing platform as successful.
+ */
+export function computeMissingPlatforms(
+  requested: readonly SocialSnippetPlatform[],
+  snippets: readonly { platform: SocialSnippetPlatform }[]
+): SocialSnippetPlatform[] {
+  const produced = new Set(snippets.map((s) => s.platform));
+  return requested.filter((platform) => !produced.has(platform));
+}
+
+/** Phase B B5.1 — shown while no SEO project is chosen. A prompt to choose, never a claim that the project is invalid (only the server can determine that). */
+export const SELECT_PROJECT_HINT = "Select an SEO project before generating.";
+
+/**
  * The fifth AI Workspace tool, following the exact generate→job→poll shape
  * InternalLinkAnalyzerPicker.tsx already uses — contentId is REQUIRED here
  * too, since every snippet promotes a specific, real piece of content. Adds
@@ -62,11 +97,16 @@ function CharacterCount({ platform, count }: { platform: SocialSnippetPlatform; 
  * anywhere (see social-snippet-generator.service.ts's own comment on why).
  */
 export default function SocialSnippetGeneratorPicker({ seoProjectOptions, contentByProject }: SocialSnippetGeneratorPickerProps) {
-  const [seoProjectId, setSeoProjectId] = useState(seoProjectOptions[0]?.id ?? "");
+  // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
+  // let a user generate against a project they never consciously chose; the
+  // server still re-derives and enforces ownership regardless of this value.
+  const [seoProjectId, setSeoProjectId] = useState("");
   const contentOptions = useMemo(() => contentByProject[seoProjectId] ?? [], [contentByProject, seoProjectId]);
   const [contentId, setContentId] = useState(contentOptions[0]?.id ?? "");
   const [platforms, setPlatforms] = useState<SocialSnippetPlatform[]>([...SOCIAL_SNIPPET_PLATFORMS]);
   const [notes, setNotes] = useState("");
+  /** The platform set the currently-displayed result was generated for — not the live checkboxes, which the user may change afterwards. */
+  const [requestedPlatforms, setRequestedPlatforms] = useState<SocialSnippetPlatform[]>([]);
 
   const [result, setResult] = useState<SocialSnippetGenerationResult | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -107,6 +147,7 @@ export default function SocialSnippetGeneratorPicker({ seoProjectOptions, conten
     setSeoProjectId(parsedInput.data.seoProjectId);
     setContentId(parsedInput.data.contentId);
     setPlatforms(parsedInput.data.platforms);
+    setRequestedPlatforms(parsedInput.data.platforms);
     setNotes(parsedInput.data.notes ?? "");
 
     if (job.status === "SUCCEEDED") {
@@ -143,6 +184,7 @@ export default function SocialSnippetGeneratorPicker({ seoProjectOptions, conten
     setError(null);
     setErrorType(null);
     setResult(null);
+    setRequestedPlatforms(platforms);
     setIsGenerating(true);
     const response = await startSocialSnippetGeneratorAction({ seoProjectId, contentId, platforms, notes: notes.trim() || undefined });
 
@@ -191,12 +233,14 @@ export default function SocialSnippetGeneratorPicker({ seoProjectOptions, conten
             setContentId(contentByProject[e.target.value]?.[0]?.id ?? "");
           }}
         >
+          <option value="">Select an SEO project…</option>
           {seoProjectOptions.map((option) => (
             <option key={option.id} value={option.id}>
               {option.name}
             </option>
           ))}
         </select>
+        {!seoProjectId && <p className="text-xs text-slate-500">{SELECT_PROJECT_HINT}</p>}
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -239,14 +283,12 @@ export default function SocialSnippetGeneratorPicker({ seoProjectOptions, conten
         />
       </div>
 
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {error}
-          {errorType && <span className="ml-1 text-xs text-red-500">({errorType})</span>}
-        </div>
-      )}
+      <AiGenerationError error={error} errorType={errorType} />
 
-      {isGenerating && lifecycle.streamProgress !== null && <Progress value={lifecycle.streamProgress} aria-label="Generation progress" />}
+      <AiGenerationStatusNote isSwitchingProvider={lifecycle.isSwitchingProvider} />
+      {isGenerating && !lifecycle.isSwitchingProvider && lifecycle.streamProgress !== null && (
+        <Progress value={lifecycle.streamProgress} aria-label="Generation progress" />
+      )}
 
       <div className="flex gap-2">
         <Button type="button" onClick={runGenerate} disabled={isGenerating || !seoProjectId || !contentId || platforms.length === 0}>
@@ -260,7 +302,17 @@ export default function SocialSnippetGeneratorPicker({ seoProjectOptions, conten
       </div>
 
       {result && result.snippets.length === 0 && !isGenerating && (
-        <p className="text-sm text-slate-500">No snippets were generated for the selected platforms. Try a different piece of content, or select different platforms.</p>
+        <p className="text-sm text-slate-500">{SOCIAL_SNIPPET_EMPTY_RESULT_MESSAGE}</p>
+      )}
+
+      {result && result.snippets.length > 0 && computeMissingPlatforms(requestedPlatforms, result.snippets).length > 0 && !isGenerating && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          Partial result — no usable snippet was returned for{" "}
+          {computeMissingPlatforms(requestedPlatforms, result.snippets)
+            .map((platform) => PLATFORM_LABELS[platform])
+            .join(", ")}
+          . The snippets below are complete; try generating again for the rest.
+        </p>
       )}
 
       {result && result.snippets.length > 0 && (

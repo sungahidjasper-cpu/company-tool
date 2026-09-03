@@ -8,12 +8,12 @@ import {
   type LengthGuidance,
   type MetaTagSuggestion,
 } from "@/features/ai-workspace/schemas/meta-tag-optimizer.schema";
-import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
+import { CONTENT_QUALITY_DOCTRINE, SEO_METRIC_GROUNDING_GUARD } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { looksLikeInstructionEcho, stripConfigurationArtifacts, stripHtmlTags } from "@/features/ai-workspace/services/content-sanitizer";
 import { getBrandProfileByCompanyId } from "@/features/companies/services/brand-profile.service";
 
 /** Bumped whenever the prompt template below changes — same convention as every other AI Workspace service's PROMPT_VERSION. */
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 2;
 
 /**
  * Matches internal-link-analyzer.service.ts's own scale for a multi-item
@@ -49,7 +49,9 @@ export type MetaTagOptimizerContext = {
   inventory: MetaTagInventoryItem[];
 };
 
-export const META_TAG_OPTIMIZER_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are an SEO specialist improving meta titles and meta descriptions for existing, already-published pages. The supplied list of pages — each with its real id, title, url, and current metadata — is the ONLY source of truth for what to optimize. Never invent a different page, never invent a url, and never invent a contentId that is not in the supplied list. For each page, write ONE improved meta title and ONE improved meta description that stays true to that page's actual, existing topic — never suggest metadata that describes a different subject than the page already covers. Write for a real person deciding whether to click a search result, not a keyword list: avoid keyword stuffing, avoid vague or generic phrasing, and never repeat the same phrase across multiple suggestions just to fill space. Never state a fact, statistic, offer, or claim that isn't already supported by the page's own title or current metadata. Never include instruction text, configuration labels, or a character count as part of the visible title or description. Return exactly one suggestion object per supplied page, using its exact contentId, and nothing else.`;
+export const META_TAG_OPTIMIZER_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are an SEO specialist improving meta titles and meta descriptions for existing, already-published pages. The supplied list of pages — each with its real id, title, url, and current metadata — is the ONLY source of truth for what to optimize. Never invent a different page, never invent a url, and never invent a contentId that is not in the supplied list. For each page, write ONE improved meta title and ONE improved meta description that stays true to that page's actual, existing topic — never suggest metadata that describes a different subject than the page already covers. Write for a real person deciding whether to click a search result, not a keyword list: avoid keyword stuffing, avoid vague or generic phrasing, and never repeat the same phrase across multiple suggestions just to fill space. Never state a fact, statistic, offer, or claim that isn't already supported by the page's own title or current metadata. Never include instruction text, configuration labels, or a character count as part of the visible title or description. Return exactly one suggestion object per supplied page, using its exact contentId, and nothing else.
+
+${SEO_METRIC_GROUNDING_GUARD}`;
 
 /**
  * Mirrors every other AI Workspace service's one-function-per-task pattern:

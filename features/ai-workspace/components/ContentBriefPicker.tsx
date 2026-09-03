@@ -13,6 +13,7 @@ import { previewContentBriefPromptAction, saveContentBriefAction, startContentBr
 import { saveLongFormAsNewContentAction, startLongFormGenerationAction } from "@/features/ai-workspace/actions/long-form-content.actions";
 import ContentBriefReview from "@/features/ai-workspace/components/ContentBriefReview";
 import LongFormContentReview, { type LongFormDraftExtras, type LongFormEditableFields } from "@/features/ai-workspace/components/LongFormContentReview";
+import AiGenerationError from "@/features/ai-workspace/components/AiGenerationError";
 import { useAiGenerationLifecycle } from "@/features/ai-workspace/hooks/use-ai-generation-lifecycle";
 import {
   BRAND_VOICES,
@@ -70,6 +71,9 @@ function NumberField({ label, value, onChange, min, max }: { label: string; valu
   );
 }
 
+/** Phase B B5.1 — shown while no SEO project is chosen. A prompt to choose, never a claim that the project is invalid (only the server can determine that). */
+export const SELECT_PROJECT_HINT = "Select an SEO project before generating.";
+
 /**
  * Owns the whole generate → review → save state machine client-side.
  * Nothing is written to the database until "Save as Draft" — "Generate"
@@ -79,7 +83,10 @@ function NumberField({ label, value, onChange, min, max }: { label: string; valu
 export default function ContentBriefPicker({ seoProjectOptions, keywordsByProject, canPreviewPrompt = false }: ContentBriefPickerProps) {
   const router = useRouter();
 
-  const [seoProjectId, setSeoProjectId] = useState(seoProjectOptions[0]?.id ?? "");
+  // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
+  // let a user generate against a project they never consciously chose; the
+  // server still re-derives and enforces ownership regardless of this value.
+  const [seoProjectId, setSeoProjectId] = useState("");
   const [keywordId, setKeywordId] = useState("");
   const [contentType, setContentType] = useState<ContentBriefType>("BLOG_POST");
   const [notes, setNotes] = useState("");
@@ -469,12 +476,14 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
           }}
         >
           {seoProjectOptions.length === 0 && <option value="">No SEO projects yet</option>}
+          <option value="">Select an SEO project…</option>
           {seoProjectOptions.map((option) => (
             <option key={option.id} value={option.id}>
               {option.name}
             </option>
           ))}
         </select>
+        {!seoProjectId && <p className="text-xs text-slate-500">{SELECT_PROJECT_HINT}</p>}
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -717,7 +726,7 @@ export default function ContentBriefPicker({ seoProjectOptions, keywordsByProjec
         </div>
       </details>
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      <AiGenerationError error={error} errorType={errorType} />
 
       {isGenerating && (lifecycle.isSwitchingProvider || lifecycle.streamCharCount !== null) && (
         <p className="text-sm text-slate-500">

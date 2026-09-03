@@ -208,6 +208,7 @@ function makeCurrentContentRow(overrides: Partial<Record<string, unknown>> = {})
     metaTitle: "Current Meta Title",
     metaDescription: "Current Meta Description",
     body: "Current body.",
+    deletedAt: null,
     seoProject: { companyId: COMPANY_A },
     ...overrides,
   };
@@ -408,5 +409,37 @@ describe("applyContentRewriteAction", () => {
     mockedPrisma.content.update.mockRejectedValue(new Error("simulated DB failure"));
     await expect(applyContentRewriteAction(APPLY_INPUT)).rejects.toThrow("simulated DB failure");
     expect(mockedLogActivity).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Phase B M2 — a trashed (soft-deleted) page must never be written to.
+   * The route page already filters deletedAt when listing selectable pages,
+   * so this covers the two ways a trashed id still reaches the server: a
+   * stale review screen open when someone else trashes the page, and a
+   * direct server-action call.
+   */
+  it("19. rejects applying to a SOFT-DELETED page (direct invocation)", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeCurrentContentRow({ deletedAt: new Date("2026-09-01T00:00:00Z") }));
+    const result = await applyContentRewriteAction(APPLY_INPUT);
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+    expect(mockedPrisma.contentRevision.create).not.toHaveBeenCalled();
+  });
+
+  it("20. rejects when the page is trashed AFTER the ownership check but before the write (stale review state)", async () => {
+    // First read (ownership) sees an active row; the in-transaction re-read sees it trashed.
+    mockedPrisma.content.findUnique
+      .mockResolvedValueOnce(makeCurrentContentRow())
+      .mockResolvedValue(makeCurrentContentRow({ deletedAt: new Date("2026-09-01T00:00:00Z") }));
+    const result = await applyContentRewriteAction(APPLY_INPUT);
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+    expect(mockedPrisma.contentRevision.create).not.toHaveBeenCalled();
+  });
+
+  it("21. still applies normally to an ACTIVE page (no regression)", async () => {
+    const result = await applyContentRewriteAction(APPLY_INPUT);
+    expect(result.success).toBe(true);
+    expect(mockedPrisma.content.update).toHaveBeenCalled();
   });
 });

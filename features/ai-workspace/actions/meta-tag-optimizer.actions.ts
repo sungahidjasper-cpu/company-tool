@@ -50,6 +50,10 @@ async function getOwnedContentRows(contentIds: string[], companyId: string, seoP
   if (rows.length !== uniqueIds.length) return null;
   for (const row of rows) {
     if (row.seoProject.companyId !== companyId || row.seoProjectId !== seoProjectId) return null;
+    // Phase B M2 — a trashed page is not an editable page. All-or-nothing,
+    // matching this helper's existing discipline: one trashed row rejects
+    // the whole request rather than silently dropping it.
+    if (row.deletedAt) return null;
   }
   return rows;
 }
@@ -160,7 +164,9 @@ export async function applyMetaTagSuggestionAction(input: ApplyMetaTagSuggestion
   const preflight = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "Content" WHERE id = ${content.id} FOR UPDATE`;
     const current = await tx.content.findUnique({ where: { id: content.id } });
-    if (!current) {
+    // Phase B M2 — re-checked inside the lock: the page can be trashed
+    // between the ownership check and this write (stale review screen).
+    if (!current || current.deletedAt) {
       return { kind: "not_found" as const };
     }
 

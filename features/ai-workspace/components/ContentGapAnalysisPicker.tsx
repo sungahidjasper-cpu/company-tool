@@ -1,12 +1,15 @@
 "use client";
 
 import { useState } from "react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { startContentGapAnalysisAction } from "@/features/ai-workspace/actions/content-gap-analysis.actions";
 import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import { useAiGenerationLifecycle } from "@/features/ai-workspace/hooks/use-ai-generation-lifecycle";
+import AiGenerationError from "@/features/ai-workspace/components/AiGenerationError";
+import AiGenerationStatusNote from "@/features/ai-workspace/components/AiGenerationStatusNote";
 import {
   contentGapAnalysisInputSchema,
   contentGapAnalysisResultSchema,
@@ -35,6 +38,33 @@ export function computeCanGenerateGapAnalysis(seoProjectId: string): boolean {
   return seoProjectId.trim().length > 0;
 }
 
+/** Phase B B5.1 — shown while no SEO project is chosen. A prompt to choose, never a claim that the project is invalid (only the server can determine that). */
+export const SELECT_PROJECT_HINT = "Select an SEO project before generating.";
+
+/**
+ * Phase B B5.3 — this tool is review-only and never saves anything, so
+ * without a Copy action the user had no way to get the output out. Mirrors
+ * what the cards actually display, in the same order, as plain text: no
+ * internal ids, no provider details, no debug fields. Omitted lines are
+ * omitted rather than printed as "null" — a missing AI format suggestion
+ * stays absent instead of being rendered as a value.
+ */
+export function formatOpportunitiesAsText(result: ContentGapAnalysisResult): string {
+  return result.opportunities
+    .map((item) => {
+      const lines = [item.topic, item.opportunity, item.reason];
+      if (item.relatedCluster) lines.push(`Related keyword cluster: ${item.relatedCluster}`);
+      if (item.suggestedContentType) lines.push(`Suggested format: ${CONTENT_TYPE_LABELS[item.suggestedContentType] ?? item.suggestedContentType}`);
+      lines.push(
+        item.existingCoverageStatus === "POSSIBLE_MATCH"
+          ? `Possible overlap with an existing page: "${item.matchedExistingTitle}" (title-text match only, not a full content review)`
+          : "No matching existing page title found"
+      );
+      return lines.join("\n");
+    })
+    .join("\n\n---\n\n");
+}
+
 /**
  * The ninth AI Workspace tool's UI. No contentId, no notes field — per
  * Stage A discovery, the only real user input this tool needs is which SEO
@@ -44,7 +74,10 @@ export function computeCanGenerateGapAnalysis(seoProjectId: string): boolean {
  * no Apply/Save, matching Schema Markup Generator's own precedent.
  */
 export default function ContentGapAnalysisPicker({ seoProjectOptions }: ContentGapAnalysisPickerProps) {
-  const [seoProjectId, setSeoProjectId] = useState(seoProjectOptions[0]?.id ?? "");
+  // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
+  // let a user generate against a project they never consciously chose; the
+  // server still re-derives and enforces ownership regardless of this value.
+  const [seoProjectId, setSeoProjectId] = useState("");
 
   const [result, setResult] = useState<ContentGapAnalysisResult | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -135,6 +168,16 @@ export default function ContentGapAnalysisPicker({ seoProjectOptions }: ContentG
     lifecycle.cancel(() => setIsGenerating(false));
   }
 
+  /** Clipboard access can be denied (permissions, insecure context) — a failure is reported, never thrown at the user as an unhandled rejection. */
+  async function copyOpportunities(current: ContentGapAnalysisResult) {
+    try {
+      await navigator.clipboard.writeText(formatOpportunitiesAsText(current));
+      toast.success("Copied content opportunities to clipboard");
+    } catch {
+      toast.error("Could not copy to clipboard");
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
@@ -142,22 +185,22 @@ export default function ContentGapAnalysisPicker({ seoProjectOptions }: ContentG
           SEO project
         </label>
         <select id="seoProjectId" className={selectClassName} value={seoProjectId} onChange={(e) => setSeoProjectId(e.target.value)}>
+          <option value="">Select an SEO project…</option>
           {seoProjectOptions.map((option) => (
             <option key={option.id} value={option.id}>
               {option.name}
             </option>
           ))}
         </select>
+        {!seoProjectId && <p className="text-xs text-slate-500">{SELECT_PROJECT_HINT}</p>}
       </div>
 
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {error}
-          {errorType && <span className="ml-1 text-xs text-red-500">({errorType})</span>}
-        </div>
-      )}
+      <AiGenerationError error={error} errorType={errorType} />
 
-      {isGenerating && lifecycle.streamProgress !== null && <Progress value={lifecycle.streamProgress} aria-label="Generation progress" />}
+      <AiGenerationStatusNote isSwitchingProvider={lifecycle.isSwitchingProvider} />
+      {isGenerating && !lifecycle.isSwitchingProvider && lifecycle.streamProgress !== null && (
+        <Progress value={lifecycle.streamProgress} aria-label="Generation progress" />
+      )}
 
       <div className="flex gap-2">
         <Button type="button" onClick={runGenerate} disabled={isGenerating || !computeCanGenerateGapAnalysis(seoProjectId)}>
@@ -172,6 +215,14 @@ export default function ContentGapAnalysisPicker({ seoProjectOptions }: ContentG
 
       {result && result.opportunities.length === 0 && !isGenerating && (
         <p className="text-sm text-slate-500">No content gap opportunities were found in the latest SEO audit for this project.</p>
+      )}
+
+      {result && result.opportunities.length > 0 && (
+        <div className="flex items-center justify-end">
+          <Button type="button" variant="outline" size="sm" onClick={() => copyOpportunities(result)}>
+            Copy opportunities
+          </Button>
+        </div>
       )}
 
       {result && result.opportunities.length > 0 && (

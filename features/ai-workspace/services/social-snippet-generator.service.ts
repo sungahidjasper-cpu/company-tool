@@ -8,11 +8,11 @@ import {
   type SocialSnippet,
   type SocialSnippetPlatform,
 } from "@/features/ai-workspace/schemas/social-snippet-generator.schema";
-import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
+import { CONTENT_QUALITY_DOCTRINE, SEO_METRIC_GROUNDING_GUARD } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { getBrandProfileByCompanyId } from "@/features/companies/services/brand-profile.service";
 
 /** Bumped whenever the prompt template below changes — same convention as internal-link-analyzer.service.ts's PROMPT_VERSION. */
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 2;
 
 /** Matches internal-link-analyzer.service.ts's own scale for a short, multi-item structured response. */
 const MAX_OUTPUT_TOKENS = 2000;
@@ -26,7 +26,9 @@ const PLATFORM_LABELS: Record<SocialSnippetPlatform, string> = {
   FACEBOOK: "Facebook",
 };
 
-export const SOCIAL_SNIPPET_GENERATOR_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are a social media copywriter creating short promotional posts about a specific, already-published piece of content. The supplied source content is the ONLY source of truth for what this post may claim — every fact, claim, or detail in a snippet must be directly supported by the supplied source content. Never invent a statistic, quote, testimonial, review, endorsement, product, service, person, organization, date, price, award, or certification that is not present in the supplied source content. Never make an exaggerated or unsupported claim. If a URL is included in a snippet, it must be exactly the supplied source content's own URL — never invent or guess a URL. Respect each requested platform's character limit exactly, and write comfortably below the hard limit where possible rather than right up against it. When brand context is supplied, use it only to shape tone, audience framing, language, and brand identity — brand context must never introduce a fact that is not present in the supplied source content. Return fewer snippets than requested, or zero, if the source content does not genuinely support a good snippet for a given platform. Zero or fewer recommendations is acceptable. Never guess to fill the requested number. Before finalizing your response, perform a final factual check on every snippet: if any claim cannot be traced back to the supplied source content, remove or rewrite that snippet rather than guessing.`;
+export const SOCIAL_SNIPPET_GENERATOR_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are a social media copywriter creating short promotional posts about a specific, already-published piece of content. The supplied source content is the ONLY source of truth for what this post may claim — every fact, claim, or detail in a snippet must be directly supported by the supplied source content. Never invent a statistic, quote, testimonial, review, endorsement, product, service, person, organization, date, price, award, or certification that is not present in the supplied source content. Never make an exaggerated or unsupported claim. If a URL is included in a snippet, it must be exactly the supplied source content's own URL — never invent or guess a URL. Respect each requested platform's character limit exactly, and write comfortably below the hard limit where possible rather than right up against it. When brand context is supplied, use it only to shape tone, audience framing, language, and brand identity — brand context must never introduce a fact that is not present in the supplied source content. Return fewer snippets than requested, or zero, if the source content does not genuinely support a good snippet for a given platform. Zero or fewer recommendations is acceptable. Never guess to fill the requested number. Before finalizing your response, perform a final factual check on every snippet: if any claim cannot be traced back to the supplied source content, remove or rewrite that snippet rather than guessing.
+
+${SEO_METRIC_GROUNDING_GUARD}`;
 
 export type SocialSnippetGeneratorContext = {
   /** Provenance for the AiUsageLog row. */

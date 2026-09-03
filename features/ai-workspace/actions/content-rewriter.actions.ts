@@ -42,6 +42,10 @@ async function getOwnedContent(contentId: string, companyId: string, seoProjectI
     include: { seoProject: { select: { companyId: true } } },
   });
   if (!content || content.seoProject.companyId !== companyId || content.seoProjectId !== seoProjectId) return null;
+  // Phase B M2 — a trashed page is not an editable page. The picker already
+  // filters these out when listing, so reaching here means either a stale
+  // screen or a direct action call; both are rejected the same way.
+  if (content.deletedAt) return null;
   return content;
 }
 
@@ -164,7 +168,10 @@ export async function applyContentRewriteAction(input: ApplyContentRewriteInput)
   const preflight = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "Content" WHERE id = ${content.id} FOR UPDATE`;
     const current = await tx.content.findUnique({ where: { id: content.id } });
-    if (!current) {
+    // Phase B M2 — re-checked INSIDE the lock, not just at the ownership
+    // step above: the page can be trashed between the two, which is exactly
+    // the stale-review-screen case.
+    if (!current || current.deletedAt) {
       return { kind: "not_found" as const };
     }
 

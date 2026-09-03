@@ -9,6 +9,8 @@ import { applyContentRewriteAction, startContentRewriteAction } from "@/features
 import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import ContentRewriterReview from "@/features/ai-workspace/components/ContentRewriterReview";
 import { useAiGenerationLifecycle } from "@/features/ai-workspace/hooks/use-ai-generation-lifecycle";
+import AiGenerationError from "@/features/ai-workspace/components/AiGenerationError";
+import AiGenerationStatusNote from "@/features/ai-workspace/components/AiGenerationStatusNote";
 import {
   contentRewriterInputSchema,
   contentRewriterJobResultSchema,
@@ -41,6 +43,9 @@ export function computeCanGenerate(selectedContentId: string | null, eligibleCon
   return selectedContentId !== null && eligibleContentIds.includes(selectedContentId);
 }
 
+/** Phase B B5.1 — shown while no SEO project is chosen. A prompt to choose, never a claim that the project is invalid (only the server can determine that). */
+export const SELECT_PROJECT_HINT = "Select an SEO project before generating.";
+
 /**
  * The seventh AI Workspace tool's UI. Deliberately single-selection (a
  * radio list, not checkboxes) — this tool rewrites one existing page at a
@@ -56,7 +61,10 @@ export function computeCanGenerate(selectedContentId: string | null, eligibleCon
  * trusts anything about a page beyond what the server already vetted.
  */
 export default function ContentRewriterPicker({ seoProjectOptions, contentByProject }: ContentRewriterPickerProps) {
-  const [seoProjectId, setSeoProjectId] = useState(seoProjectOptions[0]?.id ?? "");
+  // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
+  // let a user generate against a project they never consciously chose; the
+  // server still re-derives and enforces ownership regardless of this value.
+  const [seoProjectId, setSeoProjectId] = useState("");
   const contentOptions = useMemo(() => contentByProject[seoProjectId] ?? [], [contentByProject, seoProjectId]);
   const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
 
@@ -220,12 +228,14 @@ export default function ContentRewriterPicker({ seoProjectOptions, contentByProj
             setHasApplied(false);
           }}
         >
+          <option value="">Select an SEO project…</option>
           {seoProjectOptions.map((option) => (
             <option key={option.id} value={option.id}>
               {option.name}
             </option>
           ))}
         </select>
+        {!seoProjectId && <p className="text-xs text-slate-500">{SELECT_PROJECT_HINT}</p>}
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -259,14 +269,12 @@ export default function ContentRewriterPicker({ seoProjectOptions, contentByProj
         )}
       </div>
 
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {error}
-          {errorType && <span className="ml-1 text-xs text-red-500">({errorType})</span>}
-        </div>
-      )}
+      <AiGenerationError error={error} errorType={errorType} />
 
-      {isGenerating && lifecycle.streamProgress !== null && <Progress value={lifecycle.streamProgress} aria-label="Generation progress" />}
+      <AiGenerationStatusNote isSwitchingProvider={lifecycle.isSwitchingProvider} />
+      {isGenerating && !lifecycle.isSwitchingProvider && lifecycle.streamProgress !== null && (
+        <Progress value={lifecycle.streamProgress} aria-label="Generation progress" />
+      )}
 
       <div className="flex gap-2">
         <Button type="button" onClick={runGenerate} disabled={isGenerating || !seoProjectId || !canGenerate}>

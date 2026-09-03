@@ -1,12 +1,15 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { startInternalLinkAnalysisAction } from "@/features/ai-workspace/actions/internal-link-analyzer.actions";
 import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import { useAiGenerationLifecycle } from "@/features/ai-workspace/hooks/use-ai-generation-lifecycle";
+import AiGenerationError from "@/features/ai-workspace/components/AiGenerationError";
+import AiGenerationStatusNote from "@/features/ai-workspace/components/AiGenerationStatusNote";
 import { internalLinkAnalyzerInputSchema, internalLinkAnalysisResultSchema, type InternalLinkAnalysisResult } from "@/features/ai-workspace/schemas/internal-link-analyzer.schema";
 import { type LlmErrorType } from "@/lib/ai/providers/errors";
 
@@ -28,6 +31,40 @@ type InternalLinkAnalyzerPickerProps = {
 };
 
 /**
+ * Phase B B3.1 — shown when generation completes but yields nothing usable.
+ * Deliberately neutral: an empty result almost always means the AI response
+ * failed our deterministic quality checks (often after a fallback to a weaker
+ * provider), not that the user chose the wrong page, project or platforms.
+ * Wording matches PRESS_RELEASE_NULL_RESULT_MESSAGE, which fixed this same
+ * defect class. Genuine validation failures keep their own specific messages.
+ */
+export const INTERNAL_LINK_EMPTY_RESULT_MESSAGE = "No internal-linking opportunities were returned — the AI response didn't meet our quality requirements this time. Please try generating again.";
+
+/** Phase B B5.1 — shown while no SEO project is chosen. A prompt to choose, never a claim that the project is invalid (only the server can determine that). */
+export const SELECT_PROJECT_HINT = "Select an SEO project before generating.";
+
+/**
+ * Phase B B5.3 — this tool is review-only and never saves anything, so
+ * without a Copy action the user had no way to act on the output outside the
+ * screen. Mirrors exactly what each card displays, in the same order: anchor
+ * text, target page, reason, placement and priority. No internal ids, no
+ * provider details, no debug fields.
+ */
+export function formatRecommendationsAsText(result: InternalLinkAnalysisResult): string {
+  return result.recommendations
+    .map((rec) =>
+      [
+        `Anchor text: "${rec.anchorText}"`,
+        `Link to: ${rec.targetPage}`,
+        `Reason: ${rec.reason}`,
+        `Placement: ${rec.placement}`,
+        `Priority: ${rec.priority}`,
+      ].join("\n")
+    )
+    .join("\n\n---\n\n");
+}
+
+/**
  * The fourth AI Workspace tool, following the exact generate→job→poll shape
  * SchemaMarkupGeneratorPicker.tsx already uses — but contentId is REQUIRED
  * here, not optional: every recommendation is "add a link FROM this page,"
@@ -36,7 +73,10 @@ type InternalLinkAnalyzerPickerProps = {
  * (see internal-link-analyzer.service.ts's own comment on why).
  */
 export default function InternalLinkAnalyzerPicker({ seoProjectOptions, contentByProject }: InternalLinkAnalyzerPickerProps) {
-  const [seoProjectId, setSeoProjectId] = useState(seoProjectOptions[0]?.id ?? "");
+  // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
+  // let a user generate against a project they never consciously chose; the
+  // server still re-derives and enforces ownership regardless of this value.
+  const [seoProjectId, setSeoProjectId] = useState("");
   const contentOptions = useMemo(() => contentByProject[seoProjectId] ?? [], [contentByProject, seoProjectId]);
   const [contentId, setContentId] = useState(contentOptions[0]?.id ?? "");
 
@@ -133,6 +173,16 @@ export default function InternalLinkAnalyzerPicker({ seoProjectOptions, contentB
     });
   }
 
+  /** Clipboard access can be denied (permissions, insecure context) — a failure is reported, never thrown at the user as an unhandled rejection. */
+  async function copyRecommendations(current: InternalLinkAnalysisResult) {
+    try {
+      await navigator.clipboard.writeText(formatRecommendationsAsText(current));
+      toast.success("Copied link recommendations to clipboard");
+    } catch {
+      toast.error("Could not copy to clipboard");
+    }
+  }
+
   function handleCancel() {
     lifecycle.cancel(() => setIsGenerating(false));
   }
@@ -152,12 +202,14 @@ export default function InternalLinkAnalyzerPicker({ seoProjectOptions, contentB
             setContentId(contentByProject[e.target.value]?.[0]?.id ?? "");
           }}
         >
+          <option value="">Select an SEO project…</option>
           {seoProjectOptions.map((option) => (
             <option key={option.id} value={option.id}>
               {option.name}
             </option>
           ))}
         </select>
+        {!seoProjectId && <p className="text-xs text-slate-500">{SELECT_PROJECT_HINT}</p>}
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -174,14 +226,12 @@ export default function InternalLinkAnalyzerPicker({ seoProjectOptions, contentB
         </select>
       </div>
 
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {error}
-          {errorType && <span className="ml-1 text-xs text-red-500">({errorType})</span>}
-        </div>
-      )}
+      <AiGenerationError error={error} errorType={errorType} />
 
-      {isGenerating && lifecycle.streamProgress !== null && <Progress value={lifecycle.streamProgress} aria-label="Generation progress" />}
+      <AiGenerationStatusNote isSwitchingProvider={lifecycle.isSwitchingProvider} />
+      {isGenerating && !lifecycle.isSwitchingProvider && lifecycle.streamProgress !== null && (
+        <Progress value={lifecycle.streamProgress} aria-label="Generation progress" />
+      )}
 
       <div className="flex gap-2">
         <Button type="button" onClick={runGenerate} disabled={isGenerating || !seoProjectId || !contentId}>
@@ -195,7 +245,15 @@ export default function InternalLinkAnalyzerPicker({ seoProjectOptions, contentB
       </div>
 
       {result && result.recommendations.length === 0 && !isGenerating && (
-        <p className="text-sm text-slate-500">No strong internal-linking opportunities were found for this page. Try analyzing a different page, or add more content to this project first.</p>
+        <p className="text-sm text-slate-500">{INTERNAL_LINK_EMPTY_RESULT_MESSAGE}</p>
+      )}
+
+      {result && result.recommendations.length > 0 && (
+        <div className="flex items-center justify-end">
+          <Button type="button" variant="outline" size="sm" onClick={() => copyRecommendations(result)}>
+            Copy recommendations
+          </Button>
+        </div>
       )}
 
       {result && result.recommendations.length > 0 && (

@@ -9,6 +9,8 @@ import { Progress } from "@/components/ui/progress";
 import { applyMetaTagSuggestionAction, startMetaTagOptimizerAction } from "@/features/ai-workspace/actions/meta-tag-optimizer.actions";
 import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import { useAiGenerationLifecycle } from "@/features/ai-workspace/hooks/use-ai-generation-lifecycle";
+import AiGenerationError from "@/features/ai-workspace/components/AiGenerationError";
+import AiGenerationStatusNote from "@/features/ai-workspace/components/AiGenerationStatusNote";
 import {
   MAX_SELECTED_CONTENT,
   metaTagOptimizerInputSchema,
@@ -156,8 +158,24 @@ function SuggestedField({ label, changed, text, guidance }: { label: string; cha
  * generation side reuses the exact same job→poll→stream pattern every
  * other tool's picker already uses; nothing new was invented here.
  */
+/**
+ * Phase B B3.1 — shown when generation completes but yields nothing usable.
+ * Deliberately neutral: an empty result almost always means the AI response
+ * failed our deterministic quality checks (often after a fallback to a weaker
+ * provider), not that the user chose the wrong page, project or platforms.
+ * Wording matches PRESS_RELEASE_NULL_RESULT_MESSAGE, which fixed this same
+ * defect class. Genuine validation failures keep their own specific messages.
+ */
+export const META_TAG_EMPTY_RESULT_MESSAGE = "No suggestions were returned — the AI response didn't meet our quality requirements this time. Please try generating again.";
+
+/** Phase B B5.1 — shown while no SEO project is chosen. A prompt to choose, never a claim that the project is invalid (only the server can determine that). */
+export const SELECT_PROJECT_HINT = "Select an SEO project before generating.";
+
 export default function MetaTagOptimizerPicker({ seoProjectOptions, contentByProject }: MetaTagOptimizerPickerProps) {
-  const [seoProjectId, setSeoProjectId] = useState(seoProjectOptions[0]?.id ?? "");
+  // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
+  // let a user generate against a project they never consciously chose; the
+  // server still re-derives and enforces ownership regardless of this value.
+  const [seoProjectId, setSeoProjectId] = useState("");
   const contentOptions = useMemo(() => contentByProject[seoProjectId] ?? [], [contentByProject, seoProjectId]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -332,12 +350,14 @@ export default function MetaTagOptimizerPicker({ seoProjectOptions, contentByPro
             setSelectedIds(new Set());
           }}
         >
+          <option value="">Select an SEO project…</option>
           {seoProjectOptions.map((option) => (
             <option key={option.id} value={option.id}>
               {option.name}
             </option>
           ))}
         </select>
+        {!seoProjectId && <p className="text-xs text-slate-500">{SELECT_PROJECT_HINT}</p>}
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -383,14 +403,12 @@ export default function MetaTagOptimizerPicker({ seoProjectOptions, contentByPro
         )}
       </div>
 
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {error}
-          {errorType && <span className="ml-1 text-xs text-red-500">({errorType})</span>}
-        </div>
-      )}
+      <AiGenerationError error={error} errorType={errorType} />
 
-      {isGenerating && lifecycle.streamProgress !== null && <Progress value={lifecycle.streamProgress} aria-label="Generation progress" />}
+      <AiGenerationStatusNote isSwitchingProvider={lifecycle.isSwitchingProvider} />
+      {isGenerating && !lifecycle.isSwitchingProvider && lifecycle.streamProgress !== null && (
+        <Progress value={lifecycle.streamProgress} aria-label="Generation progress" />
+      )}
 
       <div className="flex gap-2">
         <Button type="button" onClick={runGenerate} disabled={isGenerating || !seoProjectId || selectedIds.size === 0}>
@@ -404,7 +422,7 @@ export default function MetaTagOptimizerPicker({ seoProjectOptions, contentByPro
       </div>
 
       {result && result.suggestions.length === 0 && !isGenerating && (
-        <p className="text-sm text-slate-500">No suggestions were generated for the selected pages. Try a different selection.</p>
+        <p className="text-sm text-slate-500">{META_TAG_EMPTY_RESULT_MESSAGE}</p>
       )}
 
       {omittedContent.length > 0 && !isGenerating && (

@@ -3,11 +3,11 @@ import { generateStructuredOutput, generateStructuredOutputStreaming } from "@/l
 import type { StreamEvent } from "@/lib/ai/providers/types";
 import { internalLinkSchema, type InternalLinkSuggestion } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { internalLinkAnalysisProviderOutputSchema } from "@/features/ai-workspace/schemas/internal-link-analyzer.schema";
-import { CONTENT_QUALITY_DOCTRINE } from "@/features/ai-workspace/services/content-quality-doctrine";
+import { CONTENT_QUALITY_DOCTRINE, SEO_METRIC_GROUNDING_GUARD } from "@/features/ai-workspace/services/content-quality-doctrine";
 import { getBrandProfileByCompanyId } from "@/features/companies/services/brand-profile.service";
 
 /** Bumped whenever the prompt template below changes — same convention as content-brief.service.ts's PROMPT_VERSION. */
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 2;
 
 /** Matches content-brief.service.ts's own scale for a multi-item structured response. */
 const MAX_OUTPUT_TOKENS = 3000;
@@ -15,7 +15,9 @@ const MAX_OUTPUT_TOKENS = 3000;
 /** Source-page body excerpt cap — a full long-form article's body could be large; a fixed excerpt is enough to judge contextual relevance without letting one very long article blow out the prompt's context budget. */
 const SOURCE_BODY_EXCERPT_CHARS = 2000;
 
-export const INTERNAL_LINK_ANALYZER_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are a technical SEO specialist recommending internal-linking opportunities. The supplied list of existing pages is the ONLY source of truth for what pages exist on this site — you may recommend a link ONLY to a page in that exact supplied list, identified by its EXACT supplied url. Never invent a url, never invent a page title, never recommend a target page that is absent from the supplied list. Do not recommend a link merely because it would theoretically be useful for SEO — every recommendation must be contextually relevant to the actual supplied source page content. If there is no strong internal-linking opportunity, recommend fewer links or none at all — zero recommendations is a valid, honest answer. Anchor text must accurately describe the actual destination page (its supplied title), not a generic phrase. Never fabricate facts about any page beyond what its supplied title indicates. Never recommend an external competitor page, or any page not in the supplied list, as a link target — every recommendation is for an INTERNAL link within this same site only.`;
+export const INTERNAL_LINK_ANALYZER_SYSTEM_PROMPT = `${CONTENT_QUALITY_DOCTRINE} You are a technical SEO specialist recommending internal-linking opportunities. The supplied list of existing pages is the ONLY source of truth for what pages exist on this site — you may recommend a link ONLY to a page in that exact supplied list, identified by its EXACT supplied url. Never invent a url, never invent a page title, never recommend a target page that is absent from the supplied list. Do not recommend a link merely because it would theoretically be useful for SEO — every recommendation must be contextually relevant to the actual supplied source page content. If there is no strong internal-linking opportunity, recommend fewer links or none at all — zero recommendations is a valid, honest answer. Anchor text must accurately describe the actual destination page (its supplied title), not a generic phrase. Never fabricate facts about any page beyond what its supplied title indicates. Never recommend an external competitor page, or any page not in the supplied list, as a link target — every recommendation is for an INTERNAL link within this same site only.
+
+${SEO_METRIC_GROUNDING_GUARD}`;
 
 export type InternalLinkAnalyzerContext = {
   /** Provenance for the AiUsageLog row. */

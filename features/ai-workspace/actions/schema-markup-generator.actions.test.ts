@@ -42,7 +42,7 @@ const MANAGER = { id: "user-manager", role: "MANAGER", companyId: COMPANY_A };
 const EMPLOYEE = { id: "user-employee", role: "EMPLOYEE", companyId: COMPANY_A };
 
 const SEO_PROJECT = { id: "seo-1", companyId: COMPANY_A, name: "Acme SEO", domain: "acme.test" };
-const CONTENT_ROW = { id: "content-1", seoProject: { companyId: COMPANY_A } };
+const CONTENT_ROW = { id: "content-1", seoProjectId: "seo-1", deletedAt: null, seoProject: { companyId: COMPANY_A } };
 
 const VALID_INPUT = { seoProjectId: "seo-1" };
 
@@ -108,6 +108,36 @@ describe("startSchemaMarkupGenerationAction", () => {
     const result = await startSchemaMarkupGenerationAction(VALID_INPUT);
     expect(result.success).toBe(true);
     if (result.success) expect(result.data.jobId).toBe("existing-job");
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Phase B M1 — this action's own error message has always claimed "Content
+   * not found for THIS SEO project", but the check behind it only compared
+   * companies: a contentId from a DIFFERENT project in the same company was
+   * accepted and written onto the job alongside an unrelated seoProjectId.
+   * Every structural peer (content-rewriter, meta-tag-optimizer,
+   * social-snippet-generator, internal-link-analyzer) already enforces the
+   * project boundary; this closes the gap.
+   */
+  it("8. accepts a contentId that genuinely belongs to the selected SEO project", async () => {
+    const result = await startSchemaMarkupGenerationAction({ ...VALID_INPUT, contentId: "content-1" });
+    expect(result.success).toBe(true);
+    expect(mockedCreateAiGenerationJob).toHaveBeenCalledWith(expect.objectContaining({ seoProjectId: "seo-1", contentId: "content-1" }));
+  });
+
+  it("9. rejects a contentId belonging to a DIFFERENT project in the same company (project-scoping regression)", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, seoProjectId: "seo-OTHER" });
+    const result = await startSchemaMarkupGenerationAction({ ...VALID_INPUT, contentId: "content-1" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/not found/i);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("10. rejects a contentId belonging to another company even when its seoProjectId matches", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, seoProject: { companyId: COMPANY_B } });
+    const result = await startSchemaMarkupGenerationAction({ ...VALID_INPUT, contentId: "content-1" });
+    expect(result.success).toBe(false);
     expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
   });
 });

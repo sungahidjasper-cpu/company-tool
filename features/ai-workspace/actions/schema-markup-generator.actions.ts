@@ -21,13 +21,21 @@ async function getOwnedSeoProject(seoProjectId: string, companyId: string) {
   return seoProject;
 }
 
-/** Same ownership shape as long-form-content.actions.ts's own getOwnedContent, trimmed to only the fields this tool needs. */
-async function getOwnedContent(contentId: string, companyId: string) {
+/**
+ * Same two-factor ownership shape content-rewriter.actions.ts and
+ * meta-tag-optimizer.actions.ts already use: the row must belong to the
+ * actor's company AND to the specific SEO project the request names.
+ * Phase B M1 — company-only was not enough: this action's error message
+ * has always said "for this SEO project", but a contentId from a different
+ * project in the same company used to pass and get written onto the job
+ * alongside an unrelated seoProjectId.
+ */
+async function getOwnedContent(contentId: string, companyId: string, seoProjectId: string) {
   const content = await prisma.content.findUnique({
     where: { id: contentId },
     include: { seoProject: { select: { companyId: true } } },
   });
-  if (!content || content.seoProject.companyId !== companyId) return null;
+  if (!content || content.seoProject.companyId !== companyId || content.seoProjectId !== seoProjectId) return null;
   return content;
 }
 
@@ -56,7 +64,7 @@ export async function startSchemaMarkupGenerationAction(input: SchemaMarkupInput
   }
 
   if (parsed.data.contentId) {
-    const owned = await getOwnedContent(parsed.data.contentId, actor.companyId);
+    const owned = await getOwnedContent(parsed.data.contentId, actor.companyId, seoProject.id);
     if (!owned) {
       return actionError("Content not found for this SEO project.");
     }

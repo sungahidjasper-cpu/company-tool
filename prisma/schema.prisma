@@ -80,10 +80,27 @@ enum SeoProjectStatus {
   COMPLETED
 }
 
+/// What kind of content asset a Content row is.
+///
+/// Only the three kinds this application can actually create. Newsletter and
+/// press release are deliberately ABSENT: those tools generate text and never
+/// create a Content row, so listing them here would put types on the calendar
+/// that nothing can ever produce.
+enum ContentType {
+  SOCIAL_POST
+  BLOG_POST
+  SEO_CONTENT
+}
+
 enum ContentStatus {
   DRAFT
   IN_REVIEW
   APPROVED
+  /// Phase 5 — the content has an intentional publication date/time.
+  /// Entered ONLY by the explicit scheduling action, never by the linear
+  /// "advance to next stage" affordance and never by the status dropdown,
+  /// because this value is meaningless without scheduledAt + scheduledTimezone.
+  SCHEDULED
   PUBLISHED
   ARCHIVED
 }
@@ -230,11 +247,14 @@ model Company {
   aiGenerationJobs      AiGenerationJob[]
   aiUsageLogs           AiUsageLog[]
   publishingConnections PublishingConnection[]
+  socialOAuthStates     SocialOAuthState[]
   publishingJobs        PublishingJob[]
   contentPublications   ContentPublication[]
   contentRevisions      ContentRevision[]
   knowledgeSources      KnowledgeSource[]
   brandProfile          BrandProfile?
+  socialAccounts        SocialAccount[]
+  content               Content[]
 
   @@index([deletedAt])
 }
@@ -252,9 +272,9 @@ model Company {
 /// buildSharedContextClauses' own comment for the integration point this
 /// is deliberately shaped to feed into once that stage is authorized.
 model BrandProfile {
-  id        String   @id @default(uuid(7)) @db.Uuid
-  companyId String   @unique @db.Uuid
-  brandName String?
+  id               String   @id @default(uuid(7)) @db.Uuid
+  companyId        String   @unique @db.Uuid
+  brandName        String?
   /// Free text matching content-brief-settings.schema.ts's BRAND_VOICES
   /// values, validated at the application layer (zod) rather than a
   /// parallel Prisma enum — see brand-profile.schema.ts for why.
@@ -345,6 +365,7 @@ model User {
   generatedReports             Report[]               @relation("ReportGeneratedBy")
   startedAiGenerationJobs      AiGenerationJob[]      @relation("AiGenerationJobCreatedBy")
   createdPublishingConnections PublishingConnection[] @relation("PublishingConnectionCreatedBy")
+  startedSocialOAuthStates     SocialOAuthState[]     @relation("SocialOAuthStateStartedBy")
   requestedPublishingJobs      PublishingJob[]        @relation("PublishingJobRequestedBy")
   createdContentRevisions      ContentRevision[]      @relation("ContentRevisionCreatedBy")
   addedKnowledgeSources        KnowledgeSource[]      @relation("KnowledgeSourceAddedBy")
@@ -385,8 +406,11 @@ model Client {
   notes               Note[]
   activities          Activity[]
   files               File[]
+  socialAccounts      SocialAccount[]
+  socialOAuthStates   SocialOAuthState[]
   reports             Report[]
   tags                Tag[]
+  content             Content[]
 
   @@index([companyId, status])
   @@index([deletedAt])
@@ -788,8 +812,8 @@ model KeywordCluster {
   updatedAt    DateTime  @updatedAt
   deletedAt    DateTime?
 
-  seoProject SEOProject @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
-  keywords   Keyword[]
+  seoProject      SEOProject             @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
+  keywords        Keyword[]
 
   @@index([seoProjectId])
   @@index([deletedAt])
@@ -812,10 +836,10 @@ model Keyword {
   updatedAt    DateTime       @updatedAt
   deletedAt    DateTime?
 
-  seoProject SEOProject      @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
-  cluster    KeywordCluster? @relation(fields: [clusterId], references: [id], onDelete: SetNull)
-  owner      User?           @relation("KeywordOwner", fields: [ownerId], references: [id], onDelete: SetNull)
-  content    Content[]
+  seoProject      SEOProject             @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
+  cluster         KeywordCluster?        @relation(fields: [clusterId], references: [id], onDelete: SetNull)
+  owner           User?                  @relation("KeywordOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  content         Content[]
 
   @@unique([seoProjectId, term])
   @@index([clusterId])
@@ -892,37 +916,72 @@ model KnowledgeSourceLink {
 }
 
 model Content {
-  id              String        @id @default(uuid(7)) @db.Uuid
-  seoProjectId    String        @db.Uuid
-  authorId        String?       @db.Uuid
-  title           String
-  url             String?
-  status          ContentStatus @default(DRAFT)
-  publishedAt     DateTime?
+  id                String        @id @default(uuid(7)) @db.Uuid
+  /// The authorization root. Every content row belongs to exactly one company,
+  /// directly — this used to be reachable only by joining through seoProject,
+  /// which stopped working the moment a project became optional.
+  companyId         String        @db.Uuid
+  /// The business this content is for. Optional because a great deal of
+  /// existing content was created under a project that has no client, and
+  /// inventing one for it would be a lie.
+  clientId          String?       @db.Uuid
+  /// Optional specialised SEO context. Social and blog content does not need
+  /// one; keyword-driven and internal-link work still does.
+  seoProjectId      String?       @db.Uuid
+  /// What kind of content this is.
+  ///
+  /// NULLABLE on purpose. Every row created from now on records its type at
+  /// creation, and existing rows were classified only where a relationship
+  /// PROVED the type — a social half, or an AI brief that only the SEO
+  /// workflow writes. Rows with no such proof stay NULL and are reported as
+  /// "not recorded" rather than being guessed into a category.
+  contentType       ContentType?
+  authorId          String?       @db.Uuid
+  title             String
+  url               String?
+  status            ContentStatus @default(DRAFT)
+  /// When this content was ACTUALLY published. Never derived from a
+  /// schedule — a scheduled instant that has not happened is not a
+  /// publication, so this stays null until publication really occurs.
+  publishedAt       DateTime?
+  /// Phase 5 — the exact instant the content is intended to publish, stored
+  /// in UTC. Null unless status is SCHEDULED.
+  scheduledAt       DateTime?
+  /// Phase 5 — the IANA timezone the user chose when scheduling (e.g.
+  /// "Europe/London"). Stored alongside the instant rather than inferred,
+  /// so the intended LOCAL time can be redisplayed exactly as chosen
+  /// instead of being reinterpreted in whatever zone the reader is in.
+  /// Null unless status is SCHEDULED.
+  scheduledTimezone String?
   /// Phase 15 — populated only for AI-generated content briefs; null for
   /// every pre-existing/manually-authored row.
-  metaTitle       String?
-  metaDescription String?
+  metaTitle         String?
+  metaDescription   String?
   /// Phase 15 — consolidated JSON for the rest of an AI-generated brief
   /// (outline, suggested headings, internal-link suggestions, SEO
   /// recommendations, GEO/AEO notes, content type, suggested search
   /// intent). Display-only fields with no query/filter need yet, so one
   /// JSON column instead of one column per field.
-  aiBriefDetails  Json?
+  aiBriefDetails    Json?
   /// Phase 15 — provenance flag; does not affect the existing
   /// SEO_PERFORMANCE report, which only ever counts by `status`.
-  generatedByAi   Boolean       @default(false)
+  generatedByAi     Boolean       @default(false)
   /// Phase 16 — the long-form article body, stored as plain Markdown text
   /// (not JSON, not HTML) so it needs no rich-text/WYSIWYG dependency and
   /// fits the app's existing plain-textarea editing convention exactly.
   /// Null for every brief-only Content row and every pre-Phase-16 row.
-  body            String?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  deletedAt       DateTime?
+  body              String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  deletedAt         DateTime?
 
-  seoProject SEOProject @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
-  author     User?      @relation("ContentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  client     Client?     @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  /// SetNull, NOT Cascade: deleting an SEO project must never destroy the
+  /// client's content. The project is context, not the owner — the content
+  /// survives and simply stops being SEO-project scoped.
+  seoProject SEOProject? @relation(fields: [seoProjectId], references: [id], onDelete: SetNull)
+  author     User?       @relation("ContentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
   keywords   Keyword[]
 
   notes               Note[]
@@ -933,9 +992,21 @@ model Content {
   publishingJobs      PublishingJob[]
   contentPublications ContentPublication[]
   revisions           ContentRevision[]
+  /// Phase 6 — present only when this Content record IS a social post.
+  /// Its presence is the discriminator: no contentType column was added,
+  /// so every pre-existing row keeps its honest "type not recorded" state.
+  socialPost          SocialPost?
 
   @@index([seoProjectId, status])
   @@index([deletedAt])
+  /// The calendar reads scheduled content by project and instant.
+  @@index([seoProjectId, scheduledAt])
+  /// The client-first workspace reads by company and client instead.
+  @@index([companyId, status])
+  @@index([clientId, status])
+  @@index([companyId, scheduledAt])
+  /// The client-first calendar narrows by type within a company/client.
+  @@index([companyId, contentType])
 }
 
 /// Phase 25 Stage 1 — a snapshot of Content's versioned fields taken
@@ -1532,4 +1603,275 @@ model Report {
   @@index([projectId])
   @@index([seoProjectId])
   @@index([deletedAt])
+}
+
+/// Phase 6 — the platforms a social account can belong to.
+///
+/// A definition of what is POSSIBLE, never a claim about what is connected.
+/// Availability everywhere in the app is decided by SocialAccount rows, so an
+/// enum value with no row behind it grants nothing and is never offered.
+enum SocialPlatform {
+  FACEBOOK
+  INSTAGRAM
+  LINKEDIN
+  X
+  TIKTOK
+  PINTEREST
+  YOUTUBE
+  GOOGLE_BUSINESS_PROFILE
+}
+
+enum SocialAccountStatus {
+  ACTIVE
+  DISCONNECTED
+}
+
+/// Phase 9 — whether Cloud Compass has ACTUALLY connected to the platform.
+///
+/// This is deliberately NOT SocialAccountStatus. `status` is the user's own
+/// switch ("make this account available in Cloud Compass"); this is a fact
+/// about the outside world ("an authorization really exists"). Before Phase 9
+/// one field carried both meanings, which is why typing a handle used to make
+/// an account look usable.
+///
+/// The set is the smallest one whose members can each actually be PRODUCED:
+///   NOT_CONNECTED   the default — no authorization has ever been completed
+///   CONNECTED       a real provider authorization succeeded
+///   NEEDS_RECONNECT the stored credential expired or the provider rejected it
+///   DISCONNECTED    a person disconnected it here
+/// EXPIRED and REQUIRES_REAUTH are deliberately absent: same cause, same
+/// remedy, same words on screen. ERROR is absent because a failed check is an
+/// event (lastCheckedAt / lastCheckError), not a state of the connection.
+enum SocialConnectionState {
+  NOT_CONNECTED
+  CONNECTED
+  NEEDS_RECONNECT
+  DISCONNECTED
+}
+
+/// Only the shape that has actually been CONFIRMED against a provider's own
+/// documentation. Meta's Graph API issues an OAuth 2.0 access token, so that
+/// member exists; nothing else is listed, because inventing a credential
+/// shape for a provider not yet integrated is how a wrong abstraction gets
+/// baked in. Adding a confirmed one later is one enum value.
+enum SocialCredentialType {
+  OAUTH2_ACCESS_TOKEN
+}
+
+/// Phase 6 — the minimum abstraction for one social account belonging to a
+/// client. Phase 9 — extended with real connection state.
+///
+/// STILL HOLDS NO CREDENTIALS. Tokens live in SocialAccountCredential, one
+/// table away, exactly as PublishingCredential is kept out of
+/// PublishingConnection. Ownership is company AND client, because a social
+/// account belongs to a client rather than to the agency as a whole.
+model SocialAccount {
+  id          String              @id @default(uuid(7)) @db.Uuid
+  companyId   String              @db.Uuid
+  clientId    String              @db.Uuid
+  platform    SocialPlatform
+  /// The page/profile name as it reads on the platform, e.g. "Storage
+  /// Moguls". Optional — some platforms really only have a handle.
+  displayName String?
+  /// The public handle, e.g. "@acmeplumbing". Display only.
+  handle      String
+  status      SocialAccountStatus @default(ACTIVE)
+
+  /// The PLATFORM'S OWN id for this page/profile, e.g. a Facebook Page id.
+  /// Null for every account configured by hand, which is honest: a typed
+  /// handle carries no platform identity. Only a completed authorization
+  /// fills this in, and a person may never type it.
+  externalId      String?
+  connectionState SocialConnectionState @default(NOT_CONNECTED)
+  connectedAt     DateTime?
+  /// When the stored credential was last checked against the provider, and
+  /// what went wrong if it did. A message here is a check RESULT, never a
+  /// credential — nothing decrypted is ever written to this column.
+  lastCheckedAt   DateTime?
+  lastCheckError  String?
+  disconnectedAt  DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  client  Client  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  targets     SocialPostTarget[]
+  credential  SocialAccountCredential?
+  oauthStates SocialOAuthState[]
+
+  @@unique([clientId, platform, handle])
+  /// One Cloud Compass row per real platform page. Scoped to the company so
+  /// two agencies can each connect the same public page. Postgres treats
+  /// NULLs as distinct, so every hand-configured account (externalId NULL)
+  /// coexists here untouched.
+  @@unique([companyId, platform, externalId])
+  @@index([companyId, clientId])
+  @@index([deletedAt])
+  @@index([companyId, connectionState])
+}
+
+/// Phase 9 — the encrypted authorization for one connected social account.
+///
+/// Mirrors PublishingCredential deliberately: a separate table, an opaque
+/// `encryptedPayload`, a key version, and no column that could hold a
+/// readable secret. Kept in its own table rather than as SocialAccount
+/// columns so that no query written for the settings screen or the composer
+/// can reach a token by widening a `select`.
+///
+/// The payload is AES-256-GCM via lib/crypto/publishing-credential-crypto.ts
+/// — the same proven primitive, NOT a second implementation. Social payloads
+/// are still logically separate from WordPress ones: every social payload is
+/// an envelope tagged `social_oauth2`, and the social decrypt path refuses
+/// any envelope without that tag, so a publishing ciphertext can never be
+/// read as a social credential even though both share the master key.
+model SocialAccountCredential {
+  id              String               @id @default(uuid(7)) @db.Uuid
+  socialAccountId String               @unique @db.Uuid
+  companyId       String               @db.Uuid
+  credentialType  SocialCredentialType
+
+  encryptedPayload     String
+  encryptionKeyVersion Int    @default(1)
+
+  /// When the provider says the stored token stops working. Meta documents
+  /// long-lived tokens as lasting "about 60 days" while warning they may
+  /// "expire early", so this is read from the provider's own response and
+  /// never computed from a hardcoded lifetime. Null means the provider did
+  /// not state one.
+  expiresAt DateTime?
+
+  /// The permissions the provider actually granted. NOT secret, and needed to
+  /// tell "connected" from "connected but missing a permission" without
+  /// decrypting anything.
+  grantedScopes String[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+}
+
+/// Phase 9 — one in-flight OAuth authorization.
+///
+/// This row is the ONLY thing that tells the callback which company and
+/// client an authorization belongs to. The browser sends back a state value
+/// and nothing else is trusted from it: not a companyId, not a clientId, not
+/// an account id. Anything the query string claims is ignored in favour of
+/// what was recorded here when the flow started.
+///
+/// Only the SHA-256 of the state is stored, never the state itself — the same
+/// reasoning as never storing a raw password. A dump of this table cannot be
+/// replayed into a valid callback. The same is true of the selection token
+/// issued for the page-picking step.
+///
+/// THE ONE SECRET THIS TABLE HOLDS, AND WHY. Between the callback and the
+/// moment a person picks which Page to connect, the provider's authorization
+/// has to live somewhere. It cannot go to the browser (that would hand out a
+/// token), and it cannot go in SocialAccountCredential (that table is keyed
+/// by an account, and no account has been chosen yet). So it is held HERE,
+/// with the flow it belongs to: encrypted with the same AES-256-GCM
+/// infrastructure, readable only by the server, cleared when the flow
+/// finishes, and unusable once selectionExpiresAt passes. Nothing readable is
+/// ever stored — encryptedAuthorization is opaque ciphertext.
+model SocialOAuthState {
+  id        String @id @default(uuid(7)) @db.Uuid
+  /// SHA-256 (hex) of the random state value handed to the provider.
+  stateHash String @unique
+
+  companyId       String         @db.Uuid
+  clientId        String         @db.Uuid
+  platform        SocialPlatform
+  /// Set when reconnecting a specific existing account; null when the flow
+  /// may attach to whichever page the person picks. SetNull on delete so
+  /// removing an account never erases the audit trail of its attempts.
+  socialAccountId String?        @db.Uuid
+  /// Attribution only, never an authorization gate — same convention as
+  /// PublishingConnection.createdByUserId.
+  startedByUserId String?        @db.Uuid
+
+  /// Short-lived by design; a state past this instant is refused.
+  expiresAt  DateTime
+  /// Stamped the moment it is redeemed. Single use: a second callback with
+  /// the same state is refused, which is what makes replay impossible.
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  /// SHA-256 (hex) of the single-use token that identifies this flow while a
+  /// person is choosing which Page to connect. Null until the callback has
+  /// successfully exchanged a code.
+  selectionHash       String?   @unique
+  selectionExpiresAt  DateTime?
+  /// Stamped when the page choice is made. A second selection on the same
+  /// flow is refused, exactly as with the state itself.
+  selectionConsumedAt DateTime?
+
+  /// The provider authorization, encrypted, for the few minutes between the
+  /// callback and the page choice. Opaque ciphertext — see the model comment.
+  /// Cleared as soon as the flow completes or is abandoned.
+  encryptedAuthorization  String?
+  authorizationKeyVersion Int?
+
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  client        Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount? @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
+  startedBy     User?          @relation("SocialOAuthStateStartedBy", fields: [startedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, clientId])
+  @@index([expiresAt])
+}
+
+/// Phase 6 — the social-specific half of a Content record.
+///
+/// One row per social Content. The caption is NOT Content.body and the link
+/// is NOT Content.url: body means "the article", url means "where this page
+/// lives", and the Rewriter, Long-Form and Publishing paths all rely on those
+/// meanings. Keeping the social fields here leaves them intact.
+///
+/// A single base caption for now. Per-platform variations are a later phase
+/// and will attach to SocialPostTarget without changing this row.
+model SocialPost {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  contentId String   @unique @db.Uuid
+  /// The public caption, hashtags included — hashtags are part of the caption
+  /// text rather than a separate system, because that is how they are written
+  /// and how their character cost is counted.
+  caption   String
+  /// An optional outbound link. Validated with the app's existing SSRF guard
+  /// before it is ever stored.
+  link      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  content Content            @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  targets SocialPostTarget[]
+}
+
+/// Phase 6 — which accounts a social post is intended for.
+///
+/// A join, so a post can target several accounts without any column ever
+/// holding a list. Restrict on delete: an account with posts pointing at it
+/// cannot vanish and leave a post targeting nothing.
+model SocialPostTarget {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  socialPostId    String   @db.Uuid
+  socialAccountId String   @db.Uuid
+  /// Phase 7 — this account's own caption, when it differs from the post's
+  /// base caption. NULL means "use the base caption", which is why this could
+  /// be added without touching a single existing row: every target that
+  /// already existed simply inherits, exactly as it did before.
+  caption         String?
+  /// The same idea for the outbound link. NULL inherits the base link.
+  link            String?
+  createdAt       DateTime @default(now())
+
+  socialPost    SocialPost    @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Restrict)
+
+  @@unique([socialPostId, socialAccountId])
+  @@index([socialAccountId])
 }

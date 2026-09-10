@@ -65,6 +65,12 @@ export default function SocialConnectionRow({
   return (
     <div className="flex flex-col gap-2 border-t border-slate-100 pt-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        {/*
+          Labelled to match SocialAvailabilityRow's "CLOUD COMPASS" prefix, so
+          the two facts read as two clearly separate rows rather than one
+          badge with a caption — the whole point of Phase 9C.
+        */}
+        <span className="w-32 shrink-0 text-xs font-medium tracking-wide text-slate-400 uppercase">Connection</span>
         <span className="flex items-center gap-2">
           <span className={`size-2 shrink-0 rounded-full ${dotClass}`} aria-hidden />
           <span className="text-sm font-medium text-slate-700">{connection.label}</span>

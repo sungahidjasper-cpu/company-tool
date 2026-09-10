@@ -1,12 +1,15 @@
 "use client";
 
-import { Check, Pencil, Plus, Power, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import PlatformMark from "@/features/social/components/PlatformMark";
+import SocialAvailabilityRow from "@/features/social/components/SocialAvailabilityRow";
+import SocialConnectionRow from "@/features/social/components/SocialConnectionRow";
+import { buildPlatformSections, canOfferConnect, type PlatformSection } from "@/features/social/components/social-account-manager.logic";
 import {
   addSocialAccountAction,
   removeSocialAccountAction,
@@ -18,35 +21,39 @@ import {
   disconnectSocialAccountAction,
   startSocialConnectionAction,
 } from "@/features/social/actions/social-connection.actions";
-import SocialConnectionRow from "@/features/social/components/SocialConnectionRow";
 import type { SocialAccountSummary } from "@/features/social/schemas/social-account.schema";
 import type { PlatformConnectivity } from "@/features/social/schemas/social-connection.schema";
-import { ALL_PLATFORMS, platformDefinition } from "@/features/social/services/social-platforms";
+import { platformDefinition } from "@/features/social/services/social-platforms";
 import type { SocialPlatform } from "@/lib/generated/prisma/enums";
 
 /**
  * Phase 7 — Settings → Clients → [client] → Social accounts.
  * Phase 9 — and where a real connection is made.
+ * Phase 9C — restructured so CONNECTING is the page's primary workflow and
+ * hand-typing an identity is a clearly secondary, clearly labelled path.
  *
- * The ONLY place a client's social accounts are created, renamed, disabled,
- * removed, connected or disconnected. The composer reads this list and never
- * writes to it, so choosing who to post as and deciding who the client is on
- * a platform stay separate.
+ * WHAT CHANGED, AND WHAT DID NOT. This phase touches presentation only:
+ * every action call below (add/update/remove/setStatus/connect/disconnect/
+ * check) is the exact same Phase 7/9/9B server action, unchanged. The
+ * connection lifecycle, the OAuth flow, the credential handling and the
+ * authorization checks all still live entirely server-side, exactly where
+ * Phase 9B put them. Nothing here duplicates or re-implements any of that.
  *
- * TWO DIFFERENT FACTS, SHOWN SEPARATELY. Every row now states both:
+ * THE STRUCTURE. One section per platform this schema knows about
+ * (ALL_PLATFORMS, via buildPlatformSections) — not one section per account —
+ * so a platform Cloud Compass has never touched for this client is still
+ * visible and still explained, instead of silently not existing until
+ * someone finds the manual form. Each platform with an account shows that
+ * account's Connection state and Cloud Compass availability as two
+ * separately labelled rows (SocialConnectionRow / SocialAvailabilityRow);
+ * each platform WITHOUT one offers Connect where that is genuinely possible,
+ * or an honest sentence where it is not.
  *
- *   Enabled / Disabled   the user's own switch — do we offer this account
- *                        when writing a post?
- *   Connection state     whether Cloud Compass has actually authorized with
- *                        the platform
- *
- * Before Phase 9 a single badge covered both, so typing a handle produced
- * something that looked ready to publish. Adding an account still adds
- * identity only — it now says "Not connected", because that is the truth.
- *
- * NO CREDENTIAL FIELD, STILL. There is no password box and no token box.
- * Connecting hands the person to the platform's own authorization screen and
- * the credential never passes through this component.
+ * THE MANUAL FORM STILL EXISTS, on purpose: it is the only way to configure
+ * a platform this system has no OAuth provider for yet (everything except
+ * Facebook, today), and the only way to preview an account's identity before
+ * authorizing it. It is collapsed behind an explicit toggle and never named
+ * "Connect" — see its own heading below.
  */
 export default function SocialAccountManager({
   clientId,
@@ -61,27 +68,34 @@ export default function SocialAccountManager({
   connectivity: PlatformConnectivity[];
 }) {
   const [accounts, setAccounts] = useState(initialAccounts);
-  const [platform, setPlatform] = useState<SocialPlatform>(ALL_PLATFORMS[0]);
-  const [handle, setHandle] = useState("");
-  const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editHandle, setEditHandle] = useState("");
   const [editDisplayName, setEditDisplayName] = useState("");
   const [isPending, startTransition] = useTransition();
 
-  const definition = platformDefinition(platform);
-  const connectivityByPlatform = new Map(connectivity.map((row) => [row.platform, row]));
+  // The manual-identity form: closed by default so it never competes with
+  // the Connect workflow above it. Opening it may preset a platform, so the
+  // secondary link on a platform's own "not connected" card lands the person
+  // on the right tab rather than the first one alphabetically.
+  const [showManualForm, setShowManualForm] = useState(false);
+  const [manualPlatform, setManualPlatform] = useState<SocialPlatform>("FACEBOOK");
+  const [handle, setHandle] = useState("");
+  const [displayName, setDisplayName] = useState("");
+
+  const manualDefinition = platformDefinition(manualPlatform);
+  const sections = buildPlatformSections(accounts, connectivity);
 
   /**
-   * Starts an authorization. The server decides where to send the person and
-   * returns a URL — this component never builds a provider URL itself, and
-   * never sees an app id or secret.
+   * Starts an authorization for an EXISTING account (a reconnect). The
+   * server decides where to send the person and returns a URL — this
+   * component never builds a provider URL itself, and never sees an app id
+   * or secret.
    *
    * A full navigation, not a fetch: the person is going to Facebook's own
    * consent screen and must see it in their address bar.
    */
-  function connect(account: SocialAccountSummary) {
+  function connectExisting(account: SocialAccountSummary) {
     setError(null);
     startTransition(async () => {
       const result = await startSocialConnectionAction({
@@ -149,19 +163,26 @@ export default function SocialAccountManager({
     });
   }
 
+  function openManualForm(presetPlatform?: SocialPlatform) {
+    setError(null);
+    if (presetPlatform) setManualPlatform(presetPlatform);
+    setShowManualForm(true);
+  }
+
   function add() {
     setError(null);
     startTransition(async () => {
-      const result = await addSocialAccountAction({ clientId, platform, handle, displayName });
+      const result = await addSocialAccountAction({ clientId, platform: manualPlatform, handle, displayName });
       if (!result.success) {
         setError(result.message);
         return;
       }
       const added = result.data;
-      setAccounts((prev) => [...prev.filter((account) => account.id !== added.id), added].sort(compareAccounts));
+      setAccounts((prev) => [...prev.filter((account) => account.id !== added.id), added]);
       setHandle("");
       setDisplayName("");
-      toast.success(`${platformDefinition(added.platform).name} account added`);
+      setShowManualForm(false);
+      toast.success(`${platformDefinition(added.platform).name} account identity added`);
     });
   }
 
@@ -181,9 +202,9 @@ export default function SocialAccountManager({
         return;
       }
       const saved = result.data;
-      setAccounts((prev) => prev.map((account) => (account.id === saved.id ? saved : account)).sort(compareAccounts));
+      setAccounts((prev) => prev.map((account) => (account.id === saved.id ? saved : account)));
       setEditingId(null);
-      toast.success("Account updated");
+      toast.success("Account identity updated");
     });
   }
 
@@ -215,240 +236,326 @@ export default function SocialAccountManager({
     });
   }
 
-  /*
-   * A platform is offered here only when it is genuinely connectable, is
-   * configured on this server, and this client has no account for it yet —
-   * an existing account carries its own Connect action in its row.
-   */
-  const platformsWithAccounts = new Set(accounts.map((account) => account.platform));
-  const connectableWithoutAccount = connectivity.filter(
-    (row) => row.connectable && row.configured && !platformsWithAccounts.has(row.platform)
-  );
-
   return (
     <div className="flex flex-col gap-6">
-      <p className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-        These accounts tell Cloud Compass who {clientName} is on each platform, so a post can be written for the right audience and
-        previewed with the right identity. Adding an account records who they are;{" "}
-        <span className="font-medium text-slate-700">connecting is a separate step that goes through the platform&rsquo;s own
-        authorization</span>. Cloud Compass never asks for a social password, and{" "}
-        <span className="font-medium text-slate-700">nothing is published from here</span>.
-      </p>
+      <div className="flex flex-col gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+        <p>
+          Connect {clientName}&rsquo;s social accounts to Cloud Compass so approved content can eventually be published
+          through the platform.
+        </p>
+        <p className="text-xs text-slate-500">
+          Cloud Compass never asks for a social password, and nothing is published from here — connecting only lets Cloud
+          Compass write posts for the right audience and show the right preview.
+        </p>
+      </div>
 
-      <section className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4">
-        <h2 className="text-sm font-medium text-slate-700">Add an account</h2>
+      {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
-        <div className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium">Platform</span>
-          <div className="flex flex-wrap gap-2">
-            {ALL_PLATFORMS.map((option) => {
-              const optionDefinition = platformDefinition(option);
-              const selected = option === platform;
-              return (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setPlatform(option)}
-                  aria-pressed={selected}
-                  className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-sm transition-colors ${
-                    selected ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 text-slate-600 hover:border-slate-300"
-                  }`}
-                >
-                  <PlatformMark platform={option} size="sm" decorative />
-                  {optionDefinition.name}
-                </button>
-              );
-            })}
-          </div>
-        </div>
+      <section className="flex flex-col gap-3">
+        <h2 className="text-sm font-medium text-slate-700">Social accounts</h2>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="social-handle" className="text-sm font-medium">
-              Handle
-            </label>
-            <Input
-              id="social-handle"
-              value={handle}
-              placeholder={definition.handlePlaceholder}
-              onChange={(event) => setHandle(event.target.value)}
-            />
-            <p className="text-xs text-slate-500">The public handle, exactly as it reads on {definition.name}.</p>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="social-display-name" className="text-sm font-medium">
-              {definition.accountNoun} name <span className="font-normal text-slate-400">(optional)</span>
-            </label>
-            <Input
-              id="social-display-name"
-              value={displayName}
-              placeholder={clientName}
-              onChange={(event) => setDisplayName(event.target.value)}
-            />
-            <p className="text-xs text-slate-500">Shown in the composer and preview when it differs from the handle.</p>
-          </div>
-        </div>
-
-        {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
-
-        <div>
-          <Button type="button" onClick={add} disabled={isPending || handle.trim().length === 0}>
-            <Plus size={15} /> Add {definition.name} {definition.accountNoun.toLowerCase()}
-          </Button>
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-2">
-        <h2 className="text-sm font-medium text-slate-700">
-          Configured accounts {accounts.length > 0 && <span className="font-normal text-slate-400">({accounts.length})</span>}
-        </h2>
-
-        {accounts.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-slate-300 px-4 py-6 text-center text-sm text-slate-500">
-            {clientName} has no social accounts configured yet. Add one above and it becomes selectable in the Social Composer.
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {accounts.map((account) => {
-              const accountDefinition = platformDefinition(account.platform);
-              const isEditing = editingId === account.id;
-              return (
-                <li key={account.id} className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-3">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <PlatformMark platform={account.platform} decorative />
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate text-sm font-medium text-slate-700">{account.displayName ?? account.handle}</span>
-                      <span className="truncate text-xs text-slate-500">
-                        {accountDefinition.name}
-                        {account.displayName ? ` · ${account.handle}` : ""}
-                        {account.targetCount > 0
-                          ? ` · targeted by ${account.targetCount} post${account.targetCount === 1 ? "" : "s"}`
-                          : ""}
-                      </span>
-                    </span>
-                    {/*
-                      The user's own switch, and labelled as nothing more.
-                      "Enabled" used to be the only badge on this row, which is
-                      how it came to be read as "working" — the connection is
-                      stated separately, below.
-                    */}
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                        account.status === "ACTIVE" ? "bg-slate-100 text-slate-600" : "bg-slate-100 text-slate-400"
-                      }`}
-                      title={
-                        account.status === "ACTIVE"
-                          ? "Available to choose when writing a post"
-                          : "Not offered for new posts"
-                      }
-                    >
-                      {account.status === "ACTIVE" ? "Enabled" : "Disabled"}
-                    </span>
-
-                    {!isEditing && (
-                      <span className="flex items-center gap-1.5">
-                        <Button type="button" variant="outline" size="sm" onClick={() => beginEdit(account)} disabled={isPending}>
-                          <Pencil size={14} /> Edit
-                        </Button>
-                        <Button type="button" variant="outline" size="sm" onClick={() => toggleStatus(account)} disabled={isPending}>
-                          <Power size={14} /> {account.status === "ACTIVE" ? "Disable" : "Enable"}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => remove(account)}
-                          disabled={isPending}
-                          aria-label={`Remove ${account.handle}`}
-                        >
-                          <Trash2 size={14} />
-                        </Button>
-                      </span>
-                    )}
-                  </div>
-
-                  <SocialConnectionRow
-                    account={account}
-                    connectivity={connectivityByPlatform.get(account.platform)}
-                    isPending={isPending}
-                    onConnect={() => connect(account)}
-                    onDisconnect={() => disconnect(account)}
-                    onCheck={() => check(account)}
-                  />
-
-                  {isEditing && (
-                    <div className="grid gap-3 border-t border-slate-100 pt-3 sm:grid-cols-2">
-                      <div className="flex flex-col gap-1.5">
-                        <label htmlFor={`handle-${account.id}`} className="text-xs font-medium text-slate-600">
-                          Handle
-                        </label>
-                        <Input id={`handle-${account.id}`} value={editHandle} onChange={(event) => setEditHandle(event.target.value)} />
-                      </div>
-                      <div className="flex flex-col gap-1.5">
-                        <label htmlFor={`name-${account.id}`} className="text-xs font-medium text-slate-600">
-                          {accountDefinition.accountNoun} name
-                        </label>
-                        <Input
-                          id={`name-${account.id}`}
-                          value={editDisplayName}
-                          onChange={(event) => setEditDisplayName(event.target.value)}
-                        />
-                      </div>
-                      <div className="flex items-center gap-2 sm:col-span-2">
-                        <Button type="button" size="sm" onClick={() => saveEdit(account.id)} disabled={isPending}>
-                          <Check size={14} /> Save
-                        </Button>
-                        <Button type="button" variant="outline" size="sm" onClick={() => setEditingId(null)} disabled={isPending}>
-                          <X size={14} /> Cancel
-                        </Button>
-                        <span className="text-xs text-slate-500">
-                          The platform cannot be changed — add a separate account instead, so existing posts keep pointing where they
-                          were sent.
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
+        <ul className="flex flex-col gap-3">
+          {sections.map((section) =>
+            section.accounts.length > 0 ? (
+              section.accounts.map((account) => (
+                <AccountCard
+                  key={account.id}
+                  account={account}
+                  connectivity={section.connectivity}
+                  isEditing={editingId === account.id}
+                  isPending={isPending}
+                  editHandle={editHandle}
+                  editDisplayName={editDisplayName}
+                  onEditHandleChange={setEditHandle}
+                  onEditDisplayNameChange={setEditDisplayName}
+                  onBeginEdit={() => beginEdit(account)}
+                  onSaveEdit={() => saveEdit(account.id)}
+                  onCancelEdit={() => setEditingId(null)}
+                  onRemove={() => remove(account)}
+                  onToggleStatus={() => toggleStatus(account)}
+                  onConnect={() => connectExisting(account)}
+                  onDisconnect={() => disconnect(account)}
+                  onCheck={() => check(account)}
+                />
+              ))
+            ) : (
+              <NoAccountCard
+                key={section.platform}
+                section={section}
+                isPending={isPending}
+                onConnect={() => connectPlatform(section.platform)}
+                onAddIdentity={() => openManualForm(section.platform)}
+              />
+            )
+          )}
+        </ul>
       </section>
 
       {/*
-        Connecting a platform this client has no account for at all. Only
-        platforms that can genuinely be connected AND are configured here
-        appear — an unconfigured platform is described in the accounts above
-        rather than offered as a button that leads nowhere.
+        De-emphasised on purpose — see the file comment. Never labelled
+        "Connect": nothing here talks to a platform, and the disclaimer says
+        so before the form itself does.
       */}
-      {connectableWithoutAccount.length > 0 && (
-        <section className="flex flex-col gap-2">
-          <h2 className="text-sm font-medium text-slate-700">Connect a platform</h2>
-          <p className="text-xs text-slate-500">
-            Authorize through the platform and choose which {clientName} page to use. The account is created from what the
-            platform reports, so its identity is the real one.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {connectableWithoutAccount.map((row) => (
-              <Button
-                key={row.platform}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => connectPlatform(row.platform)}
-                disabled={isPending}
-              >
-                <PlatformMark platform={row.platform} size="sm" decorative />
-                Connect {platformDefinition(row.platform).name}
+      <section className="flex flex-col gap-3 rounded-lg border border-dashed border-slate-200 p-4">
+        <button
+          type="button"
+          onClick={() => setShowManualForm((prev) => !prev)}
+          aria-expanded={showManualForm}
+          className="flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-700"
+        >
+          {showManualForm ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+          Add an account for preview
+        </button>
+
+        {showManualForm && (
+          <div className="flex flex-col gap-3">
+            <p className="text-xs text-slate-500">
+              This records the account identity in Cloud Compass — a name and a handle so a post can be previewed with the
+              right identity. It does <span className="font-medium text-slate-700">not</span> connect the external
+              platform; use Connect on a platform above for that.
+            </p>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium">Platform</span>
+              <div className="flex flex-wrap gap-2">
+                {sections.map(({ platform }) => {
+                  const optionDefinition = platformDefinition(platform);
+                  const selected = platform === manualPlatform;
+                  return (
+                    <button
+                      key={platform}
+                      type="button"
+                      onClick={() => setManualPlatform(platform)}
+                      aria-pressed={selected}
+                      className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-sm transition-colors ${
+                        selected ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 text-slate-600 hover:border-slate-300"
+                      }`}
+                    >
+                      <PlatformMark platform={platform} size="sm" decorative />
+                      {optionDefinition.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="social-handle" className="text-sm font-medium">
+                  Handle
+                </label>
+                <Input
+                  id="social-handle"
+                  value={handle}
+                  placeholder={manualDefinition.handlePlaceholder}
+                  onChange={(event) => setHandle(event.target.value)}
+                />
+                <p className="text-xs text-slate-500">The public handle, exactly as it reads on {manualDefinition.name}.</p>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="social-display-name" className="text-sm font-medium">
+                  {manualDefinition.accountNoun} name <span className="font-normal text-slate-400">(optional)</span>
+                </label>
+                <Input
+                  id="social-display-name"
+                  value={displayName}
+                  placeholder={clientName}
+                  onChange={(event) => setDisplayName(event.target.value)}
+                />
+                <p className="text-xs text-slate-500">Shown in the composer and preview when it differs from the handle.</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button type="button" onClick={add} disabled={isPending || handle.trim().length === 0}>
+                <Plus size={15} /> Add account identity
               </Button>
-            ))}
+              <Button type="button" variant="ghost" size="sm" onClick={() => setShowManualForm(false)} disabled={isPending}>
+                Cancel
+              </Button>
+            </div>
           </div>
-        </section>
-      )}
+        )}
+      </section>
     </div>
   );
 }
 
-function compareAccounts(a: SocialAccountSummary, b: SocialAccountSummary): number {
-  return a.platform === b.platform ? a.handle.localeCompare(b.handle) : a.platform.localeCompare(b.platform);
+/** One existing account: identity, Connection, Cloud Compass availability, and secondary identity actions. */
+function AccountCard({
+  account,
+  connectivity,
+  isEditing,
+  isPending,
+  editHandle,
+  editDisplayName,
+  onEditHandleChange,
+  onEditDisplayNameChange,
+  onBeginEdit,
+  onSaveEdit,
+  onCancelEdit,
+  onRemove,
+  onToggleStatus,
+  onConnect,
+  onDisconnect,
+  onCheck,
+}: {
+  account: SocialAccountSummary;
+  connectivity: PlatformConnectivity | undefined;
+  isEditing: boolean;
+  isPending: boolean;
+  editHandle: string;
+  editDisplayName: string;
+  onEditHandleChange: (value: string) => void;
+  onEditDisplayNameChange: (value: string) => void;
+  onBeginEdit: () => void;
+  onSaveEdit: () => void;
+  onCancelEdit: () => void;
+  onRemove: () => void;
+  onToggleStatus: () => void;
+  onConnect: () => void;
+  onDisconnect: () => void;
+  onCheck: () => void;
+}) {
+  const accountDefinition = platformDefinition(account.platform);
+
+  return (
+    <li className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <PlatformMark platform={account.platform} decorative />
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate text-sm font-medium text-slate-700">{account.displayName ?? account.handle}</span>
+          <span className="truncate text-xs text-slate-500">
+            {accountDefinition.name}
+            {account.displayName ? ` · ${account.handle}` : ""}
+            {account.targetCount > 0 ? ` · targeted by ${account.targetCount} post${account.targetCount === 1 ? "" : "s"}` : ""}
+          </span>
+        </span>
+
+        {/* Secondary, small — identity editing is not the primary action on this card. */}
+        {!isEditing && (
+          <span className="flex items-center gap-1.5">
+            <Button type="button" variant="ghost" size="sm" onClick={onBeginEdit} disabled={isPending}>
+              <Pencil size={13} /> Edit identity
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onRemove}
+              disabled={isPending}
+              aria-label={`Remove ${account.handle}`}
+            >
+              <Trash2 size={13} />
+            </Button>
+          </span>
+        )}
+      </div>
+
+      <SocialConnectionRow
+        account={account}
+        connectivity={connectivity}
+        isPending={isPending}
+        onConnect={onConnect}
+        onDisconnect={onDisconnect}
+        onCheck={onCheck}
+      />
+
+      <SocialAvailabilityRow account={account} isPending={isPending} onToggle={onToggleStatus} />
+
+      {isEditing && (
+        <div className="grid gap-3 border-t border-slate-100 pt-3 sm:grid-cols-2">
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor={`handle-${account.id}`} className="text-xs font-medium text-slate-600">
+              Handle
+            </label>
+            <Input id={`handle-${account.id}`} value={editHandle} onChange={(event) => onEditHandleChange(event.target.value)} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor={`name-${account.id}`} className="text-xs font-medium text-slate-600">
+              {accountDefinition.accountNoun} name
+            </label>
+            <Input
+              id={`name-${account.id}`}
+              value={editDisplayName}
+              onChange={(event) => onEditDisplayNameChange(event.target.value)}
+            />
+          </div>
+          <div className="flex items-center gap-2 sm:col-span-2">
+            <Button type="button" size="sm" onClick={onSaveEdit} disabled={isPending}>
+              <Check size={14} /> Save
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={onCancelEdit} disabled={isPending}>
+              <X size={14} /> Cancel
+            </Button>
+            <span className="text-xs text-slate-500">
+              The platform cannot be changed — add a separate account instead, so existing posts keep pointing where they were
+              sent.
+            </span>
+          </div>
+        </div>
+      )}
+    </li>
+  );
+}
+
+/**
+ * A platform this client has no account on yet.
+ *
+ * Every platform ALL_PLATFORMS knows about gets one of these, whether or not
+ * it can be connected today — the point is that a person can SEE Instagram
+ * exists as a platform without first discovering the manual form. The
+ * primary action is Connect wherever that can genuinely work; everywhere
+ * else, an honest sentence takes its place.
+ */
+function NoAccountCard({
+  section,
+  isPending,
+  onConnect,
+  onAddIdentity,
+}: {
+  section: PlatformSection;
+  isPending: boolean;
+  onConnect: () => void;
+  onAddIdentity: () => void;
+}) {
+  const definition = platformDefinition(section.platform);
+  const canConnect = canOfferConnect(section.connectivity);
+  const unavailableReason = section.connectivity
+    ? section.connectivity.summary
+    : `Connecting ${definition.name} is not available yet.`;
+
+  return (
+    <li className="flex flex-col gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/50 p-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <PlatformMark platform={section.platform} decorative />
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="text-sm font-medium text-slate-700">{definition.name}</span>
+          <span className="flex items-center gap-1.5 text-xs text-slate-500">
+            <span className="size-2 shrink-0 rounded-full bg-slate-300" aria-hidden />
+            Not connected — no {definition.accountNoun.toLowerCase()} configured for this client yet
+          </span>
+        </span>
+
+        {canConnect && (
+          <Button type="button" size="sm" onClick={onConnect} disabled={isPending}>
+            <Plus size={14} /> Connect {definition.name}
+          </Button>
+        )}
+      </div>
+
+      {!canConnect && (
+        <p className="text-xs text-slate-500">
+          {unavailableReason}
+          {section.connectivity && section.connectivity.missingKeys.length > 0 && (
+            <span className="text-slate-400"> Set {section.connectivity.missingKeys.join(" and ")} to enable it.</span>
+          )}
+        </p>
+      )}
+
+      <button type="button" onClick={onAddIdentity} className="w-fit text-xs text-slate-500 underline hover:text-slate-700">
+        Add an account identity for preview instead
+      </button>
+    </li>
+  );
 }

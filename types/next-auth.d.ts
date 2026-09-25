@@ -8,6 +8,8 @@ declare module "next-auth" {
     role: UserRole;
     companyId: string;
     avatar: string | null;
+    /** Not exposed on Session.user — only ever read/written on the JWT, see jwt callback in auth.config.ts. */
+    securityVersion: number;
   }
 
   interface Session {
@@ -23,5 +25,7 @@ declare module "next-auth/jwt" {
     role: UserRole;
     companyId: string;
     avatar: string | null;
+    /** Compared against the live User.securityVersion on every getServerSession() call; a mismatch invalidates the session. */
+    securityVersion: number;
   }
 }

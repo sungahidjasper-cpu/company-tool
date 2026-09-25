@@ -197,8 +197,14 @@ describe("changePassword", () => {
     expect(mockedHashPassword).toHaveBeenCalledWith("NewPassword456");
     expect(mockedPrisma.user.update).toHaveBeenCalledWith({
       where: { id: ACTOR.id },
-      data: { passwordHash: "freshly-hashed-value" },
+      data: { passwordHash: "freshly-hashed-value", securityVersion: { increment: 1 } },
     });
+  });
+
+  it("8b. [session security] increments securityVersion in the same update — matches resetPassword's session-invalidation behavior, so both password-changing paths kill every other session", async () => {
+    await changePassword(VALID_PASSWORD_INPUT);
+    const [{ data }] = mockedPrisma.user.update.mock.calls[0];
+    expect(data.securityVersion).toEqual({ increment: 1 });
   });
 
   it("9. logs user.password_changed for the actor's own company/user", async () => {

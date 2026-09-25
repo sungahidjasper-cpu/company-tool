@@ -91,7 +91,11 @@ export async function changePassword(
   const passwordHash = await hashPassword(parsed.data.newPassword);
   await prisma.user.update({
     where: { id: actor.id },
-    data: { passwordHash },
+    // securityVersion increment matches resetPassword()'s behavior
+    // (features/auth/services/password-reset.service.ts) — both
+    // password-changing paths must invalidate every other session, not just
+    // this browser's.
+    data: { passwordHash, securityVersion: { increment: 1 } },
   });
 
   await logActivity({

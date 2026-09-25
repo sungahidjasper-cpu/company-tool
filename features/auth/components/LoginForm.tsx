@@ -2,6 +2,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { signIn } from "next-auth/react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Controller, useForm } from "react-hook-form";
@@ -85,6 +86,9 @@ export default function LoginForm() {
             {errors.password.message}
           </p>
         )}
+        <Link href="/forgot-password" className="self-start text-sm text-slate-500 hover:underline">
+          Forgot your password?
+        </Link>
       </div>
 
       <Controller

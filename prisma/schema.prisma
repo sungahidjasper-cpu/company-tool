@@ -336,6 +336,13 @@ model User {
   role            UserRole   @default(EMPLOYEE)
   status          UserStatus @default(INVITED)
   lastLoginAt     DateTime?
+  /// Bumped whenever every previously issued session/JWT for this user must
+  /// be treated as invalid (password reset, password change) — compared
+  /// against the value embedded in the JWT on every getServerSession() call
+  /// (see auth.config.ts's jwt callback). A mismatch (or a missing/deleted
+  /// user) makes NextAuth discard the session, so no database-backed session
+  /// store is needed to support this.
+  securityVersion Int        @default(0)
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
   deletedAt       DateTime?
@@ -370,9 +377,30 @@ model User {
   createdContentRevisions      ContentRevision[]      @relation("ContentRevisionCreatedBy")
   addedKnowledgeSources        KnowledgeSource[]      @relation("KnowledgeSourceAddedBy")
   createdKnowledgeSourceLinks  KnowledgeSourceLink[]  @relation("KnowledgeSourceLinkCreatedBy")
+  passwordResetTokens          PasswordResetToken[]
 
   @@index([companyId, status])
   @@index([deletedAt])
+}
+
+/// A single pending (or already-consumed) password reset request. Kept as
+/// its own model rather than fields on User, the same way every other
+/// short-lived, single-purpose fact about a user is modeled in this schema —
+/// only ever one row matters per user at a time (see the "invalidate the
+/// previous pending token" behavior in password-reset.service.ts), but old
+/// rows are kept for audit rather than deleted. Only a hash of the raw token
+/// is ever stored — the raw value exists only in the emailed reset URL.
+model PasswordResetToken {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 // ---------------------------------------------------------------------------

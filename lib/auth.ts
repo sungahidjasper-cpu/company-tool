@@ -61,6 +61,7 @@ export const authOptions: NextAuthOptions = {
           role: user.role,
           companyId: user.companyId,
           avatar: user.avatar,
+          securityVersion: user.securityVersion,
         };
       },
     }),

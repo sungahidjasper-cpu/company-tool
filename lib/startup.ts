@@ -1,5 +1,6 @@
 import { describeProviderConfiguration, type ProviderConfigurationStatus } from "@/lib/ai/providers/registry";
 import { isKnownModel } from "@/lib/ai/providers/pricing";
+import { isEmailConfigured } from "@/lib/email/email.service";
 import { logger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -161,6 +162,17 @@ export async function runStartupChecks(): Promise<void> {
     logger.info("Startup: Ollama reachability check", { reachable: ollama.reachable, host: process.env.OLLAMA_HOST });
   }
 
+  // Never logs RESEND_API_KEY or EMAIL_FROM_ADDRESS themselves — only
+  // whether they're present. Not required to start: password reset
+  // requests still succeed with a generic response even when email sending
+  // is unconfigured (see requestPasswordReset), so this is a warning, not
+  // a startup failure.
+  const emailConfigured = isEmailConfigured();
+  logger.info("Startup: email service configuration", {
+    configured: emailConfigured,
+    reason: emailConfigured ? "RESEND_API_KEY and EMAIL_FROM_ADDRESS are set" : "RESEND_API_KEY and/or EMAIL_FROM_ADDRESS are missing",
+  });
+
   const reapedCount = await reapStaleRunningJobs();
   if (reapedCount > 0) {
     logger.warn("Startup: reaped stale RUNNING website analysis jobs", { count: reapedCount });
@@ -182,6 +194,7 @@ export async function runStartupChecks(): Promise<void> {
   if (ollama.checked && !ollama.reachable) warnings.push(`OLLAMA_HOST is set (${process.env.OLLAMA_HOST}) but not reachable.`);
   if (unrecognizedProviderNames.length > 0) warnings.push(`LLM_PROVIDER_ORDER contains unrecognized name(s): ${unrecognizedProviderNames.join(", ")}`);
   warnings.push(...unrecognizedModelWarnings);
+  if (!emailConfigured) warnings.push("Email sending is not configured (RESEND_API_KEY / EMAIL_FROM_ADDRESS) — password reset emails will fail until configured.");
 
   if (process.env.NODE_ENV === "development" && warnings.length > 0) {
     console.warn(

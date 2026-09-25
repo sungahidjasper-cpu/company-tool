@@ -18,6 +18,17 @@ import { generateMetaTagSuggestions } from "@/features/ai-workspace/services/met
 import { generateContentRewrite } from "@/features/ai-workspace/services/content-rewriter.service";
 import { generatePressRelease } from "@/features/ai-workspace/services/press-release-generator.service";
 import { generateContentGapAnalysis, extractContentGapsFromAudit, extractContentClustersFromAudit, extractCrawledPageTitles } from "@/features/ai-workspace/services/content-gap-analysis.service";
+import { generateTopicClusterPlan } from "@/features/ai-workspace/services/topic-cluster-planner.service";
+import { generateEmailNewsletter } from "@/features/ai-workspace/services/email-newsletter.service";
+import { generateImageAltText } from "@/features/ai-workspace/services/image-alt-text.service";
+import { generateContentCalendar } from "@/features/ai-workspace/services/content-calendar.service";
+import { getOwnedKeywordCluster } from "@/features/ai-workspace/services/content-calendar.repository";
+import { buildScheduleSlots, checkDateRange, MAX_CALENDAR_ENTRIES } from "@/features/ai-workspace/schemas/content-calendar.schema";
+import { getProjectImage } from "@/features/ai-workspace/services/project-image-inventory";
+import { generateCompetitorContentAnalysis, type CompetitorCrawlEvidence } from "@/features/ai-workspace/services/competitor-content-analysis.service";
+import { crawlWebsite } from "@/features/seo/services/website-crawler.service";
+import { assertSafePublicUrl } from "@/features/publishing/services/ssrf-guard.service";
+import { getBrandProfileByCompanyId } from "@/features/companies/services/brand-profile.service";
 import { contentBriefOutputSchema, type ContentBriefOutput } from "@/features/ai-workspace/schemas/content-brief.schema";
 import { externalSourceSchema, faqItemSchema, normalizeArray, normalizeInternalLinkSuggestions } from "@/features/ai-workspace/schemas/content-brief-output-builder";
 import { contentBriefSettingsSchema, type ContentBriefSettings } from "@/features/ai-workspace/schemas/content-brief-settings.schema";
@@ -31,6 +42,11 @@ import {
   validateContentRewriterJobInput,
   validatePressReleaseGeneratorJobInput,
   validateContentGapAnalysisJobInput,
+  validateTopicClusterPlannerJobInput,
+  validateCompetitorContentAnalysisJobInput,
+  validateEmailNewsletterJobInput,
+  validateImageAltTextJobInput,
+  validateContentCalendarJobInput,
 } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 import { listContentInventoryForProject } from "@/features/seo/services/content.service";
 
@@ -181,6 +197,10 @@ async function dispatchContentDraft(job: DispatchJob, onChunk?: (event: StreamEv
     if (!brief) throw new Error("This content has no saved brief to generate an article from.");
     const firstKeyword = content.keywords[0];
     const keyword = firstKeyword ? { term: firstKeyword.term, intent: firstKeyword.intent } : null;
+
+    if (!content.seoProject) {
+      throw new Error("This content has no SEO project, so there is no site context to generate an article against.");
+    }
 
     const article = await generateLongFormContent(
       {
@@ -440,6 +460,162 @@ async function dispatchPressReleaseGenerator(job: DispatchJob, onChunk?: (event:
  * read-only, for the existing-coverage cross-reference only — nothing here
  * writes to Content or creates a ContentRevision.
  */
+/**
+ * The tenth AI Workspace tool. Every id is re-resolved here from the job row
+ * rather than trusted from inputJson: the project is looked up and matched
+ * against the job own companyId, and keyword/cluster/content records are
+ * loaded scoped to that project with soft-deleted rows excluded. The seed
+ * topic is user text and is passed through as such.
+ *
+ * Reads only — no Content, Keyword or KeywordCluster row is created or
+ * modified by this task.
+ */
+/**
+ * The eleventh AI Workspace tool.
+ *
+ * The competitor crawl happens here rather than in the action because it is
+ * slow — up to three sites, each sampled by the shared crawler — and the
+ * job/stream machinery exists for exactly that. The action has already
+ * validated and pinned each origin; this re-runs the SSRF guard immediately
+ * before fetching anyway, so a stored job row can never become a way to reach
+ * an internal address.
+ *
+ * No second crawler is introduced: crawlWebsite is the same robots-respecting,
+ * sitemap-aware, page-limited crawler Website Analysis uses, with its limits
+ * untouched.
+ *
+ * Reads only — no Content, Keyword, KeywordCluster or Brand Profile row is
+ * created or modified.
+ */
+async function dispatchCompetitorContentAnalysis(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const parsed = validateCompetitorContentAnalysisJobInput(job.inputJson);
+  if (!parsed.success) throw new Error(parsed.message);
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
+  if (!seoProject) throw new Error("SEO project not found.");
+  // Defence in depth behind the action's own checks.
+  if (seoProject.companyId !== job.companyId) throw new Error("SEO project not found.");
+  if (seoProject.deletedAt) throw new Error("This SEO project has been archived.");
+
+  const evidence: CompetitorCrawlEvidence[] = [];
+  for (const competitor of parsed.data.competitors) {
+    // Re-validated immediately before the fetch — never trusted from the job row.
+    await assertSafePublicUrl(competitor.origin);
+
+    const crawl = await crawlWebsite(competitor.origin);
+    evidence.push({
+      origin: competitor.origin,
+      source: competitor.source,
+      robotsTxtFound: crawl.robotsTxtFound,
+      warnings: crawl.warnings,
+      pages: crawl.pages.map((page) => ({
+        url: page.url,
+        title: page.title,
+        metaDescription: page.metaDescription,
+        headings: page.headings,
+        bodyText: page.bodyText,
+      })),
+    });
+  }
+
+  const totalPages = evidence.reduce((sum, site) => sum + site.pages.length, 0);
+  if (totalPages === 0) {
+    // A crawl problem must not be reported as an AI problem.
+    const warnings = evidence.flatMap((site) => site.warnings).join(" ");
+    throw new Error(`No pages could be read from the competitor site(s) supplied. ${warnings}`.trim());
+  }
+
+  const [content, keywords, brandProfile] = await Promise.all([
+    prisma.content.findMany({
+      where: { seoProjectId: seoProject.id, deletedAt: null },
+      select: { title: true },
+      orderBy: { title: "asc" },
+      take: 200,
+    }),
+    prisma.keyword.findMany({
+      where: { seoProjectId: seoProject.id, deletedAt: null },
+      select: { term: true },
+      orderBy: { term: "asc" },
+      take: 100,
+    }),
+    getBrandProfileByCompanyId(job.companyId),
+  ]);
+
+  const result = await generateCompetitorContentAnalysis(
+    {
+      seoProjectId: seoProject.id,
+      companyId: job.companyId,
+      seoProjectName: seoProject.name,
+      domain: seoProject.domain,
+      targetTopic: parsed.data.targetTopic,
+      notes: parsed.data.notes,
+      evidence,
+      existingTitles: content.map((c) => c.title),
+      keywordTerms: keywords.map((k) => k.term),
+      brandName: brandProfile?.brandName ?? null,
+      targetAudience: brandProfile?.targetAudience ?? null,
+    },
+    onChunk
+  );
+
+  return { result } as unknown as Prisma.InputJsonValue;
+}
+
+async function dispatchTopicClusterPlanning(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const parsed = validateTopicClusterPlannerJobInput(job.inputJson);
+  if (!parsed.success) throw new Error(parsed.message);
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
+  if (!seoProject) throw new Error("SEO project not found.");
+  // Defence in depth behind the action own check: a job must never reach
+  // another company project, and an archived project is not plannable.
+  if (seoProject.companyId !== job.companyId) throw new Error("SEO project not found.");
+  if (seoProject.deletedAt) throw new Error("This SEO project has been archived.");
+
+  const [keywords, clusters, content] = await Promise.all([
+    prisma.keyword.findMany({
+      where: {
+        seoProjectId: seoProject.id,
+        deletedAt: null,
+        ...(parsed.data.keywordIds.length > 0 ? { id: { in: parsed.data.keywordIds } } : {}),
+      },
+      select: { term: true },
+      orderBy: { term: "asc" },
+      take: 100,
+    }),
+    prisma.keywordCluster.findMany({
+      where: { seoProjectId: seoProject.id, deletedAt: null },
+      select: { name: true },
+      orderBy: { name: "asc" },
+      take: 50,
+    }),
+    prisma.content.findMany({
+      where: { seoProjectId: seoProject.id, deletedAt: null },
+      select: { title: true },
+      orderBy: { title: "asc" },
+      take: 200,
+    }),
+  ]);
+
+  const result = await generateTopicClusterPlan(
+    {
+      seoProjectId: seoProject.id,
+      companyId: job.companyId,
+      seoProjectName: seoProject.name,
+      domain: seoProject.domain,
+      seedTopic: parsed.data.seedTopic,
+      audience: parsed.data.audience,
+      notes: parsed.data.notes,
+      keywordTerms: keywords.map((k) => k.term),
+      clusterNames: clusters.map((c) => c.name),
+      existingTitles: content.map((c) => c.title),
+    },
+    onChunk
+  );
+
+  return { result } as unknown as Prisma.InputJsonValue;
+}
+
 async function dispatchContentGapAnalysis(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
   const parsed = validateContentGapAnalysisJobInput(job.inputJson);
   if (!parsed.success) throw new Error(parsed.message);
@@ -492,6 +668,183 @@ async function dispatchContentGapAnalysis(job: DispatchJob, onChunk?: (event: St
  * CONTENT_GAP_ANALYSIS added as the third through ninth AI Workspace tools,
  * following this exact same additive pattern.
  */
+/**
+ * The twelfth AI Workspace tool's dispatcher. Ownership of seoProjectId and
+ * contentId was already verified by startEmailNewsletterAction before this
+ * job existed — this dispatcher re-verifies both anyway (defence in depth
+ * behind the action's own checks, the same discipline
+ * dispatchCompetitorContentAnalysis follows) and re-fetches the
+ * authoritative Content row rather than trusting anything about it from
+ * job.inputJson, which carries only ids and the user's own text.
+ *
+ * Drafting only: nothing here writes to Content, creates a ContentRevision,
+ * or touches any email/delivery system — none exists.
+ */
+async function dispatchEmailNewsletter(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const parsed = validateEmailNewsletterJobInput(job.inputJson);
+  if (!parsed.success) throw new Error(parsed.message);
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
+  if (!seoProject) throw new Error("SEO project not found.");
+  if (seoProject.companyId !== job.companyId) throw new Error("SEO project not found.");
+  if (seoProject.deletedAt) throw new Error("This SEO project has been archived.");
+
+  const sourceContent = await prisma.content.findUnique({
+    where: { id: parsed.data.contentId },
+    select: { title: true, url: true, metaDescription: true, body: true, seoProjectId: true, deletedAt: true },
+  });
+  if (!sourceContent) throw new Error("Content not found.");
+  if (sourceContent.seoProjectId !== seoProject.id) throw new Error("Content not found for this SEO project.");
+  if (sourceContent.deletedAt) throw new Error("This content record has been moved to trash.");
+
+  const result = await generateEmailNewsletter(
+    {
+      seoProjectId: seoProject.id,
+      companyId: job.companyId,
+      seoProjectName: seoProject.name,
+      domain: seoProject.domain,
+      sourceContent: {
+        title: sourceContent.title,
+        url: sourceContent.url,
+        metaDescription: sourceContent.metaDescription,
+        body: sourceContent.body,
+      },
+      audience: parsed.data.audience,
+      callToAction: parsed.data.callToAction,
+      campaignAngle: parsed.data.campaignAngle,
+      additionalContext: parsed.data.additionalContext,
+      notes: parsed.data.notes,
+    },
+    onChunk
+  );
+  return { result } as unknown as Prisma.InputJsonValue;
+}
+
+/**
+ * The thirteenth AI Workspace tool's dispatcher.
+ *
+ * Ownership of seoProjectId and fileId was already verified by
+ * startImageAltTextAction before this job existed; both are re-verified here
+ * anyway (defence in depth behind the action's own checks), and the File row
+ * is RE-READ through the same project-scoped query the action used rather
+ * than trusting anything about it from job.inputJson, which carries only ids
+ * and the user's own words.
+ *
+ * The provider architecture is TEXT-ONLY — no image data is fetched, read or
+ * sent anywhere. Review-only: nothing here writes to File or Content.
+ */
+async function dispatchImageAltText(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const parsed = validateImageAltTextJobInput(job.inputJson);
+  if (!parsed.success) throw new Error(parsed.message);
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
+  if (!seoProject) throw new Error("SEO project not found.");
+  if (seoProject.companyId !== job.companyId) throw new Error("SEO project not found.");
+  if (seoProject.deletedAt) throw new Error("This SEO project has been archived.");
+
+  const image = await getProjectImage(parsed.data.fileId, seoProject.id);
+  if (!image) throw new Error("Image not found for this SEO project.");
+
+  const result = await generateImageAltText(
+    {
+      seoProjectId: seoProject.id,
+      companyId: job.companyId,
+      seoProjectName: seoProject.name,
+      domain: seoProject.domain,
+      source: {
+        fileName: image.fileName,
+        mimeType: image.mimeType,
+        contentTitle: image.content?.title ?? null,
+        contentMetaDescription: image.content?.metaDescription ?? null,
+      },
+      imageDescription: parsed.data.imageDescription ?? "",
+      additionalContext: parsed.data.additionalContext,
+    },
+    onChunk
+  );
+  return { result } as unknown as Prisma.InputJsonValue;
+}
+
+/**
+ * The fourteenth AI Workspace tool's dispatcher.
+ *
+ * Everything the schedule is grounded in is re-read here from the database,
+ * scoped to the server-resolved project: the keywords, the existing page
+ * titles and the chosen cluster. The date range is re-validated and the
+ * publishing slots recomputed, so the model is told how many slots exist but
+ * never gets to choose a date.
+ *
+ * Generation only — the reviewed schedule is persisted later, and only when
+ * the user explicitly saves it.
+ */
+async function dispatchContentCalendar(job: DispatchJob, onChunk?: (event: StreamEvent) => void): Promise<Prisma.InputJsonValue> {
+  const parsed = validateContentCalendarJobInput(job.inputJson);
+  if (!parsed.success) throw new Error(parsed.message);
+
+  const seoProject = await prisma.sEOProject.findUnique({ where: { id: parsed.data.seoProjectId } });
+  if (!seoProject) throw new Error("SEO project not found.");
+  if (seoProject.companyId !== job.companyId) throw new Error("SEO project not found.");
+  if (seoProject.deletedAt) throw new Error("This SEO project has been archived.");
+
+  const range = checkDateRange(parsed.data.startDate, parsed.data.endDate);
+  if (!range.ok) throw new Error(range.message);
+
+  const slots = buildScheduleSlots(range.range, parsed.data.cadence, MAX_CALENDAR_ENTRIES);
+  if (slots.length === 0) {
+    throw new Error("That date range and rhythm leave no publishing dates. Choose a longer range or a more frequent rhythm.");
+  }
+
+  let clusterName: string | null = null;
+  let clusterKeywordTerms: string[] = [];
+  if (parsed.data.keywordClusterId) {
+    const cluster = await getOwnedKeywordCluster(parsed.data.keywordClusterId, seoProject.id);
+    if (!cluster) throw new Error("Topic cluster not found for this SEO project.");
+    clusterName = cluster.name;
+    clusterKeywordTerms = cluster.keywords.map((keyword) => keyword.term);
+  }
+
+  const [keywords, contentRows] = await Promise.all([
+    prisma.keyword.findMany({
+      where: { seoProjectId: seoProject.id, deletedAt: null },
+      select: { id: true, term: true, intent: true },
+      orderBy: { term: "asc" },
+    }),
+    prisma.content.findMany({
+      where: { seoProjectId: seoProject.id, deletedAt: null },
+      select: { title: true },
+      orderBy: { title: "asc" },
+    }),
+  ]);
+
+  const userTopics = (parsed.data.userTopics ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(0, MAX_CALENDAR_ENTRIES);
+
+  const result = await generateContentCalendar(
+    {
+      seoProjectId: seoProject.id,
+      companyId: job.companyId,
+      seoProjectName: seoProject.name,
+      domain: seoProject.domain,
+      calendarName: parsed.data.name,
+      range: range.range,
+      cadence: parsed.data.cadence,
+      slotCount: slots.length,
+      keywords: keywords.map((keyword) => ({ id: keyword.id, term: keyword.term, intent: keyword.intent })),
+      existingContentTitles: contentRows.map((row) => row.title),
+      clusterName,
+      clusterKeywordTerms,
+      userTopics,
+      audience: parsed.data.audience,
+      notes: parsed.data.notes,
+    },
+    onChunk
+  );
+  return { result } as unknown as Prisma.InputJsonValue;
+}
+
 const TASK_HANDLERS: Partial<Record<AiTaskType, TaskHandler>> = {
   CONTENT_BRIEF: dispatchContentBrief,
   CONTENT_DRAFT: dispatchContentDraft,
@@ -502,6 +855,11 @@ const TASK_HANDLERS: Partial<Record<AiTaskType, TaskHandler>> = {
   CONTENT_REWRITE: dispatchContentRewriter,
   PRESS_RELEASE_GENERATION: dispatchPressReleaseGenerator,
   CONTENT_GAP_ANALYSIS: dispatchContentGapAnalysis,
+  TOPIC_CLUSTER_PLANNING: dispatchTopicClusterPlanning,
+  COMPETITOR_CONTENT_ANALYSIS: dispatchCompetitorContentAnalysis,
+  EMAIL_NEWSLETTER: dispatchEmailNewsletter,
+  IMAGE_ALT_TEXT: dispatchImageAltText,
+  CONTENT_CALENDAR: dispatchContentCalendar,
 };
 
 /**

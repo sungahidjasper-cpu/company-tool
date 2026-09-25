@@ -17,6 +17,16 @@ import { socialSnippetGeneratorInputSchema, type SocialSnippetGeneratorInput } f
 async function getOwnedSeoProject(seoProjectId: string, companyId: string) {
   const seoProject = await prisma.sEOProject.findUnique({ where: { id: seoProjectId } });
   if (!seoProject || seoProject.companyId !== companyId) return null;
+  /*
+   * C4.5 — a TRASHED project is rejected, the rule the other three connected
+   * tools already enforce (schema-markup, content-rewriter, meta-tag-optimizer).
+   * The picker lists only live projects and the C4 contextual action hides
+   * itself for a trashed one, but neither is the boundary: this is.
+   *
+   * Truthy rather than `!== null`: a fixture or caller may omit the field
+   * entirely, and `undefined !== null` would wrongly reject a live project.
+   */
+  if (seoProject.deletedAt) return null;
   return seoProject;
 }
 
@@ -26,7 +36,12 @@ async function getOwnedContent(contentId: string, companyId: string) {
     where: { id: contentId },
     include: { seoProject: { select: { companyId: true } } },
   });
-  if (!content || content.seoProject.companyId !== companyId) return null;
+  if (!content || content.companyId !== companyId) return null;
+  // C4.5 — a trashed page is not a promotable page. The route excludes
+  // soft-deleted rows from its own list, but the server is the boundary.
+  // (The project MATCH is asserted by the caller, which compares
+  // content.seoProjectId against the already-verified project.)
+  if (content.deletedAt) return null;
   return content;
 }
 

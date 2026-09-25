@@ -78,6 +78,7 @@ export async function getSocialPostForContent(contentId: string, companyId: stri
       id: true,
       caption: true,
       link: true,
+      firstComment: true,
       content: {
         select: {
           id: true,
@@ -98,7 +99,23 @@ export async function getSocialPostForContent(contentId: string, companyId: stri
        * composer reopen a post with each platform's tab exactly as it was
        * left — customized ones customized, inheriting ones still following.
        */
-      targets: { select: { socialAccountId: true, caption: true, link: true } },
+      targets: {
+        select: {
+          id: true,
+          socialAccountId: true,
+          caption: true,
+          link: true,
+          firstComment: true,
+          /*
+           * Phase 10A — the real outcome of the one real publish attempt this
+           * target may have had, if any. Read straight through, never derived:
+           * "PUBLISHED" here means a provider already confirmed it.
+           */
+          publication: { select: { status: true, externalPostId: true, externalUrl: true, failureMessage: true } },
+          /* First Comment — this target's own comment-publishing result, if a publish was ever attempted. */
+          comment: { select: { status: true, externalCommentId: true, failureMessage: true } },
+        },
+      },
     },
   });
   if (!post || post.content.companyId !== companyId) return null;

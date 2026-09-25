@@ -90,6 +90,8 @@ enum ContentType {
   SOCIAL_POST
   BLOG_POST
   SEO_CONTENT
+  NEWSLETTER
+  PRESS_RELEASE
 }
 
 enum ContentStatus {
@@ -248,6 +250,7 @@ model Company {
   aiUsageLogs           AiUsageLog[]
   publishingConnections PublishingConnection[]
   socialOAuthStates     SocialOAuthState[]
+  userInvitations       UserInvitation[]
   publishingJobs        PublishingJob[]
   contentPublications   ContentPublication[]
   contentRevisions      ContentRevision[]
@@ -368,6 +371,7 @@ model User {
   ownedSeoProjects             SEOProject[]           @relation("SeoProjectOwner")
   ownedKeywords                Keyword[]              @relation("KeywordOwner")
   authoredContent              Content[]              @relation("ContentAuthor")
+  createdContentCalendars      ContentCalendar[]      @relation("ContentCalendarCreatedBy")
   aiConversations              AIConversation[]
   generatedReports             Report[]               @relation("ReportGeneratedBy")
   startedAiGenerationJobs      AiGenerationJob[]      @relation("AiGenerationJobCreatedBy")
@@ -378,6 +382,9 @@ model User {
   addedKnowledgeSources        KnowledgeSource[]      @relation("KnowledgeSourceAddedBy")
   createdKnowledgeSourceLinks  KnowledgeSourceLink[]  @relation("KnowledgeSourceLinkCreatedBy")
   passwordResetTokens          PasswordResetToken[]
+  /// The reverse side of UserInvitation.invitedBy — required by Prisma for
+  /// that relation to validate, not a new piece of data about User itself.
+  sentInvitations              UserInvitation[]       @relation("UserInvitationInvitedBy")
 
   @@index([companyId, status])
   @@index([deletedAt])
@@ -401,6 +408,36 @@ model PasswordResetToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+/// A pending invitation for someone who is not yet a User. Deliberately NOT
+/// linked via a userId — unlike PasswordResetToken (which always points at an
+/// already-existing account), no User row exists for the invitee until they
+/// accept, so companyId/email/firstName/lastName/role are stored here because
+/// there is nothing yet to reference; they're copied onto the new User row at
+/// acceptance. Same token-hashing/expiry/single-use shape as
+/// PasswordResetToken otherwise. revokedAt exists for a future Revoke
+/// Invitation feature — always null in this MVP, but already checked by
+/// acceptInvitation() so revocation takes effect immediately once built.
+model UserInvitation {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  companyId   String    @db.Uuid
+  email       String
+  firstName   String
+  lastName    String
+  role        UserRole
+  invitedById String?   @db.Uuid
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invitedBy User?   @relation("UserInvitationInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([email])
 }
 
 // ---------------------------------------------------------------------------
@@ -825,6 +862,7 @@ model SEOProject {
   aiUsageLogs          AiUsageLog[]
   aiGenerationJobs     AiGenerationJob[]
   knowledgeSourceLinks KnowledgeSourceLink[]
+  contentCalendars     ContentCalendar[]
 
   @@index([companyId, status])
   @@index([clientId])
@@ -842,6 +880,7 @@ model KeywordCluster {
 
   seoProject      SEOProject             @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
   keywords        Keyword[]
+  calendarEntries ContentCalendarEntry[]
 
   @@index([seoProjectId])
   @@index([deletedAt])
@@ -868,6 +907,7 @@ model Keyword {
   cluster         KeywordCluster?        @relation(fields: [clusterId], references: [id], onDelete: SetNull)
   owner           User?                  @relation("KeywordOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   content         Content[]
+  calendarEntries ContentCalendarEntry[]
 
   @@unique([seoProjectId, term])
   @@index([clusterId])
@@ -1020,6 +1060,7 @@ model Content {
   publishingJobs      PublishingJob[]
   contentPublications ContentPublication[]
   revisions           ContentRevision[]
+  calendarEntries     ContentCalendarEntry[]
   /// Phase 6 — present only when this Content record IS a social post.
   /// Its presence is the discriminator: no contentType column was added,
   /// so every pre-existing row keeps its honest "type not recorded" state.
@@ -1257,6 +1298,49 @@ enum AiTaskType {
   /// supplied). Generate-and-display only, never persisted — no Content row
   /// is ever created or modified, and no ContentRevision is ever involved.
   CONTENT_GAP_ANALYSIS
+  /// The tenth AI Workspace tool — plans a pillar/supporting topic cluster
+  /// from a user-supplied seed topic, grounded in the project own real
+  /// Keyword, KeywordCluster and Content records where they exist. Never
+  /// invents search volume, difficulty, ranking or traffic figures (none is
+  /// supplied), and never asserts keyword/content identity itself: existing
+  /// coverage and keyword association are computed deterministically in
+  /// code. Generate-and-display only — no Content, Keyword or
+  /// KeywordCluster row is ever created or modified by this task.
+  TOPIC_CLUSTER_PLANNING
+  /// The eleventh AI Workspace tool — analyses a competitor site the user
+  /// names, using the SAME robots-respecting crawler Website Analysis already
+  /// uses, and compares what was actually observed against this project own
+  /// Content. Never invents a competitor page, URL, ranking, traffic figure or
+  /// any other metric: page urls and titles come from the crawl, existing
+  /// coverage is computed in code, and the model only classifies and
+  /// recommends. Generate-and-display only — nothing is persisted beyond the
+  /// AiGenerationJob result.
+  COMPETITOR_CONTENT_ANALYSIS
+  /// The twelfth AI Workspace tool — drafts an email newsletter from ONE
+  /// existing Content row the user selects, plus their own optional
+  /// audience/CTA/angle input and Brand Profile context. Never invents a
+  /// statistic, customer result, testimonial, price, discount, date, award
+  /// or performance claim: everything it writes is a rewrite or
+  /// organisation of the supplied source text. Drafting only — it never
+  /// sends email, never connects to an email provider, never creates a
+  /// campaign, and persists nothing beyond the AiGenerationJob result.
+  EMAIL_NEWSLETTER
+  /// The thirteenth AI Workspace tool — writes accessible alt text for an
+  /// image already in the File inventory. The provider architecture is
+  /// TEXT-ONLY: the model never sees the image, so the user's own written
+  /// description is the authoritative evidence of what the image shows, and
+  /// the tool never claims to have inspected, viewed or read anything in the
+  /// picture. Review-only — File carries no altText column and nothing here
+  /// writes to File or Content.
+  IMAGE_ALT_TEXT
+  /// The fourteenth AI Workspace tool — proposes an ordered content schedule
+  /// for a date range, grounded in the project's real Keyword, KeywordCluster
+  /// and Content records. The model never supplies a date, a Content id or a
+  /// Keyword id: it proposes topics and their ORDER, and the application
+  /// computes every calendar date deterministically from the user's range and
+  /// cadence. Unlike the other recent tools this one has an explicit,
+  /// user-approved save step.
+  CONTENT_CALENDAR
 }
 
 /// Phase 11C — one row per provider attempt (success or failure), for cost/
@@ -1633,6 +1717,110 @@ model Report {
   @@index([deletedAt])
 }
 
+/// How a calendar entry relates to the rest of the plan. Kept explicit so a
+/// pillar page and its supporting pieces are never confused with one another,
+/// which is what makes the overlap warnings meaningful.
+enum CalendarEntryRole {
+  PILLAR
+  SUPPORTING
+  RELATED
+}
+
+/// The page shape a calendar entry is planned as. Mirrors the Topic Cluster
+/// Planner's own content-type vocabulary so a cluster hand-off maps across
+/// without translation, plus OTHER for anything with no honest equivalent.
+enum CalendarContentType {
+  ARTICLE
+  GUIDE
+  LANDING_PAGE
+  FAQ_PAGE
+  CASE_STUDY
+  COMPARISON
+  OTHER
+}
+
+/// Where a planned piece has actually got to. Deliberately distinct from
+/// ContentStatus: this tracks the PLAN, and an entry is never moved to
+/// PUBLISHED just because its date has passed or because it appears on a
+/// calendar — only a real publishing outcome or an explicit user action does
+/// that.
+enum CalendarEntryStatus {
+  PLANNED
+  BRIEF_CREATED
+  DRAFT
+  IN_PROGRESS
+  PUBLISHED
+  COMPLETED
+}
+
+/// A saved content schedule for one SEO project.
+///
+/// No companyId column: ownership derives through seoProject, exactly as
+/// Content, Keyword and KeywordCluster already do, so there is only one place
+/// company ownership can be decided. Soft-deleted with deletedAt to match
+/// every other record in this application.
+model ContentCalendar {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  seoProjectId String    @db.Uuid
+  createdById  String?   @db.Uuid
+  name         String
+  /// Inclusive range the calendar covers. Both are date-only in meaning; the
+  /// application normalises to UTC midnight so a stored date never shifts
+  /// across timezones.
+  startDate    DateTime
+  endDate      DateTime
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  seoProject SEOProject             @relation(fields: [seoProjectId], references: [id], onDelete: Cascade)
+  createdBy  User?                  @relation("ContentCalendarCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  entries    ContentCalendarEntry[]
+
+  @@index([seoProjectId, deletedAt])
+  @@index([deletedAt])
+}
+
+/// One planned piece of content on a calendar.
+///
+/// contentId / keywordId / keywordClusterId are all optional links to REAL
+/// project records, verified project-scoped before any write — the AI never
+/// supplies them. No AI reasoning is stored: the schedule itself is the
+/// product, and the reasoning is a review aid that has no use once the user
+/// has approved the plan.
+model ContentCalendarEntry {
+  id               String              @id @default(uuid(7)) @db.Uuid
+  calendarId       String              @db.Uuid
+  contentId        String?             @db.Uuid
+  keywordId        String?             @db.Uuid
+  keywordClusterId String?             @db.Uuid
+  /// Always inside the parent calendar's range, normalised to UTC midnight,
+  /// and computed by the application — never taken from model output.
+  scheduledDate    DateTime
+  topic            String
+  contentType      CalendarContentType @default(OTHER)
+  role             CalendarEntryRole   @default(RELATED)
+  status           CalendarEntryStatus @default(PLANNED)
+  notes            String?
+  /// Stable display order for entries sharing one date.
+  sortOrder        Int                 @default(0)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  deletedAt        DateTime?
+
+  calendar       ContentCalendar @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  content        Content?        @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  keyword        Keyword?        @relation(fields: [keywordId], references: [id], onDelete: SetNull)
+  keywordCluster KeywordCluster? @relation(fields: [keywordClusterId], references: [id], onDelete: SetNull)
+
+  @@index([calendarId, scheduledDate])
+  @@index([contentId])
+  @@index([keywordId])
+  @@index([keywordClusterId])
+  @@index([deletedAt])
+}
+
 /// Phase 6 — the platforms a social account can belong to.
 ///
 /// A definition of what is POSSIBLE, never a claim about what is connected.
@@ -1872,6 +2060,12 @@ model SocialPost {
   /// An optional outbound link. Validated with the app's existing SSRF guard
   /// before it is ever stored.
   link      String?
+  /// First Comment — the shared base text for a comment published right after
+  /// the post itself, on the platforms that support it. NULL means no first
+  /// comment is intended, exactly the same "absent means nothing to do" rule
+  /// `link` already uses. This is what to publish; SocialComment (below)
+  /// records what actually happened when publishing was attempted.
+  firstComment String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1895,11 +2089,113 @@ model SocialPostTarget {
   caption         String?
   /// The same idea for the outbound link. NULL inherits the base link.
   link            String?
+  /// The same idea for the first comment. NULL inherits the post's shared
+  /// first comment (which may itself be null, meaning no comment at all).
+  firstComment    String?
   createdAt       DateTime @default(now())
 
-  socialPost    SocialPost    @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
-  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Restrict)
+  socialPost    SocialPost         @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount      @relation(fields: [socialAccountId], references: [id], onDelete: Restrict)
+  /// Phase 10A — this target's own, independent publication attempt. One
+  /// platform's failure must never read as another platform's success, which
+  /// is exactly why this lives per-target rather than on SocialPost itself.
+  publication   SocialPublication?
+  /// First Comment — this target's own, independent comment-publishing
+  /// attempt. A SEPARATE model from SocialPublication on purpose: the two
+  /// lifecycles are genuinely independent (a comment can fail while the post
+  /// stays PUBLISHED, and a comment retry must never touch the post's own
+  /// status), the same reasoning that already separates SocialAccount from
+  /// SocialAccountCredential.
+  comment       SocialComment?
 
   @@unique([socialPostId, socialAccountId])
   @@index([socialAccountId])
+}
+
+/// Phase 10A — whether, and how, one target was actually published.
+///
+/// PROCESSING sits between PUBLISHING and PUBLISHED for providers whose API
+/// accepts a request before the content is actually live (async upload,
+/// TikTok/YouTube-style) — this app's own rule is that PUBLISHED means the
+/// provider has confirmed it, never merely that a request was accepted.
+enum SocialPublicationStatus {
+  DRAFT
+  QUEUED
+  PUBLISHING
+  PROCESSING
+  PUBLISHED
+  FAILED
+}
+
+/// One publication attempt for one SocialPostTarget. @unique on
+/// socialPostTargetId — a retry replaces this row's status rather than
+/// accumulating a second attempt, so "the current truth about this target"
+/// is always exactly one row.
+///
+/// NO CREDENTIAL LIVES HERE. This records the OUTCOME of a publish call, not
+/// how it authenticated — that stays in SocialAccountCredential, one hop
+/// away through socialPostTarget.socialAccount, so a publication record can
+/// be read (audit, UI) without ever being anywhere near a decryptable token.
+model SocialPublication {
+  id                 String                  @id @default(uuid(7)) @db.Uuid
+  socialPostTargetId String                  @unique @db.Uuid
+  status             SocialPublicationStatus @default(DRAFT)
+  /// The provider's own id for the thing it created. Public identity, not a secret.
+  externalPostId     String?
+  /// The public permalink, only ever set from a value the PROVIDER returned
+  /// (e.g. Meta's own permalink_url) — never constructed from a guessed
+  /// URL pattern.
+  externalUrl        String?
+  publishedAt        DateTime?
+  /// A short, stable machine code for the failure kind (e.g. "PROVIDER_REJECTED"),
+  /// for anything that needs to branch on it without parsing prose.
+  failureCode        String?
+  /// One safe sentence for a person to read. Never the provider's raw body —
+  /// same discipline as ProviderFailure.message elsewhere in this feature.
+  failureMessage     String?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  socialPostTarget SocialPostTarget @relation(fields: [socialPostTargetId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
+
+/// First Comment — whether, and how, one target's first comment was actually
+/// published. Mirrors SocialPublicationStatus's own shape and reasoning: no
+/// row at all means no comment was ever requested for this target; a row
+/// exists only once a publish attempt is actually made.
+enum SocialCommentStatus {
+  PENDING
+  PUBLISHING
+  PUBLISHED
+  FAILED
+}
+
+/// One comment-publishing attempt for one SocialPostTarget. @unique on
+/// socialPostTargetId, same reasoning as SocialPublication: a retry replaces
+/// this row's status rather than accumulating a second attempt, so a retry,
+/// refresh, or repeated Publish Now click can never create a duplicate
+/// comment — a row already PUBLISHED with a real externalCommentId is reused,
+/// never re-submitted to Meta.
+///
+/// NO CREDENTIAL LIVES HERE, same discipline as SocialPublication.
+model SocialComment {
+  id                 String              @id @default(uuid(7)) @db.Uuid
+  socialPostTargetId String              @unique @db.Uuid
+  status             SocialCommentStatus @default(PENDING)
+  /// The provider's own id for the comment it created. Public identity, not a secret.
+  externalCommentId  String?
+  publishedAt        DateTime?
+  /// A short, stable machine code for the failure kind, same convention as
+  /// SocialPublication.failureCode.
+  failureCode        String?
+  /// One safe sentence for a person to read. Never the provider's raw body.
+  failureMessage     String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  socialPostTarget SocialPostTarget @relation(fields: [socialPostTargetId], references: [id], onDelete: Cascade)
+
+  @@index([status])
 }

@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     sEOProject: { findUnique: vi.fn() },
-    keyword: { findUnique: vi.fn() },
+    keyword: { findUnique: vi.fn(), findMany: vi.fn() },
     content: { findUnique: vi.fn(), findMany: vi.fn() },
+    keywordCluster: { findMany: vi.fn() },
     websiteAnalysisJob: { findUnique: vi.fn() },
   },
 }));
@@ -43,6 +44,20 @@ vi.mock("@/features/ai-workspace/services/press-release-generator.service", () =
  * tests exercise the dispatcher's actual reading of WebsiteAnalysisJob.resultJson
  * (the part unique to this tool) rather than a stubbed stand-in for it.
  */
+vi.mock("@/features/seo/services/website-crawler.service", () => ({ crawlWebsite: vi.fn() }));
+vi.mock("@/features/publishing/services/ssrf-guard.service", () => ({ assertSafePublicUrl: vi.fn() }));
+vi.mock("@/features/companies/services/brand-profile.service", () => ({ getBrandProfileByCompanyId: vi.fn() }));
+vi.mock("@/features/ai-workspace/services/competitor-content-analysis.service", () => ({
+  generateCompetitorContentAnalysis: vi.fn(),
+}));
+vi.mock("@/features/ai-workspace/services/email-newsletter.service", () => ({ generateEmailNewsletter: vi.fn() }));
+vi.mock("@/features/ai-workspace/services/image-alt-text.service", () => ({ generateImageAltText: vi.fn() }));
+vi.mock("@/features/ai-workspace/services/content-calendar.service", () => ({ generateContentCalendar: vi.fn() }));
+vi.mock("@/features/ai-workspace/services/project-image-inventory", () => ({ getProjectImage: vi.fn() }));
+vi.mock("@/features/ai-workspace/services/content-calendar.repository", () => ({ getOwnedKeywordCluster: vi.fn() }));
+vi.mock("@/features/ai-workspace/services/topic-cluster-planner.service", () => ({
+  generateTopicClusterPlan: vi.fn(),
+}));
 vi.mock("@/features/ai-workspace/services/content-gap-analysis.service", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/features/ai-workspace/services/content-gap-analysis.service")>()),
   generateContentGapAnalysis: vi.fn(),
@@ -67,6 +82,16 @@ import { generateMetaTagSuggestions } from "@/features/ai-workspace/services/met
 import { generateContentRewrite } from "@/features/ai-workspace/services/content-rewriter.service";
 import { generatePressRelease } from "@/features/ai-workspace/services/press-release-generator.service";
 import { generateContentGapAnalysis } from "@/features/ai-workspace/services/content-gap-analysis.service";
+import { generateTopicClusterPlan } from "@/features/ai-workspace/services/topic-cluster-planner.service";
+import { generateEmailNewsletter } from "@/features/ai-workspace/services/email-newsletter.service";
+import { generateImageAltText } from "@/features/ai-workspace/services/image-alt-text.service";
+import { getProjectImage } from "@/features/ai-workspace/services/project-image-inventory";
+import { generateContentCalendar } from "@/features/ai-workspace/services/content-calendar.service";
+import { getOwnedKeywordCluster } from "@/features/ai-workspace/services/content-calendar.repository";
+import { generateCompetitorContentAnalysis } from "@/features/ai-workspace/services/competitor-content-analysis.service";
+import { crawlWebsite } from "@/features/seo/services/website-crawler.service";
+import { assertSafePublicUrl } from "@/features/publishing/services/ssrf-guard.service";
+import { getBrandProfileByCompanyId } from "@/features/companies/services/brand-profile.service";
 import { listContentInventoryForProject } from "@/features/seo/services/content.service";
 import { LlmProviderError } from "@/lib/ai/providers/errors";
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
@@ -74,6 +99,11 @@ import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
 const mockFindSeoProject = vi.mocked(prisma.sEOProject.findUnique);
 const mockFindKeyword = vi.mocked(prisma.keyword.findUnique);
 const mockFindContent = vi.mocked(prisma.content.findUnique);
+const mockGenerateEmailNewsletter = vi.mocked(generateEmailNewsletter);
+const mockGenerateImageAltText = vi.mocked(generateImageAltText);
+const mockGetProjectImage = vi.mocked(getProjectImage);
+const mockGenerateContentCalendar = vi.mocked(generateContentCalendar);
+const mockGetOwnedKeywordCluster = vi.mocked(getOwnedKeywordCluster);
 const mockMarkRunning = vi.mocked(markAiGenerationJobRunning);
 const mockMarkSucceeded = vi.mocked(markAiGenerationJobSucceeded);
 const mockMarkFailed = vi.mocked(markAiGenerationJobFailed);
@@ -90,6 +120,13 @@ const mockFindWebsiteAnalysisJob = vi.mocked(prisma.websiteAnalysisJob.findUniqu
 const mockFindManyContent = vi.mocked(prisma.content.findMany);
 const mockListContentInventory = vi.mocked(listContentInventoryForProject);
 const mockUpdatePartialText = vi.mocked(updateAiGenerationJobPartialText);
+const mockGenerateTopicClusterPlan = vi.mocked(generateTopicClusterPlan);
+const mockFindManyKeyword = vi.mocked(prisma.keyword.findMany);
+const mockFindManyKeywordCluster = vi.mocked(prisma.keywordCluster.findMany);
+const mockGenerateCompetitorAnalysis = vi.mocked(generateCompetitorContentAnalysis);
+const mockCrawlWebsite = vi.mocked(crawlWebsite);
+const mockAssertSafePublicUrl = vi.mocked(assertSafePublicUrl);
+const mockGetBrandProfile = vi.mocked(getBrandProfileByCompanyId);
 
 const SEO_PROJECT = { id: "project-1", name: "Acme SEO", domain: "acme.example" };
 
@@ -1278,5 +1315,713 @@ describe("runAiGenerationJob — CONTENT_GAP_ANALYSIS", () => {
 
     expect(mockMarkSucceeded).not.toHaveBeenCalled();
     expect(mockMarkFailed).toHaveBeenCalledWith("job-gap-9", expect.any(String), "TIMEOUT");
+  });
+});
+
+/**
+ * The tenth AI Workspace tool's dispatcher.
+ *
+ * Every id is re-resolved here from the job row rather than trusted from
+ * inputJson, so these tests cover the boundary the action's own tests cannot:
+ * a job that somehow names another company's project, or an archived one, must
+ * never reach the generator — and the project data it loads must be scoped to
+ * that project with soft-deleted rows excluded.
+ */
+/** The id carried in the stored job input. */
+const TC_PROJECT_ID = "00000000-0000-4000-8000-0000000000f0";
+/** The id of the project the dispatcher actually resolves — deliberately different, so the tests prove which one is used. */
+const RESOLVED_PROJECT_ID = SEO_PROJECT.id;
+
+describe("runAiGenerationJob — TOPIC_CLUSTER_PLANNING", () => {
+  const PLAN_INPUT = { seoProjectId: TC_PROJECT_ID, seedTopic: "self storage investing", keywordIds: [] };
+  const PLAN_RESULT = { seedTopic: "self storage investing", clusters: [], existingClusterNames: [] };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFindManyKeyword.mockResolvedValue([] as never);
+    mockFindManyKeywordCluster.mockResolvedValue([] as never);
+    mockFindManyContent.mockResolvedValue([] as never);
+  });
+
+  it("dispatches with the SERVER-resolved project and marks the job SUCCEEDED", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-tc1", companyId: "company-1", taskType: "TOPIC_CLUSTER_PLANNING", inputJson: PLAN_INPUT } as never);
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockGenerateTopicClusterPlan.mockResolvedValue(PLAN_RESULT as never);
+
+    await runAiGenerationJob("job-tc1");
+
+    expect(mockGenerateTopicClusterPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        // The SERVER-RESOLVED project's id, not the id carried in inputJson.
+        seoProjectId: RESOLVED_PROJECT_ID,
+        companyId: "company-1",
+        seoProjectName: "Acme SEO",
+        domain: "acme.example",
+        seedTopic: "self storage investing",
+      }),
+      undefined
+    );
+    // The id from inputJson must never be what the generator receives.
+    expect(mockGenerateTopicClusterPlan.mock.calls[0][0].seoProjectId).not.toBe(TC_PROJECT_ID);
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-tc1", { result: PLAN_RESULT });
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY — a project belonging to ANOTHER company never reaches the generator", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-tc2", companyId: "company-1", taskType: "TOPIC_CLUSTER_PLANNING", inputJson: PLAN_INPUT } as never);
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-OTHER", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-tc2");
+
+    expect(mockGenerateTopicClusterPlan).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("SECURITY — a SOFT-DELETED project never reaches the generator", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-tc3", companyId: "company-1", taskType: "TOPIC_CLUSTER_PLANNING", inputJson: PLAN_INPUT } as never);
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: new Date("2026-08-12") } as never);
+
+    await runAiGenerationJob("job-tc3");
+
+    expect(mockGenerateTopicClusterPlan).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("SECURITY — keywords, clusters and content are all loaded scoped to the job's own project, excluding soft-deleted rows", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-tc4", companyId: "company-1", taskType: "TOPIC_CLUSTER_PLANNING", inputJson: PLAN_INPUT } as never);
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockGenerateTopicClusterPlan.mockResolvedValue(PLAN_RESULT as never);
+
+    await runAiGenerationJob("job-tc4");
+
+    for (const mock of [mockFindManyKeyword, mockFindManyKeywordCluster, mockFindManyContent]) {
+      expect(mock).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ seoProjectId: RESOLVED_PROJECT_ID, deletedAt: null }) })
+      );
+    }
+  });
+
+  it("narrows to the selected keyword ids when the user chose some", async () => {
+    const keywordId = "00000000-0000-4000-8000-00000000ae01";
+    mockMarkRunning.mockResolvedValue({
+      id: "job-tc5",
+      companyId: "company-1",
+      taskType: "TOPIC_CLUSTER_PLANNING",
+      inputJson: { ...PLAN_INPUT, keywordIds: [keywordId] },
+    } as never);
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockGenerateTopicClusterPlan.mockResolvedValue(PLAN_RESULT as never);
+
+    await runAiGenerationJob("job-tc5");
+
+    expect(mockFindManyKeyword).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ seoProjectId: RESOLVED_PROJECT_ID, id: { in: [keywordId] } }) })
+    );
+  });
+
+  it("a malformed stored job input fails the job rather than reaching the generator", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-tc6", companyId: "company-1", taskType: "TOPIC_CLUSTER_PLANNING", inputJson: { seedTopic: "" } } as never);
+
+    await runAiGenerationJob("job-tc6");
+
+    expect(mockGenerateTopicClusterPlan).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+});
+
+/**
+ * The eleventh AI Workspace tool's dispatcher — where the competitor crawl
+ * actually happens.
+ *
+ * The critical property is that the SSRF guard runs immediately before every
+ * fetch, so a stored job row can never become a way to reach an internal
+ * address, and a crawl problem is reported as a crawl problem rather than as
+ * an AI problem.
+ */
+describe("runAiGenerationJob — COMPETITOR_CONTENT_ANALYSIS", () => {
+  const COMPETITOR_INPUT = {
+    seoProjectId: TC_PROJECT_ID,
+    competitors: [{ origin: "https://competitor.com", source: "USER" }],
+  };
+  const ANALYSIS_RESULT = { targetTopic: null, competitors: [], opportunities: [] };
+  const CRAWL = {
+    pages: [{ url: "https://competitor.com/x", title: "X", metaDescription: null, headings: [], bodyText: "body" }],
+    robotsTxtFound: true,
+    warnings: [],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFindManyKeyword.mockResolvedValue([] as never);
+    mockFindManyContent.mockResolvedValue([] as never);
+    mockGetBrandProfile.mockResolvedValue(null as never);
+    mockAssertSafePublicUrl.mockResolvedValue({ hostname: "competitor.com", port: 443, pinnedIp: "1.1.1.1", pinnedFamily: 4 } as never);
+    mockCrawlWebsite.mockResolvedValue(CRAWL as never);
+  });
+
+  it("SSRF — the guard runs on the stored origin BEFORE the crawler is ever called", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-cc1", companyId: "company-1", taskType: "COMPETITOR_CONTENT_ANALYSIS", inputJson: COMPETITOR_INPUT } as never);
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockGenerateCompetitorAnalysis.mockResolvedValue(ANALYSIS_RESULT as never);
+
+    await runAiGenerationJob("job-cc1");
+
+    expect(mockAssertSafePublicUrl).toHaveBeenCalledWith("https://competitor.com");
+    expect(mockAssertSafePublicUrl.mock.invocationCallOrder[0]).toBeLessThan(mockCrawlWebsite.mock.invocationCallOrder[0]);
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-cc1", { result: ANALYSIS_RESULT });
+  });
+
+  it("SSRF — an unsafe origin fails the job and the crawler is NEVER called", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-cc2", companyId: "company-1", taskType: "COMPETITOR_CONTENT_ANALYSIS", inputJson: COMPETITOR_INPUT } as never);
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockAssertSafePublicUrl.mockRejectedValue(new Error("The destination URL may not point to localhost."));
+
+    await runAiGenerationJob("job-cc2");
+
+    expect(mockCrawlWebsite).not.toHaveBeenCalled();
+    expect(mockGenerateCompetitorAnalysis).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("CRAWLER — reuses crawlWebsite and passes its observations through unchanged", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-cc3", companyId: "company-1", taskType: "COMPETITOR_CONTENT_ANALYSIS", inputJson: COMPETITOR_INPUT } as never);
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockGenerateCompetitorAnalysis.mockResolvedValue(ANALYSIS_RESULT as never);
+
+    await runAiGenerationJob("job-cc3");
+
+    expect(mockCrawlWebsite).toHaveBeenCalledWith("https://competitor.com");
+    const ctx = mockGenerateCompetitorAnalysis.mock.calls[0][0];
+    expect(ctx.evidence).toEqual([
+      expect.objectContaining({ origin: "https://competitor.com", source: "USER", robotsTxtFound: true, pages: CRAWL.pages }),
+    ]);
+  });
+
+  it("CRAWLER — a crawl that returns no pages fails with a CRAWL message, not an AI one", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-cc4", companyId: "company-1", taskType: "COMPETITOR_CONTENT_ANALYSIS", inputJson: COMPETITOR_INPUT } as never);
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockCrawlWebsite.mockResolvedValue({ pages: [], robotsTxtFound: false, warnings: ["robots.txt not found or unreachable."] } as never);
+
+    await runAiGenerationJob("job-cc4");
+
+    expect(mockGenerateCompetitorAnalysis).not.toHaveBeenCalled();
+    const message = String(mockMarkFailed.mock.calls[0][1]);
+    expect(message).toMatch(/No pages could be read from the competitor site/i);
+    expect(message).not.toMatch(/AI response/i);
+  });
+
+  it("CRAWLER — a crawler throw (timeout/network) fails the job without reaching the model", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-cc5", companyId: "company-1", taskType: "COMPETITOR_CONTENT_ANALYSIS", inputJson: COMPETITOR_INPUT } as never);
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockCrawlWebsite.mockRejectedValue(new Error("The operation was aborted due to timeout"));
+
+    await runAiGenerationJob("job-cc5");
+
+    expect(mockGenerateCompetitorAnalysis).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("SECURITY — a project belonging to ANOTHER company never reaches the crawler", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-cc6", companyId: "company-1", taskType: "COMPETITOR_CONTENT_ANALYSIS", inputJson: COMPETITOR_INPUT } as never);
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-OTHER", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-cc6");
+
+    expect(mockAssertSafePublicUrl).not.toHaveBeenCalled();
+    expect(mockCrawlWebsite).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("SECURITY — a SOFT-DELETED project never reaches the crawler", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-cc7", companyId: "company-1", taskType: "COMPETITOR_CONTENT_ANALYSIS", inputJson: COMPETITOR_INPUT } as never);
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: new Date("2026-08-12") } as never);
+
+    await runAiGenerationJob("job-cc7");
+
+    expect(mockCrawlWebsite).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("SECURITY — project Content and Keywords are loaded scoped to this project, excluding soft-deleted rows", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-cc8", companyId: "company-1", taskType: "COMPETITOR_CONTENT_ANALYSIS", inputJson: COMPETITOR_INPUT } as never);
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockGenerateCompetitorAnalysis.mockResolvedValue(ANALYSIS_RESULT as never);
+
+    await runAiGenerationJob("job-cc8");
+
+    for (const mock of [mockFindManyContent, mockFindManyKeyword]) {
+      expect(mock).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ seoProjectId: RESOLVED_PROJECT_ID, deletedAt: null }) })
+      );
+    }
+  });
+
+  it("a malformed stored job input fails without crawling anything", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-cc9", companyId: "company-1", taskType: "COMPETITOR_CONTENT_ANALYSIS", inputJson: { competitors: [] } } as never);
+
+    await runAiGenerationJob("job-cc9");
+
+    expect(mockAssertSafePublicUrl).not.toHaveBeenCalled();
+    expect(mockCrawlWebsite).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+});
+
+/**
+ * The twelfth AI Workspace tool's dispatcher.
+ *
+ * The properties that matter here are that ownership is re-verified from the
+ * STORED job row (so a job cannot be replayed against a project or page the
+ * actor no longer owns), that the Content row is RE-FETCHED rather than read
+ * out of job.inputJson, and that nothing is ever written back to Content.
+ */
+describe("runAiGenerationJob — EMAIL_NEWSLETTER", () => {
+  const NEWSLETTER_INPUT = { seoProjectId: TC_PROJECT_ID, contentId: "00000000-0000-4000-8000-0000000000c1" };
+  const CONTENT_ROW = {
+    title: "How Self Storage Investing Works",
+    url: "https://acme.example/guide",
+    metaDescription: "An introduction.",
+    body: "Facilities earn from monthly unit rentals.",
+    seoProjectId: SEO_PROJECT.id,
+    deletedAt: null,
+  };
+  const NEWSLETTER_RESULT = {
+    subjectLine: "S",
+    previewText: "P",
+    headline: "H",
+    introduction: "I",
+    bodySections: [{ heading: "A", body: "B" }],
+    callToAction: "",
+    closing: "",
+    reasoning: "R",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFindContent.mockResolvedValue(CONTENT_ROW as never);
+    mockGenerateEmailNewsletter.mockResolvedValue(NEWSLETTER_RESULT as never);
+  });
+
+  function runningJob(id: string) {
+    mockMarkRunning.mockResolvedValue({ id, companyId: "company-1", taskType: "EMAIL_NEWSLETTER", inputJson: NEWSLETTER_INPUT } as never);
+  }
+
+  it("succeeds and stores the result under the `result` key", async () => {
+    runningJob("job-nl1");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-nl1");
+
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-nl1", { result: NEWSLETTER_RESULT });
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY — a project belonging to ANOTHER company never reaches the generator", async () => {
+    runningJob("job-nl2");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-OTHER", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-nl2");
+
+    expect(mockGenerateEmailNewsletter).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("SECURITY — a SOFT-DELETED project never reaches the generator", async () => {
+    runningJob("job-nl3");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: new Date("2026-08-12") } as never);
+
+    await runAiGenerationJob("job-nl3");
+
+    expect(mockGenerateEmailNewsletter).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("SECURITY — CROSS-PROJECT Content never reaches the generator", async () => {
+    runningJob("job-nl4");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockFindContent.mockResolvedValue({ ...CONTENT_ROW, seoProjectId: "another-project" } as never);
+
+    await runAiGenerationJob("job-nl4");
+
+    expect(mockGenerateEmailNewsletter).not.toHaveBeenCalled();
+    const message = String(mockMarkFailed.mock.calls[0][1]);
+    expect(message).toMatch(/Content not found for this SEO project/i);
+  });
+
+  it("SECURITY — SOFT-DELETED Content never reaches the generator", async () => {
+    runningJob("job-nl5");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockFindContent.mockResolvedValue({ ...CONTENT_ROW, deletedAt: new Date("2026-08-12") } as never);
+
+    await runAiGenerationJob("job-nl5");
+
+    expect(mockGenerateEmailNewsletter).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("RE-FETCHES the Content row rather than trusting anything stored on the job", async () => {
+    runningJob("job-nl6");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-nl6");
+
+    expect(mockFindContent).toHaveBeenCalledWith(expect.objectContaining({ where: { id: NEWSLETTER_INPUT.contentId } }));
+    const ctx = mockGenerateEmailNewsletter.mock.calls[0][0];
+    expect(ctx.sourceContent).toEqual({
+      title: CONTENT_ROW.title,
+      url: CONTENT_ROW.url,
+      metaDescription: CONTENT_ROW.metaDescription,
+      body: CONTENT_ROW.body,
+    });
+    // The SERVER-resolved project, not the id the job row carried.
+    expect(ctx.seoProjectId).toBe(RESOLVED_PROJECT_ID);
+    expect(ctx.companyId).toBe("company-1");
+  });
+
+  it("a missing Content row fails the job without generating", async () => {
+    runningJob("job-nl7");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockFindContent.mockResolvedValue(null as never);
+
+    await runAiGenerationJob("job-nl7");
+
+    expect(mockGenerateEmailNewsletter).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("a malformed stored job input fails without reaching the generator", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-nl8", companyId: "company-1", taskType: "EMAIL_NEWSLETTER", inputJson: { seoProjectId: "nope" } } as never);
+
+    await runAiGenerationJob("job-nl8");
+
+    expect(mockFindContent).not.toHaveBeenCalled();
+    expect(mockGenerateEmailNewsletter).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("a null result is a SUCCEEDED outcome, not a job failure", async () => {
+    runningJob("job-nl9");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockGenerateEmailNewsletter.mockResolvedValue(null as never);
+
+    await runAiGenerationJob("job-nl9");
+
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-nl9", { result: null });
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The thirteenth AI Workspace tool's dispatcher.
+ *
+ * What matters here: ownership is re-verified from the STORED job row, the
+ * image is re-read through the SAME project-scoped query the action used (so a
+ * cross-project or non-image file cannot be reached by replaying a job), and
+ * no image data is ever fetched or sent — the provider is text-only.
+ */
+describe("runAiGenerationJob — IMAGE_ALT_TEXT", () => {
+  const FILE_ID = "00000000-0000-4000-8000-0000000000d1";
+  const ALT_INPUT = { seoProjectId: TC_PROJECT_ID, fileId: FILE_ID, imageDescription: "A person at a desk reviewing a spreadsheet." };
+  const IMAGE = {
+    id: FILE_ID,
+    fileName: "desk-photo.png",
+    mimeType: "image/png",
+    contentId: "00000000-0000-4000-8000-0000000000d2",
+    content: { title: "How Self Storage Investing Works", metaDescription: "An introduction.", seoProjectId: SEO_PROJECT.id, deletedAt: null },
+  };
+  const ALT_RESULT = { altText: "A person at a desk reviewing a spreadsheet.", reasoning: "R", accessibilityNote: "", lengthGuidance: "", characterCount: 42 };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetProjectImage.mockResolvedValue(IMAGE as never);
+    mockGenerateImageAltText.mockResolvedValue(ALT_RESULT as never);
+  });
+
+  function runningJob(id: string) {
+    mockMarkRunning.mockResolvedValue({ id, companyId: "company-1", taskType: "IMAGE_ALT_TEXT", inputJson: ALT_INPUT } as never);
+  }
+
+  it("succeeds and stores the result under the result key", async () => {
+    runningJob("job-alt1");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-alt1");
+
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-alt1", { result: ALT_RESULT });
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY — the image is re-read SCOPED TO THE SERVER-RESOLVED PROJECT", async () => {
+    runningJob("job-alt2");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-alt2");
+
+    expect(mockGetProjectImage).toHaveBeenCalledWith(FILE_ID, RESOLVED_PROJECT_ID);
+  });
+
+  it("SECURITY — a project belonging to ANOTHER company never reaches the image lookup", async () => {
+    runningJob("job-alt3");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-OTHER", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-alt3");
+
+    expect(mockGetProjectImage).not.toHaveBeenCalled();
+    expect(mockGenerateImageAltText).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("SECURITY — a SOFT-DELETED project never reaches the image lookup", async () => {
+    runningJob("job-alt4");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: new Date("2026-08-12") } as never);
+
+    await runAiGenerationJob("job-alt4");
+
+    expect(mockGetProjectImage).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("SECURITY — an image the project-scoped lookup rejects never reaches the model", async () => {
+    // Covers cross-project, cross-company, non-image, soft-deleted and
+    // trashed-Content in one: all of them return null from that query.
+    runningJob("job-alt5");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockGetProjectImage.mockResolvedValue(null as never);
+
+    await runAiGenerationJob("job-alt5");
+
+    expect(mockGenerateImageAltText).not.toHaveBeenCalled();
+    const message = String(mockMarkFailed.mock.calls[0][1]);
+    expect(message).toMatch(/Image not found for this SEO project/i);
+  });
+
+  it("passes the RE-READ file metadata and Content context, not anything from the job row", async () => {
+    runningJob("job-alt6");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-alt6");
+
+    const ctx = mockGenerateImageAltText.mock.calls[0][0];
+    expect(ctx.source).toEqual({
+      fileName: "desk-photo.png",
+      mimeType: "image/png",
+      contentTitle: "How Self Storage Investing Works",
+      contentMetaDescription: "An introduction.",
+    });
+    expect(ctx.imageDescription).toBe(ALT_INPUT.imageDescription);
+    expect(ctx.seoProjectId).toBe(RESOLVED_PROJECT_ID);
+    expect(ctx.companyId).toBe("company-1");
+  });
+
+  it("handles an image with no Content association without inventing one", async () => {
+    runningJob("job-alt7");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockGetProjectImage.mockResolvedValue({ ...IMAGE, contentId: null, content: null } as never);
+
+    await runAiGenerationJob("job-alt7");
+
+    const ctx = mockGenerateImageAltText.mock.calls[0][0];
+    expect(ctx.source.contentTitle).toBeNull();
+    expect(ctx.source.contentMetaDescription).toBeNull();
+  });
+
+  it("a malformed stored job input fails without reaching the image lookup", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-alt8", companyId: "company-1", taskType: "IMAGE_ALT_TEXT", inputJson: { seoProjectId: "nope" } } as never);
+
+    await runAiGenerationJob("job-alt8");
+
+    expect(mockGetProjectImage).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("a stored input with NO description fails without reaching the model", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-alt9", companyId: "company-1", taskType: "IMAGE_ALT_TEXT", inputJson: { ...ALT_INPUT, imageDescription: "" } } as never);
+
+    await runAiGenerationJob("job-alt9");
+
+    expect(mockGenerateImageAltText).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("a null result is a SUCCEEDED outcome, not a job failure", async () => {
+    runningJob("job-alt10");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockGenerateImageAltText.mockResolvedValue(null as never);
+
+    await runAiGenerationJob("job-alt10");
+
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-alt10", { result: null });
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The fourteenth AI Workspace tool's dispatcher.
+ *
+ * What matters here: the project is re-verified from the STORED job row, the
+ * keywords / page titles / cluster are all re-read scoped to the resolved
+ * project, and the date range is re-validated so the model is told how many
+ * publishing slots exist but never chooses a date.
+ */
+describe("runAiGenerationJob — CONTENT_CALENDAR", () => {
+  const CAL_INPUT: Record<string, unknown> = {
+    seoProjectId: TC_PROJECT_ID,
+    name: "Q4 plan",
+    startDate: "2026-10-01",
+    endDate: "2026-10-31",
+    cadence: "WEEKLY",
+    topicSource: "PROJECT_DATA",
+  };
+  const CAL_RESULT = {
+    name: "Q4 plan",
+    startDate: "2026-10-01",
+    endDate: "2026-10-31",
+    cadence: "WEEKLY",
+    entries: [],
+    reasoning: "R",
+    droppedForLackOfSlots: 0,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFindManyKeyword.mockResolvedValue([{ id: "kw-1", term: "storage", intent: "INFORMATIONAL" }] as never);
+    mockFindManyContent.mockResolvedValue([{ title: "An existing page" }] as never);
+    mockGetOwnedKeywordCluster.mockResolvedValue({ id: "cluster-1", name: "Storage", keywords: [{ term: "storage" }] } as never);
+    mockGenerateContentCalendar.mockResolvedValue(CAL_RESULT as never);
+  });
+
+  function runningJob(id: string, input: Record<string, unknown> = CAL_INPUT) {
+    mockMarkRunning.mockResolvedValue({ id, companyId: "company-1", taskType: "CONTENT_CALENDAR", inputJson: input } as never);
+  }
+
+  it("succeeds and stores the result under the result key", async () => {
+    runningJob("job-cal1");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-cal1");
+
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-cal1", { result: CAL_RESULT });
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY — a project of ANOTHER company never reaches the generator", async () => {
+    runningJob("job-cal2");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-OTHER", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-cal2");
+
+    expect(mockGenerateContentCalendar).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("SECURITY — a SOFT-DELETED project never reaches the generator", async () => {
+    runningJob("job-cal3");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: new Date("2026-08-12") } as never);
+
+    await runAiGenerationJob("job-cal3");
+
+    expect(mockGenerateContentCalendar).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("SECURITY — keywords and page titles are read SCOPED to the resolved project, excluding trashed rows", async () => {
+    runningJob("job-cal4");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-cal4");
+
+    for (const mock of [mockFindManyKeyword, mockFindManyContent]) {
+      expect(mock).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ seoProjectId: RESOLVED_PROJECT_ID, deletedAt: null }) })
+      );
+    }
+  });
+
+  it("SECURITY — a cluster that is not this project's fails the job", async () => {
+    runningJob("job-cal5", { ...CAL_INPUT, topicSource: "TOPIC_CLUSTER", keywordClusterId: "00000000-0000-4000-8000-0000000000e1" });
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockGetOwnedKeywordCluster.mockResolvedValue(null as never);
+
+    await runAiGenerationJob("job-cal5");
+
+    expect(mockGenerateContentCalendar).not.toHaveBeenCalled();
+    const message = String(mockMarkFailed.mock.calls[0][1]);
+    expect(message).toMatch(/Topic cluster not found for this SEO project/i);
+  });
+
+  it("the cluster lookup is scoped to the SERVER-resolved project", async () => {
+    const clusterId = "00000000-0000-4000-8000-0000000000e1";
+    runningJob("job-cal6", { ...CAL_INPUT, topicSource: "TOPIC_CLUSTER", keywordClusterId: clusterId });
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-cal6");
+
+    expect(mockGetOwnedKeywordCluster).toHaveBeenCalledWith(clusterId, RESOLVED_PROJECT_ID);
+  });
+
+  it("DATES — the slot count is computed by the application and handed to the generator", async () => {
+    runningJob("job-cal7");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-cal7");
+
+    const ctx = mockGenerateContentCalendar.mock.calls[0][0];
+    // 1-31 October, once a week => 1, 8, 15, 22, 29.
+    expect(ctx.slotCount).toBe(5);
+    expect(ctx.range.start.toISOString().slice(0, 10)).toBe("2026-10-01");
+    expect(ctx.range.end.toISOString().slice(0, 10)).toBe("2026-10-31");
+    expect(ctx.cadence).toBe("WEEKLY");
+  });
+
+  it("DATES — a stored range that is no longer valid fails the job", async () => {
+    runningJob("job-cal8", { ...CAL_INPUT, startDate: "2026-10-31", endDate: "2026-10-01" });
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-cal8");
+
+    expect(mockGenerateContentCalendar).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("passes the RE-READ keywords and page titles, and the server-resolved project", async () => {
+    runningJob("job-cal9");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-cal9");
+
+    const ctx = mockGenerateContentCalendar.mock.calls[0][0];
+    expect(ctx.keywords).toEqual([{ id: "kw-1", term: "storage", intent: "INFORMATIONAL" }]);
+    expect(ctx.existingContentTitles).toEqual(["An existing page"]);
+    expect(ctx.seoProjectId).toBe(RESOLVED_PROJECT_ID);
+    expect(ctx.companyId).toBe("company-1");
+  });
+
+  it("splits user-supplied topics one per line", async () => {
+    runningJob("job-cal10", { ...CAL_INPUT, topicSource: "USER_TOPICS", userTopics: "First topic\n\n  Second topic  \nThird" });
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+
+    await runAiGenerationJob("job-cal10");
+
+    expect(mockGenerateContentCalendar.mock.calls[0][0].userTopics).toEqual(["First topic", "Second topic", "Third"]);
+  });
+
+  it("a malformed stored job input fails without reaching the generator", async () => {
+    mockMarkRunning.mockResolvedValue({ id: "job-cal11", companyId: "company-1", taskType: "CONTENT_CALENDAR", inputJson: { seoProjectId: "nope" } } as never);
+
+    await runAiGenerationJob("job-cal11");
+
+    expect(mockGenerateContentCalendar).not.toHaveBeenCalled();
+    expect(mockMarkFailed).toHaveBeenCalled();
+  });
+
+  it("a null result is a SUCCEEDED outcome, not a job failure", async () => {
+    runningJob("job-cal12");
+    mockFindSeoProject.mockResolvedValue({ ...SEO_PROJECT, companyId: "company-1", deletedAt: null } as never);
+    mockGenerateContentCalendar.mockResolvedValue(null as never);
+
+    await runAiGenerationJob("job-cal12");
+
+    expect(mockMarkSucceeded).toHaveBeenCalledWith("job-cal12", { result: null });
+    expect(mockMarkFailed).not.toHaveBeenCalled();
   });
 });

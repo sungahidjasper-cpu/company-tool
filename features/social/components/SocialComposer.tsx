@@ -10,7 +10,9 @@ import { Input } from "@/components/ui/input";
 import { cancelContentScheduleAction } from "@/features/content-workspace/actions/content-scheduling.actions";
 import { formatScheduledFor, zonedWallTimeToInstant } from "@/features/content-workspace/services/content-scheduling";
 import { browserTimeZone, timeZoneOptions } from "@/features/content-workspace/services/timezone-options";
+import { publishSocialPostTargetAction } from "@/features/social/actions/social-publish.actions";
 import { saveSocialPostAction } from "@/features/social/actions/social-post.actions";
+import type { CommentOutcome, PublishOutcome } from "@/features/social/schemas/social-publish.schema";
 import PlatformMark from "@/features/social/components/PlatformMark";
 import SocialMediaPanel, { isStagedMedia, uploadStagedMedia, type SocialMediaFile } from "@/features/social/components/SocialMediaPanel";
 import {
@@ -19,9 +21,12 @@ import {
   SOCIAL_PLATFORM_LABELS,
   buildPreview,
   effectiveCaption,
+  effectiveFirstComment,
   effectiveLink,
+  evaluatePublishEligibility,
   inheritingPlatforms,
   measureCaption,
+  resolveInitialAccountSelection,
   validateComposerDraft,
   validateTargets,
   type TargetDraft,
@@ -52,8 +57,39 @@ export type ComposerAccount = {
   connectionState: SocialConnectionState;
 };
 
-/** A target's own content. `null` means it follows the shared value. */
-export type ComposerTarget = { accountId: string; caption: string | null; link: string | null };
+/** The real outcome of the one real publish attempt a saved target may have had. */
+export type ComposerTargetPublication = {
+  status: "DRAFT" | "QUEUED" | "PUBLISHING" | "PROCESSING" | "PUBLISHED" | "FAILED";
+  externalPostId: string | null;
+  externalUrl: string | null;
+  failureMessage: string | null;
+};
+
+/** The real outcome of the one real first-comment attempt a saved target may have had — a SEPARATE result from the post's own. */
+export type ComposerTargetComment = {
+  status: "PENDING" | "PUBLISHING" | "PUBLISHED" | "FAILED";
+  externalCommentId: string | null;
+  failureMessage: string | null;
+};
+
+/**
+ * A target's own content. `null` means it follows the shared value.
+ *
+ * `id` and `publication` exist only for a target that has actually been
+ * SAVED — a SocialPostTarget row exists in the database. They are absent for
+ * an account only just selected in this editing session, which is exactly
+ * why "Publish Test Post" is offered only after a save: publishing needs a
+ * real row to record its outcome against, not a plan for one.
+ */
+export type ComposerTarget = {
+  id?: string;
+  accountId: string;
+  caption: string | null;
+  link: string | null;
+  firstComment: string | null;
+  publication?: ComposerTargetPublication | null;
+  comment?: ComposerTargetComment | null;
+};
 
 export type SocialComposerProps = {
   /** The client this post is for. A social post always belongs to one. */
@@ -73,6 +109,7 @@ export type SocialComposerProps = {
     contentId: string;
     caption: string;
     link: string;
+    firstComment: string;
     targets: ComposerTarget[];
     status: string;
     files: SocialMediaFile[];
@@ -140,14 +177,16 @@ export default function SocialComposer({
 
   const [caption, setCaption] = useState(existing?.caption ?? "");
   const [link, setLink] = useState(existing?.link ?? "");
-  const [accountIds, setAccountIds] = useState<string[]>(existing?.targets.map((target) => target.accountId) ?? []);
+  const [accountIds, setAccountIds] = useState<string[]>(() =>
+    resolveInitialAccountSelection(accounts, existing?.targets.map((target) => target.accountId) ?? [])
+  );
   /**
    * Per-account content, keyed by account id. Absent or null means "follow
    * the shared value" — the key exists only once someone customizes it, so
    * inheritance is the default without anything having to say so.
    */
-  const [overrides, setOverrides] = useState<Record<string, { caption: string | null; link: string | null }>>(() =>
-    Object.fromEntries((existing?.targets ?? []).map((target) => [target.accountId, { caption: target.caption, link: target.link }]))
+  const [overrides, setOverrides] = useState<Record<string, { caption: string | null; link: string | null; firstComment: string | null }>>(() =>
+    Object.fromEntries((existing?.targets ?? []).map((target) => [target.accountId, { caption: target.caption, link: target.link, firstComment: target.firstComment }]))
   );
   const [activeTab, setActiveTab] = useState<string>(SHARED_TAB);
   const [dateIso, setDateIso] = useState(() => initialDateIso || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
@@ -157,6 +196,60 @@ export default function SocialComposer({
   const [contentId, setContentId] = useState(existing?.contentId ?? null);
   const [files, setFiles] = useState<SocialMediaFile[]>(existing?.files ?? []);
   const [isScheduled, setIsScheduled] = useState(existing?.status === "SCHEDULED");
+  /**
+   * First Comment's shared base text — persisted on `SocialPost.firstComment`,
+   * saved and reopened exactly like caption/link. Empty means no comment is
+   * intended.
+   */
+  const [firstComment, setFirstComment] = useState(existing?.firstComment ?? "");
+
+  /*
+   * Phase 10A, made real STATE in Stage 1 — which accounts have a real,
+   * saved target row, keyed by account id.
+   *
+   * Seeded from what the page loaded with, but NOT recomputed from `existing`
+   * on every render: `save()` deliberately does not re-run the server page
+   * after a save (avoids clobbering in-progress edits with a fresh server
+   * render — see its own comment), so a target created or updated in THIS
+   * editing session would otherwise never appear here at all, and "Publish
+   * Now" would stay disabled right after the very Save/Schedule click that
+   * was supposed to enable it. `save()` merges each save's real returned
+   * target ids into this state directly, which is what actually fixes that.
+   */
+  const [savedTargetIds, setSavedTargetIds] = useState<Record<string, string>>(() =>
+    Object.fromEntries((existing?.targets ?? []).filter((row): row is ComposerTarget & { id: string } => Boolean(row.id)).map((row) => [row.accountId, row.id]))
+  );
+  const [publishOutcomes, setPublishOutcomes] = useState<Record<string, PublishOutcome>>(() => {
+    const entries: [string, PublishOutcome][] = [];
+    for (const row of existing?.targets ?? []) {
+      if (!row.publication) continue;
+      /*
+       * The comment's own outcome, reconstructed the same honest way as the
+       * post's: PUBLISHED/FAILED only ever from a real stored result, never
+       * invented for a comment that was never attempted (no row = no entry).
+       */
+      const comment: CommentOutcome | undefined =
+        row.comment?.status === "PUBLISHED"
+          ? { status: "PUBLISHED", externalCommentId: row.comment.externalCommentId ?? "" }
+          : row.comment?.status === "FAILED"
+            ? { status: "FAILED", failureCode: "", failureMessage: row.comment.failureMessage ?? "Comment publishing failed." }
+            : undefined;
+
+      if (row.publication.status === "PUBLISHED") {
+        entries.push([
+          row.accountId,
+          { status: "PUBLISHED", externalPostId: row.publication.externalPostId ?? "", externalUrl: row.publication.externalUrl, comment },
+        ]);
+      } else if (row.publication.status === "FAILED") {
+        entries.push([
+          row.accountId,
+          { status: "FAILED", failureCode: "", failureMessage: row.publication.failureMessage ?? "Publishing failed.", comment },
+        ]);
+      }
+    }
+    return Object.fromEntries(entries);
+  });
+  const [publishingAccountId, setPublishingAccountId] = useState<string | null>(null);
 
   const captionRef = useRef<HTMLTextAreaElement | null>(null);
   const linkRef = useRef<HTMLInputElement | null>(null);
@@ -171,6 +264,7 @@ export default function SocialComposer({
     label: describeAccount(account).primary,
     caption: overrides[account.id]?.caption ?? null,
     link: overrides[account.id]?.link ?? null,
+    firstComment: overrides[account.id]?.firstComment ?? null,
   }));
 
   /*
@@ -196,6 +290,7 @@ export default function SocialComposer({
     return JSON.stringify({
       caption,
       link,
+      firstComment,
       targets: [...targets].sort((a, b) => a.accountId.localeCompare(b.accountId)),
       media: mediaList.map((file) => file.id).sort(),
     });
@@ -214,6 +309,7 @@ export default function SocialComposer({
   const previewAccount = activeAccount ?? selectedAccounts[0] ?? null;
   const previewCaption = activeTarget ? effectiveCaption(caption, activeTarget) : caption;
   const previewLinkValue = activeTarget ? effectiveLink(link, activeTarget) : link;
+  const previewFirstComment = activeTarget ? effectiveFirstComment(firstComment, activeTarget) : effectiveFirstComment(firstComment, { firstComment: null });
 
   const preview = buildPreview({
     caption: previewCaption,
@@ -230,9 +326,9 @@ export default function SocialComposer({
   }
 
   /** Writes ONE account's field. Every other account's entry is copied through untouched. */
-  function setOverride(accountId: string, field: "caption" | "link", value: string | null) {
+  function setOverride(accountId: string, field: "caption" | "link" | "firstComment", value: string | null) {
     setOverrides((current) => {
-      const existingEntry = current[accountId] ?? { caption: null, link: null };
+      const existingEntry = current[accountId] ?? { caption: null, link: null, firstComment: null };
       return { ...current, [accountId]: { ...existingEntry, [field]: value } };
     });
   }
@@ -257,13 +353,19 @@ export default function SocialComposer({
     });
   }
 
-  function save(withSchedule: boolean) {
-    setError(null);
-
+  /**
+   * The one place a post is actually written — Save Draft, Schedule, and
+   * Publish Now's own transparent persistence step all call this SAME
+   * function, so there is exactly one implementation of "what saving this
+   * post means," never two that could drift apart. Returns the real
+   * targetIds this save produced so a caller (Publish Now) can act on one
+   * immediately, without waiting on anything else.
+   */
+  async function persistPost(withSchedule: boolean): Promise<{ contentId: string; targetIds: { accountId: string; id: string }[] } | null> {
     const validation = validateComposerDraft({ caption, link, accountIds }, inheritingPlatforms(targets));
     if (!validation.ok) {
       setError(validation.error);
-      return;
+      return null;
     }
     const targetValidation = validateTargets(targets);
     if (!targetValidation.ok) {
@@ -271,61 +373,85 @@ export default function SocialComposer({
       // Take the writer to the platform that has the problem, so the message
       // points at something they can actually see.
       setActiveTab(targetValidation.accountId);
-      return;
+      return null;
     }
     if (withSchedule && !instant) {
       setError("Choose a valid date, time and timezone before scheduling.");
-      return;
+      return null;
     }
 
+    const result = await saveSocialPostAction({
+      contentId: contentId ?? undefined,
+      clientId,
+      seoProjectId: seoProjectId ?? undefined,
+      caption,
+      link,
+      firstComment,
+      accountIds,
+      platformOverrides: Object.fromEntries(
+        targets.map((target) => [target.accountId, { caption: target.caption, link: target.link, firstComment: target.firstComment }])
+      ),
+      schedule: withSchedule ? { dateIso, time, timeZone } : undefined,
+    });
+
+    if (!result.success) {
+      setError(result.message);
+      return null;
+    }
+
+    setContentId(result.data.contentId);
+    if (result.data.scheduled) setIsScheduled(true);
+    /*
+     * Stage 1 fix — merge in real target ids from THIS save, right now,
+     * rather than waiting on a server re-render that deliberately does not
+     * happen (see savedTargetIds's own comment). Without this, Publish Now
+     * stayed disabled immediately after the very Schedule/Save click that
+     * was supposed to enable it, for any target saved in this session.
+     */
+    if (result.data.targetIds.length > 0) {
+      setSavedTargetIds((current) => ({
+        ...current,
+        ...Object.fromEntries(result.data.targetIds.map((row) => [row.accountId, row.id])),
+      }));
+    }
+
+    /*
+     * Now — and only now — the media the user added while composing gets
+     * uploaded, because only now is there a record to attach it to. This is
+     * the whole trick: the dependency is real, so it is satisfied here
+     * instead of being pushed onto the user as "save a draft first".
+     */
+    let savedFiles = files;
+    if (files.some(isStagedMedia)) {
+      const uploaded = await uploadStagedMedia(result.data.contentId, files);
+      savedFiles = uploaded.files;
+      setFiles(uploaded.files);
+      if (uploaded.failed.length > 0) {
+        // The post itself saved. Say exactly what did not, rather than
+        // implying the whole save failed.
+        setError(`The post was saved, but ${uploaded.failed.join(", ")} could not be uploaded. Try adding ${uploaded.failed.length === 1 ? "it" : "them"} again.`);
+      }
+    }
+    setSavedFingerprint(fingerprintOf(savedFiles));
+    /*
+     * Put the saved record's id in the URL, with the intended moment. The id
+     * otherwise lives only in component state, so a refresh reopened an
+     * empty composer and the work looked lost — it was safe in the database
+     * but unreachable from that URL. replaceState is what Next supports
+     * here, and it avoids re-running the server page for values it has.
+     */
+    const reopen = new URLSearchParams({ contentId: result.data.contentId, date: dateIso, time, tz: timeZone });
+    globalThis.history.replaceState(null, "", `/content/create/social?${reopen.toString()}`);
+
+    return { contentId: result.data.contentId, targetIds: result.data.targetIds };
+  }
+
+  function save(withSchedule: boolean) {
+    setError(null);
     startTransition(async () => {
-      const result = await saveSocialPostAction({
-        contentId: contentId ?? undefined,
-        clientId,
-        seoProjectId: seoProjectId ?? undefined,
-        caption,
-        link,
-        accountIds,
-        platformOverrides: Object.fromEntries(targets.map((target) => [target.accountId, { caption: target.caption, link: target.link }])),
-        schedule: withSchedule ? { dateIso, time, timeZone } : undefined,
-      });
-
-      if (!result.success) {
-        setError(result.message);
-        return;
-      }
-
-      setContentId(result.data.contentId);
-      if (result.data.scheduled) setIsScheduled(true);
-
-      /*
-       * Now — and only now — the media the user added while composing gets
-       * uploaded, because only now is there a record to attach it to. This is
-       * the whole trick: the dependency is real, so it is satisfied here
-       * instead of being pushed onto the user as "save a draft first".
-       */
-      let savedFiles = files;
-      if (files.some(isStagedMedia)) {
-        const uploaded = await uploadStagedMedia(result.data.contentId, files);
-        savedFiles = uploaded.files;
-        setFiles(uploaded.files);
-        if (uploaded.failed.length > 0) {
-          // The post itself saved. Say exactly what did not, rather than
-          // implying the whole save failed.
-          setError(`The post was saved, but ${uploaded.failed.join(", ")} could not be uploaded. Try adding ${uploaded.failed.length === 1 ? "it" : "them"} again.`);
-        }
-      }
-      setSavedFingerprint(fingerprintOf(savedFiles));
-      /*
-       * Put the saved record's id in the URL, with the intended moment. The id
-       * otherwise lives only in component state, so a refresh reopened an
-       * empty composer and the work looked lost — it was safe in the database
-       * but unreachable from that URL. replaceState is what Next supports
-       * here, and it avoids re-running the server page for values it has.
-       */
-      const reopen = new URLSearchParams({ contentId: result.data.contentId, date: dateIso, time, tz: timeZone });
-      globalThis.history.replaceState(null, "", `/content/create/social?${reopen.toString()}`);
-      toast.success(result.data.scheduled ? "Scheduled in Cloud Compass" : "Draft saved");
+      const persisted = await persistPost(withSchedule);
+      if (!persisted) return;
+      toast.success(withSchedule ? "Scheduled in Cloud Compass" : "Draft saved");
       router.refresh();
     });
   }
@@ -345,6 +471,94 @@ export default function SocialComposer({
       router.refresh();
     });
   }
+
+  /**
+   * Phase 10A, promoted to a primary action in Stage 1 — the one action in
+   * this screen that contacts a real platform.
+   *
+   * Only offered for a saved target on a genuinely CONNECTED account (the
+   * server re-checks both regardless). The outcome shown afterwards is
+   * exactly what the provider said — a real external post id and, if the
+   * provider returned one, its real permalink; never a guessed one.
+   */
+  function publishNow(accountId: string) {
+    setError(null);
+    setPublishingAccountId(accountId);
+    startTransition(async () => {
+      let targetId: string | undefined = savedTargetIds[accountId];
+      /*
+       * Transparent persistence — a brand-new, never-saved post gets ONE
+       * click, not "save, reload, then publish". This calls the exact same
+       * persistPost() Save Draft itself uses, so nothing about validation or
+       * ownership is looser for arriving here instead of through Save Draft
+       * — it is the identical write, just followed immediately by the real
+       * publish call instead of stopping at "saved".
+       */
+      if (!targetId) {
+        const persisted = await persistPost(false);
+        if (!persisted) {
+          setPublishingAccountId(null);
+          return;
+        }
+        targetId = persisted.targetIds.find((row) => row.accountId === accountId)?.id;
+        if (!targetId) {
+          setError("This account could not be saved as a target for this post.");
+          setPublishingAccountId(null);
+          return;
+        }
+      }
+
+      const result = await publishSocialPostTargetAction({ socialPostTargetId: targetId });
+      setPublishingAccountId(null);
+      if (!result.success) {
+        setError(result.message);
+        return;
+      }
+      setPublishOutcomes((current) => ({ ...current, [accountId]: result.data }));
+      toast[result.data.status === "PUBLISHED" ? "success" : "error"](
+        result.data.status === "PUBLISHED" ? "Published — a real post now exists on the platform." : `Publishing failed: ${result.data.failureMessage}`
+      );
+      /*
+       * First Comment's own result, shown separately — a failed comment must
+       * never read as if the post itself failed, and a published one is real
+       * news on its own.
+       */
+      if (result.data.comment?.status === "PUBLISHED") {
+        toast.success("First comment published.");
+      } else if (result.data.comment?.status === "FAILED") {
+        toast.error(`First comment failed: ${result.data.comment.failureMessage}`);
+      }
+    });
+  }
+
+  /**
+   * Stage 3 — what "Publish Now" in the primary action bar would act on, and
+   * whether it can run at all right now.
+   *
+   * ELIGIBILITY IS NO LONGER "ALREADY SAVED". A selected, genuinely CONNECTED
+   * account is eligible regardless of whether this post has been saved yet —
+   * `publishNow` above saves it transparently the moment it's clicked. NOT
+   * tied to which platform tab happens to be open either: the active tab
+   * only matters to DISAMBIGUATE when more than one connected account is
+   * selected — with exactly one, there is nothing to guess.
+   *
+   * CONTENT VALIDITY USES THE SAME RULES SAVE DRAFT DOES — the identical
+   * `validateComposerDraft`/`validateTargets` calls `persistPost` itself runs.
+   * Publish Now does not get a looser or a stricter content rule than saving
+   * already has; it is disabled until there is something that could actually
+   * be saved.
+   */
+  const publishEligibility = evaluatePublishEligibility({
+    allAccounts: accounts,
+    selectedAccounts,
+    activeAccountId: activeTab === SHARED_TAB ? null : activeTab,
+    contentValidation: validateComposerDraft({ caption, link, accountIds }, inheritingPlatforms(targets)),
+    targetsValidation: validateTargets(targets),
+  });
+  const canPublishNow = publishEligibility.ok;
+  const publishTargetAccountId = publishEligibility.ok ? publishEligibility.accountId : null;
+  const publishNowBlockedReason = publishEligibility.ok ? null : publishEligibility.reason;
+  const isPublishingActive = publishTargetAccountId !== null && publishingAccountId === publishTargetAccountId;
 
   /**
    * Jumps to whichever link field belongs to the tab you are on.
@@ -436,8 +650,27 @@ export default function SocialComposer({
               Cancel schedule
             </Button>
           )}
+          {/*
+            Stage 1 — real, right now, to the platform whose tab is open.
+            Disabled rather than hidden even with nothing selected, so the
+            workflow always reads Save Draft / Schedule / Publish Now.
+          */}
+          <Button
+            type="button"
+            size="sm"
+            className="bg-emerald-700 hover:bg-emerald-700/90"
+            onClick={() => publishTargetAccountId && publishNow(publishTargetAccountId)}
+            disabled={isPending || !canPublishNow}
+            title={publishNowBlockedReason ?? undefined}
+          >
+            <Send size={14} /> {isPublishingActive ? "Publishing…" : "Publish Now"}
+          </Button>
         </div>
       </div>
+
+      {publishNowBlockedReason && (
+        <p className="text-right text-xs text-slate-500">{publishNowBlockedReason}</p>
+      )}
 
       {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
@@ -517,11 +750,17 @@ export default function SocialComposer({
             )}
           </section>
 
-          {/* 2 — what are you posting, per platform */}
+          {/* 2 — the media itself, first — this is what a social post actually leads with */}
+          <section className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4">
+            <Step number={2} title="Media" hint="Photos and video are shared by every account on this post — one set of media, attached to the post itself." />
+            <SocialMediaPanel contentId={contentId} files={files} onFilesChange={setFiles} disabled={isPending} />
+          </section>
+
+          {/* 3 — what are you posting, per platform */}
           <section className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4">
             <Step
-              number={2}
-              title="Post content"
+              number={3}
+              title="Caption"
               hint={
                 selectedAccounts.length > 0
                   ? "Write it once for everyone, then open a platform's tab to say it differently there."
@@ -580,8 +819,8 @@ export default function SocialComposer({
               <>
                 <div className="flex flex-col gap-1.5">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <label htmlFor="caption" className="text-xs text-slate-500">
-                      {selectedAccounts.length > 0 ? "Shared caption" : "Caption"}
+                    <label htmlFor="caption" className="text-xs font-medium text-slate-500">
+                      Caption
                     </label>
                     <span className={cn("text-xs", sharedMeasurement.overLimit ? "font-semibold text-red-600" : "text-slate-500")}>
                       {sharedMeasurement.characters} characters
@@ -593,18 +832,23 @@ export default function SocialComposer({
                   <textarea
                     id="caption"
                     ref={captionRef}
-                    rows={8}
+                    rows={6}
                     className="w-full min-w-0 resize-y rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-base leading-relaxed text-slate-800 outline-none placeholder:text-slate-400 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
                     value={caption}
                     onChange={(event) => setCaption(event.target.value)}
-                    placeholder="What do you want to say? Hashtags go straight in the text, like #selfstorage."
+                    placeholder="Write something about this post…  Hashtags go straight in the text, like #selfstorage."
                     disabled={isPending}
                   />
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-medium text-slate-500">Add to caption</span>
+                    {addToPostActions}
+                  </div>
 
                   {sharedMeasurement.limit === null && (
                     <p className="text-xs text-slate-500">
                       {selectedAccounts.length === 0
-                        ? "No account is selected, so no platform limit applies yet. Selecting one will show the characters remaining."
+                        ? "Select an account above to see that platform's character limit."
                         : "Every selected account has its own caption, so no platform limit applies to this shared one."}
                     </p>
                   )}
@@ -620,13 +864,6 @@ export default function SocialComposer({
                   )}
                   {sharedMeasurement.advisory && <p className="text-xs text-amber-700">{sharedMeasurement.advisory}</p>}
                 </div>
-
-                {/*
-                  Media lives with the post it belongs to, and owns the single
-                  "Add to post" row. The hashtag and link actions are contributed
-                  into that same row so the writer sees one set of choices.
-                */}
-                <SocialMediaPanel contentId={contentId} files={files} onFilesChange={setFiles} disabled={isPending} extraActions={addToPostActions} />
 
                 {/* Secondary to the caption, which is the point of the screen. */}
                 <div className="flex flex-col gap-1 border-t border-slate-100 pt-3">
@@ -650,8 +887,34 @@ export default function SocialComposer({
                 captionRef={platformCaptionRef}
                 onSetOverride={setOverride}
                 extraActions={addToPostActions}
+                publishOutcome={publishOutcomes[activeAccount.id] ?? null}
               />
             )}
+
+            {/*
+              First comment — a SEPARATE operation from the post itself.
+              Shown once, not per platform: there is no per-platform override
+              control yet, though the underlying model already supports one.
+              Saved with the post (Save Draft/Schedule) and published, after
+              the post itself succeeds, by Publish Now.
+            */}
+            <div className="flex flex-col gap-1.5 border-t border-slate-100 pt-3">
+              <label htmlFor="firstComment" className="text-xs font-medium text-slate-500">
+                First comment <span className="font-normal text-slate-400">(optional)</span>
+              </label>
+              <textarea
+                id="firstComment"
+                rows={2}
+                className="w-full min-w-0 resize-y rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm leading-relaxed text-slate-800 outline-none placeholder:text-slate-400 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                value={firstComment}
+                onChange={(event) => setFirstComment(event.target.value)}
+                placeholder="Add the first comment to publish right after the post…"
+                disabled={isPending}
+              />
+              <p className="text-[11px] leading-snug text-slate-400">
+                Published as a separate comment immediately after the post itself, once Publish Now succeeds. Left empty, no comment is posted.
+              </p>
+            </div>
           </section>
         </div>
 
@@ -660,7 +923,7 @@ export default function SocialComposer({
           {/* 3 — what will it look like */}
           <section className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4">
             <Step
-              number={3}
+              number={4}
               title="Preview"
               hint={
                 activeAccount
@@ -710,25 +973,31 @@ export default function SocialComposer({
                 </span>
               </div>
 
-              <p className="text-sm whitespace-pre-wrap text-slate-800">{preview.caption || "Your caption will appear here."}</p>
-
+              {/* Media leads the preview, same as it now leads the composer — the caption reads underneath it, not the other way around. */}
               {files.length > 0 && (
                 <div className="flex flex-col gap-1.5">
                   {files.map((file) => (
                     <div key={file.id} className="overflow-hidden rounded-lg border border-slate-200">
                       {file.mimeType.startsWith("video/") ? (
-                        <video src={file.url} controls className="max-h-52 w-full object-cover" />
+                        <video src={file.url} controls className="max-h-64 w-full object-cover" />
                       ) : (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={file.url} alt={file.fileName} className="max-h-52 w-full object-cover" />
+                        <img src={file.url} alt={file.fileName} className="max-h-64 w-full object-cover" />
                       )}
                     </div>
                   ))}
                 </div>
               )}
 
+              <p className="text-sm whitespace-pre-wrap text-slate-800">{preview.caption || "Your caption will appear here."}</p>
+
               {preview.link && <p className="truncate text-xs text-[#2F4156] underline">{preview.link}</p>}
               {preview.scheduleLabel && <p className="text-[11px] text-slate-500">Intended for {preview.scheduleLabel}</p>}
+              {previewFirstComment.length > 0 && (
+                <p className="rounded-lg bg-slate-50 px-2.5 py-2 text-xs leading-snug text-slate-500">
+                  <span className="font-medium text-slate-600">First comment</span>: {previewFirstComment}
+                </p>
+              )}
             </div>
 
             <p className="text-[11px] leading-snug text-slate-400">
@@ -740,7 +1009,7 @@ export default function SocialComposer({
 
           {/* 4 — when does it go out */}
           <section className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4">
-            <Step number={4} title="Schedule" />
+            <Step number={5} title="Schedule" />
             {scheduleLabel && (
               <p className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
                 <CalendarClock size={15} className="mt-0.5 shrink-0 text-slate-500" />
@@ -799,6 +1068,7 @@ function PlatformTabPanel({
   captionRef,
   onSetOverride,
   extraActions,
+  publishOutcome,
 }: {
   account: ComposerAccount;
   target: TargetDraft | null;
@@ -808,6 +1078,8 @@ function PlatformTabPanel({
   captionRef: React.RefObject<HTMLTextAreaElement | null>;
   onSetOverride: (accountId: string, field: "caption" | "link", value: string | null) => void;
   extraActions: React.ReactNode;
+  /** The real outcome of this account's last Publish Now click, if any — the action itself now lives in the primary bar. */
+  publishOutcome: PublishOutcome | null;
 }) {
   const definition = platformDefinition(account.platform);
   const capabilities = platformCapabilities(account.platform);
@@ -927,8 +1199,57 @@ function PlatformTabPanel({
         Photos and video are shared by every account on this post — one set of media, attached to the post itself. Per-platform media is not stored yet, and
         saying so is better than showing a control that quietly does nothing.
       </p>
+
+      {/*
+        Stage 1 — the action itself now lives in the primary bar as
+        "Publish Now"; this is only ever the RESULT of the last click,
+        shown next to the content it was about.
+      */}
+      {(publishOutcome?.status === "PUBLISHED" || publishOutcome?.status === "FAILED") && (
+        <div className="flex flex-col gap-2 border-t border-slate-100 pt-3">
+          {publishOutcome.status === "PUBLISHED" && (
+            <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-snug text-emerald-800">
+              Published. Post id <span className="font-mono">{publishOutcome.externalPostId}</span>.{" "}
+              {publishOutcome.externalUrl ? (
+                <a href={publishOutcome.externalUrl} target="_blank" rel="noreferrer" className="font-medium underline">
+                  View it on {definition.name} →
+                </a>
+              ) : (
+                `${definition.name} did not return a permalink for this post.`
+              )}
+            </p>
+          )}
+          {publishOutcome.status === "FAILED" && (
+            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs leading-snug text-red-700">
+              {publishOutcome.failureMessage}
+            </p>
+          )}
+          {/* First Comment's own result — a SEPARATE outcome from the post's, shown right alongside it. */}
+          {publishOutcome.comment && <FirstCommentResult outcome={publishOutcome.comment} />}
+        </div>
+      )}
     </div>
   );
+}
+
+/** First Comment's own result — never conflated with the post's own outcome above it. */
+function FirstCommentResult({ outcome }: { outcome: CommentOutcome }) {
+  if (outcome.status === "PUBLISHED") {
+    return (
+      <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-snug text-emerald-800">
+        First comment published. Comment id <span className="font-mono">{outcome.externalCommentId}</span>.
+      </p>
+    );
+  }
+  if (outcome.status === "FAILED") {
+    return (
+      <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs leading-snug text-red-700">
+        First comment failed — {outcome.failureMessage} Click Publish Now again to retry just the comment.
+      </p>
+    );
+  }
+  // NOT_ATTEMPTED — the post itself failed, so this is never shown as a separate alarming failure of its own.
+  return null;
 }
 
 /**

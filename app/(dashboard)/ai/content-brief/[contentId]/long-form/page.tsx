@@ -22,7 +22,13 @@ export default async function GenerateLongFormFromContentPage({ params }: Genera
   if (!content) {
     notFound();
   }
-  assertCompanyAccess(user, content.seoProject.companyId);
+  assertCompanyAccess(user, content.companyId);
+
+  // Long-form generation is SEO-project scoped, so a record without one has
+  // no site context to generate against and this flow is not reachable.
+  if (content.seoProjectId === null) {
+    notFound();
+  }
 
   // Only reachable for a row Phase 15's saveContentBriefAction already
   // populated — a manually-authored row, or one with no saved brief,

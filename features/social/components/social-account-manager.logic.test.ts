@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildPlatformSections, canOfferConnect } from "@/features/social/components/social-account-manager.logic";
+import { buildPlatformSections } from "@/features/social/components/social-account-manager.logic";
 import type { SocialAccountSummary } from "@/features/social/schemas/social-account.schema";
 import type { PlatformConnectivity } from "@/features/social/schemas/social-connection.schema";
 import { ALL_PLATFORMS } from "@/features/social/services/social-platforms";
@@ -93,20 +93,10 @@ describe("buildPlatformSections", () => {
   });
 });
 
-describe("canOfferConnect", () => {
-  it("8. only a connectable AND configured platform may offer Connect", () => {
-    expect(canOfferConnect(connectivity({ connectable: true, configured: true }))).toBe(true);
-  });
-
-  it("9. a platform with no real provider never offers Connect, even if 'configured' were somehow true", () => {
-    expect(canOfferConnect(connectivity({ connectable: false, configured: true }))).toBe(false);
-  });
-
-  it("10. a real provider missing credentials never offers Connect", () => {
-    expect(canOfferConnect(connectivity({ connectable: true, configured: false }))).toBe(false);
-  });
-
-  it("11. no connectivity data at all never offers Connect", () => {
-    expect(canOfferConnect(undefined)).toBe(false);
-  });
-});
+/*
+ * Phase 9E — the "can this platform be connected" check itself moved to
+ * describePlatformCapability in social-connection-status.ts (see that
+ * file's own tests), alongside describeConnection and describeAvailability,
+ * so there is exactly one place that turns PlatformConnectivity into a
+ * decision — not a second one competing with it here.
+ */

@@ -39,6 +39,19 @@ type ContentOption = { id: string; title: string };
 type SocialSnippetGeneratorPickerProps = {
   seoProjectOptions: SeoProjectOption[];
   contentByProject: Record<string, ContentOption[]>;
+  /**
+   * Phase C4.5 — optional preselection handed over from a Content record so
+   * the user does not have to find the same page again. Already resolved
+   * server-side against this route own company-scoped, non-soft-deleted
+   * list; startSocialSnippetGeneratorAction still re-verifies ownership,
+   * the project match and both soft-delete states independently.
+   *
+   * initialContentId is seeded explicitly rather than relying on the
+   * existing "first item in the project" default — the hand-off names one
+   * SPECIFIC page, and this component has no effect that would re-sync it.
+   */
+  initialSeoProjectId?: string;
+  initialContentId?: string;
 };
 
 /** A small local counter — CounterBadge (ContentBriefReview.tsx) lives alongside brief-specific rendering and isn't a reasonable shared import for a single number/limit display here. */
@@ -96,13 +109,19 @@ export const SELECT_PROJECT_HINT = "Select an SEO project before generating.";
  * No save/apply step: this tool's output is never persisted or auto-posted
  * anywhere (see social-snippet-generator.service.ts's own comment on why).
  */
-export default function SocialSnippetGeneratorPicker({ seoProjectOptions, contentByProject }: SocialSnippetGeneratorPickerProps) {
+export default function SocialSnippetGeneratorPicker({
+  seoProjectOptions,
+  contentByProject,
+  initialSeoProjectId = "",
+  initialContentId = "",
+}: SocialSnippetGeneratorPickerProps) {
   // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
   // let a user generate against a project they never consciously chose; the
   // server still re-derives and enforces ownership regardless of this value.
-  const [seoProjectId, setSeoProjectId] = useState("");
+  const [seoProjectId, setSeoProjectId] = useState(initialSeoProjectId);
   const contentOptions = useMemo(() => contentByProject[seoProjectId] ?? [], [contentByProject, seoProjectId]);
-  const [contentId, setContentId] = useState(contentOptions[0]?.id ?? "");
+  // Preselection wins when present; otherwise the existing "first item" default is preserved exactly.
+  const [contentId, setContentId] = useState(initialContentId || contentOptions[0]?.id || "");
   const [platforms, setPlatforms] = useState<SocialSnippetPlatform[]>([...SOCIAL_SNIPPET_PLATFORMS]);
   const [notes, setNotes] = useState("");
   /** The platform set the currently-displayed result was generated for — not the live checkboxes, which the user may change afterwards. */

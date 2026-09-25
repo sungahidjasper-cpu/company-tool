@@ -1,12 +1,13 @@
 "use client";
 
-import { Film, ImagePlus, Trash2 } from "lucide-react";
+import { Film, ImagePlus, Trash2, UploadCloud } from "lucide-react";
 import { useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { deleteFile, uploadFile } from "@/features/files/actions/file.actions";
 import { IMAGE_MIME_TYPES, MAX_FILE_SIZE_BYTES, VIDEO_MIME_TYPES } from "@/features/files/schemas/file.schema";
+import { cn } from "@/lib/utils";
 
 export type SocialMediaFile = {
   /** A real File row id once uploaded; a `staged:` key while it is only in the browser. */
@@ -24,7 +25,7 @@ export type SocialMediaFile = {
   pending?: File;
 };
 
-const ACCEPTED = [...IMAGE_MIME_TYPES, ...VIDEO_MIME_TYPES];
+const ACCEPTED = [...IMAGE_MIME_TYPES, ...VIDEO_MIME_TYPES] as readonly string[];
 
 export function isStagedMedia(file: SocialMediaFile): boolean {
   return file.pending !== undefined;
@@ -79,13 +80,13 @@ export async function uploadStagedMedia(
 }
 
 /**
- * Phase 6 — media for a social post, presented as a composer action rather
- * than a form field (Phase 7 refinement).
+ * Phase 6 media, redesigned media-first for the composer's UX pass.
  *
  * Reuses the platform's EXISTING File infrastructure wholesale: the same
  * uploadFile/deleteFile actions, the same storage, the same size and MIME
  * rules, and the same company/permission checks. No second media library was
- * built.
+ * built, and drag-and-drop is a second way to reach the exact same `add()`
+ * this always had — not a second upload path.
  *
  * TWO MODES, because a File row needs something to attach to:
  *
@@ -103,26 +104,17 @@ export default function SocialMediaPanel({
   files,
   onFilesChange,
   disabled,
-  /**
-   * Extra composer actions rendered in the SAME "Add to post" row.
-   *
-   * They live here rather than in the composer because the file input lives
-   * here: handing the parent an imperative opener would mean touching a ref
-   * during render, which is exactly the cascading-render problem the React
-   * compiler flags. One row, one owner.
-   */
-  extraActions,
 }: {
   contentId: string | null;
   files: SocialMediaFile[];
   onFilesChange: (files: SocialMediaFile[]) => void;
   disabled?: boolean;
-  extraActions?: React.ReactNode;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const kindRef = useRef<"image" | "video">("image");
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
 
   function openPicker(kind: "image" | "video") {
     setError(null);
@@ -133,9 +125,14 @@ export default function SocialMediaPanel({
   function add(file: File) {
     setError(null);
 
-    const allowed = kindRef.current === "image" ? (IMAGE_MIME_TYPES as readonly string[]) : (VIDEO_MIME_TYPES as readonly string[]);
-    if (!allowed.includes(file.type)) {
-      setError(`"${file.name}" is not a supported ${kindRef.current === "image" ? "image" : "video"} type.`);
+    /*
+     * Checked against the FULL accepted list, not just whichever button was
+     * clicked — the file input's own `accept` attribute already allows both
+     * kinds no matter which button opened it, and a dropped file was never
+     * routed through a button at all. One real rule, checked once.
+     */
+    if (!ACCEPTED.includes(file.type)) {
+      setError(`"${file.name}" is not a supported photo, GIF, or video type.`);
       return;
     }
     /*
@@ -197,10 +194,27 @@ export default function SocialMediaPanel({
     });
   }
 
+  /** Drag-and-drop is a second way to reach `add()` — same validation, same staging, same upload. */
+  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setIsDraggingOver(false);
+    if (disabled || isPending) return;
+    Array.from(event.dataTransfer.files).forEach((file) => add(file));
+  }
+
   const stagedCount = files.filter(isStagedMedia).length;
 
   return (
-    <div className="flex flex-col gap-2">
+    <div
+      className="flex flex-col gap-3"
+      onDragOver={(event) => {
+        if (disabled || isPending) return;
+        event.preventDefault();
+        setIsDraggingOver(true);
+      }}
+      onDragLeave={() => setIsDraggingOver(false)}
+      onDrop={handleDrop}
+    >
       <input
         ref={inputRef}
         type="file"
@@ -213,49 +227,85 @@ export default function SocialMediaPanel({
         }}
       />
 
-      {files.length > 0 && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {files.map((file) => (
-            <div key={file.id} className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-slate-200">
-              <div className="flex h-24 items-center justify-center bg-slate-50">
-                {file.mimeType.startsWith("video/") ? (
-                  <video src={file.url} className="h-full w-full object-cover" />
-                ) : (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={file.url} alt={file.fileName} className="h-full w-full object-cover" />
-                )}
-              </div>
-              <div className="flex min-w-0 items-center justify-between gap-1.5 px-2 py-1.5">
-                <span className="min-w-0">
-                  <span className="block truncate text-[11px] font-medium text-slate-700">{file.fileName}</span>
-                  <span className="block text-[10px] text-slate-400">{readableSize(file.sizeBytes)}</span>
-                </span>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  onClick={() => remove(file)}
-                  disabled={disabled || isPending}
-                  aria-label={`Remove ${file.fileName}`}
-                >
-                  <Trash2 size={13} />
-                </Button>
-              </div>
-            </div>
-          ))}
+      {files.length === 0 ? (
+        /*
+         * Media-first empty state — a real drop target, not just a row of
+         * small buttons underneath a textarea. Dragging a file anywhere onto
+         * this panel (not only inside this box) reaches the same `add()`.
+         */
+        <div
+          className={cn(
+            "flex flex-col items-center justify-center gap-2.5 rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors",
+            isDraggingOver ? "border-[#2F4156] bg-[#2F4156]/5" : "border-slate-200 bg-slate-50"
+          )}
+        >
+          <span className="flex size-11 items-center justify-center rounded-full bg-white shadow-sm">
+            <UploadCloud size={20} className="text-slate-400" />
+          </span>
+          <div>
+            <p className="text-sm font-medium text-slate-700">Add photos or videos</p>
+            <p className="text-xs text-slate-500">Drag and drop here, or choose a file below.</p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+            <Button type="button" variant="outline" size="sm" onClick={() => openPicker("image")} disabled={disabled || isPending}>
+              <ImagePlus size={14} /> Photo or GIF
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => openPicker("video")} disabled={disabled || isPending}>
+              <Film size={14} /> Video
+            </Button>
+          </div>
         </div>
+      ) : (
+        <>
+          {/* Media IS the point of this panel now — one attachment fills the width instead of sitting in a small grid tile. */}
+          <div className={cn("grid gap-2.5", files.length === 1 ? "grid-cols-1" : "grid-cols-2 sm:grid-cols-3")}>
+            {files.map((file) => (
+              <div key={file.id} className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white">
+                <div className={cn("flex items-center justify-center bg-slate-50", files.length === 1 ? "h-64" : "h-36")}>
+                  {file.mimeType.startsWith("video/") ? (
+                    <video src={file.url} controls className="h-full w-full object-cover" />
+                  ) : (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={file.url} alt={file.fileName} className="h-full w-full object-cover" />
+                  )}
+                </div>
+                <div className="flex min-w-0 items-center justify-between gap-1.5 px-2.5 py-2">
+                  <span className="min-w-0">
+                    <span className="block truncate text-[11px] font-medium text-slate-700">{file.fileName}</span>
+                    <span className="block text-[10px] text-slate-400">{readableSize(file.sizeBytes)}</span>
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={() => remove(file)}
+                    disabled={disabled || isPending}
+                    aria-label={`Remove ${file.fileName}`}
+                  >
+                    <Trash2 size={13} />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-slate-500">{isPending ? "Uploading…" : "Add more"}</span>
+            <Button type="button" variant="outline" size="sm" onClick={() => openPicker("image")} disabled={disabled || isPending}>
+              <ImagePlus size={14} /> Photo or GIF
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => openPicker("video")} disabled={disabled || isPending}>
+              <Film size={14} /> Video
+            </Button>
+          </div>
+        </>
       )}
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2">
-        <span className="text-xs font-medium text-slate-500">{isPending ? "Uploading…" : "Add to post"}</span>
-        <Button type="button" variant="outline" size="sm" onClick={() => openPicker("image")} disabled={disabled || isPending}>
-          <ImagePlus size={14} /> Photo or GIF
-        </Button>
-        <Button type="button" variant="outline" size="sm" onClick={() => openPicker("video")} disabled={disabled || isPending}>
-          <Film size={14} /> Video
-        </Button>
-        {extraActions}
-      </div>
+      {isDraggingOver && files.length > 0 && (
+        <p className="rounded-lg border border-dashed border-[#2F4156] bg-[#2F4156]/5 px-3 py-2 text-center text-xs font-medium text-[#2F4156]">
+          Drop to add another file
+        </p>
+      )}
 
       {stagedCount > 0 && (
         <p className="text-xs text-slate-500">

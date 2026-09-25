@@ -124,6 +124,8 @@ function makeExistingContent(overrides: Partial<Record<string, unknown>> = {}) {
     metaTitle: "Old Meta Title",
     metaDescription: "Old Meta Description",
     body: "Old body",
+    companyId: COMPANY_A,
+    seoProjectId: "seo-1",
     seoProject: { id: "seo-1", companyId: COMPANY_A },
     ...overrides,
   };
@@ -163,7 +165,7 @@ describe("updateContent", () => {
   });
 
   it("rejects when the actor's company differs from the Content's company", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue(makeExistingContent({ seoProject: { id: "seo-1", companyId: COMPANY_B } }));
+    mockedPrisma.content.findUnique.mockResolvedValue(makeExistingContent({ companyId: COMPANY_B, seoProject: { id: "seo-1", companyId: COMPANY_B } }));
     const result = await updateContent("content-1", makeInput());
     expect(result.success).toBe(false);
     expect(mockedPrisma.content.update).not.toHaveBeenCalled();
@@ -263,6 +265,10 @@ describe("updateContent", () => {
           url: "https://example.com",
           status: "APPROVED",
           publishedAt: new Date("2026-01-01"),
+          // Phase 5 — an edit that leaves the record NOT scheduled clears the
+          // schedule with it, so no row keeps an instant it no longer honours.
+          scheduledAt: null,
+          scheduledTimezone: null,
           body: "Old body",
           keywords: { set: [{ id: "kw-1" }] },
         },
@@ -319,7 +325,7 @@ describe("getContentDeletionImpact", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedRequireUser.mockResolvedValue(MANAGER);
-    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ id: "seo-1", companyId: COMPANY_A });
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ id: "seo-1", companyId: COMPANY_A, clientId: null });
     mockedPrisma.contentRevision.findMany.mockResolvedValue([]);
     mockedPrisma.note.count.mockResolvedValue(0);
     mockedPrisma.file.count.mockResolvedValue(0);
@@ -334,7 +340,7 @@ describe("getContentDeletionImpact", () => {
   });
 
   it("rejects a cross-company SEO project", async () => {
-    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ id: "seo-1", companyId: COMPANY_B });
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ id: "seo-1", companyId: COMPANY_B, clientId: null });
     const result = await getContentDeletionImpact("seo-1", ["content-1"]);
     expect(result.success).toBe(false);
     if (!result.success) expect(result.message).toMatch(/not found/i);
@@ -386,7 +392,7 @@ describe("bulkDeleteContent", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedRequireUser.mockResolvedValue(MANAGER);
-    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ id: "seo-1", companyId: COMPANY_A });
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ id: "seo-1", companyId: COMPANY_A, clientId: null });
     mockedPrisma.contentRevision.findMany.mockResolvedValue([]);
     mockedPrisma.content.deleteMany.mockResolvedValue({ count: 0 });
   });
@@ -478,7 +484,7 @@ describe("bulkDeleteContent", () => {
     });
 
     it("rejects a cross-company SEO project", async () => {
-      mockedPrisma.sEOProject.findUnique.mockResolvedValue({ id: "seo-1", companyId: COMPANY_B });
+      mockedPrisma.sEOProject.findUnique.mockResolvedValue({ id: "seo-1", companyId: COMPANY_B, clientId: null });
       const result = await bulkDeleteContent("seo-1", ["content-1"]);
       expect(result.success).toBe(false);
       if (!result.success) expect(result.message).toMatch(/not found/i);
@@ -520,7 +526,7 @@ function makeContentNote(overrides: Partial<Record<string, unknown>> = {}) {
     createdAt: new Date("2026-01-01"),
     updatedAt: new Date("2026-01-01"),
     deletedAt: null,
-    content: { id: CONTENT_ID, seoProject: { id: SEO_PROJECT_ID, companyId: COMPANY_A } },
+    content: { id: CONTENT_ID, companyId: COMPANY_A, seoProjectId: SEO_PROJECT_ID },
     ...overrides,
   };
 }
@@ -559,7 +565,7 @@ describe("updateContentNote", () => {
 
   it("7. wrong-tenant note is rejected", async () => {
     mockedPrisma.note.findUnique.mockResolvedValue(
-      makeContentNote({ content: { id: CONTENT_ID, seoProject: { id: SEO_PROJECT_ID, companyId: COMPANY_B } } })
+      makeContentNote({ content: { id: CONTENT_ID, companyId: COMPANY_B, seoProjectId: SEO_PROJECT_ID } })
     );
     const result = await updateContentNote({ noteId: "note-1", body: "x" });
     expect(result.success).toBe(false);
@@ -692,7 +698,7 @@ describe("deleteContentNote", () => {
 
   it("7b. wrong-tenant note is rejected", async () => {
     mockedPrisma.note.findUnique.mockResolvedValue(
-      makeContentNote({ content: { id: CONTENT_ID, seoProject: { id: SEO_PROJECT_ID, companyId: COMPANY_B } } })
+      makeContentNote({ content: { id: CONTENT_ID, companyId: COMPANY_B, seoProjectId: SEO_PROJECT_ID } })
     );
     const result = await deleteContentNote({ noteId: "note-1" });
     expect(result.success).toBe(false);
@@ -924,12 +930,22 @@ describe("createContent", () => {
     await createContent("seo-1", VALID_CONTENT_INPUT);
     expect(mockedPrisma.content.create).toHaveBeenCalledWith({
       data: {
+        // Ownership is recorded on the row itself now, derived from the
+        // already-verified project — not joined for at read time.
+        companyId: COMPANY_A,
+        clientId: null,
         seoProjectId: "seo-1",
+        // Created in an SEO project's own content form.
+        contentType: "SEO_CONTENT",
         authorId: null,
         title: "New Article",
         url: null,
         status: "DRAFT",
         publishedAt: null,
+        // Phase 5 — an unscheduled create writes both schedule fields as null
+        // rather than omitting them, so no row can hold a half-written schedule.
+        scheduledAt: null,
+        scheduledTimezone: null,
         body: null,
         keywords: undefined,
       },
@@ -1015,7 +1031,7 @@ describe("advanceContentStatus", () => {
   });
 
   it("3. rejects when the Content belongs to a different company", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue(makeExistingContent({ seoProject: { id: "seo-1", companyId: COMPANY_B } }));
+    mockedPrisma.content.findUnique.mockResolvedValue(makeExistingContent({ companyId: COMPANY_B, seoProject: { id: "seo-1", companyId: COMPANY_B } }));
     const result = await advanceContentStatus("content-1");
     expect(result.success).toBe(false);
     if (!result.success) expect(result.message).toBe("Content not found.");
@@ -1118,7 +1134,7 @@ describe("archiveContent", () => {
   });
 
   it("3. rejects when the Content belongs to a different company", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue(makeExistingContent({ seoProject: { id: "seo-1", companyId: COMPANY_B } }));
+    mockedPrisma.content.findUnique.mockResolvedValue(makeExistingContent({ companyId: COMPANY_B, seoProject: { id: "seo-1", companyId: COMPANY_B } }));
     const result = await archiveContent("content-1");
     expect(result.success).toBe(false);
     if (!result.success) expect(result.message).toBe("Content not found.");
@@ -1144,10 +1160,12 @@ describe("archiveContent", () => {
     });
   });
 
-  it("6. revalidates only the content list", async () => {
+  it("6. revalidates the project listing AND the client-first workspace", async () => {
     await archiveContent("content-1");
     expect(mockedRevalidatePath).toHaveBeenCalledWith("/seo/seo-1/content");
-    expect(mockedRevalidatePath).toHaveBeenCalledTimes(1);
+    // The record is reachable from the workspace and its own address too.
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/content");
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/content/content-1");
   });
 
   it("7. returns a plain success result", async () => {
@@ -1180,7 +1198,7 @@ describe("restoreContent", () => {
   });
 
   it("3. rejects when the Content belongs to a different company", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue(makeExistingContent({ seoProject: { id: "seo-1", companyId: COMPANY_B } }));
+    mockedPrisma.content.findUnique.mockResolvedValue(makeExistingContent({ companyId: COMPANY_B, seoProject: { id: "seo-1", companyId: COMPANY_B } }));
     const result = await restoreContent("content-1");
     expect(result.success).toBe(false);
     if (!result.success) expect(result.message).toBe("Content not found.");
@@ -1203,10 +1221,11 @@ describe("restoreContent", () => {
     });
   });
 
-  it("6. revalidates only the content list", async () => {
+  it("6. revalidates the project listing AND the client-first workspace", async () => {
     await restoreContent("content-1");
     expect(mockedRevalidatePath).toHaveBeenCalledWith("/seo/seo-1/content");
-    expect(mockedRevalidatePath).toHaveBeenCalledTimes(1);
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/content");
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/content/content-1");
   });
 
   it("7. returns a plain success result", async () => {
@@ -1233,7 +1252,7 @@ describe("addContentNote", () => {
   });
 
   it("2. rejects when the Content belongs to a different company", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue(makeExistingContent({ seoProject: { id: "seo-1", companyId: COMPANY_B } }));
+    mockedPrisma.content.findUnique.mockResolvedValue(makeExistingContent({ companyId: COMPANY_B, seoProject: { id: "seo-1", companyId: COMPANY_B } }));
     const result = await addContentNote("content-1", "A note");
     expect(result.success).toBe(false);
     if (!result.success) expect(result.message).toBe("Content not found.");
@@ -1270,10 +1289,10 @@ describe("addContentNote", () => {
     });
   });
 
-  it("7. revalidates only the content detail path", async () => {
+  it("7. revalidates the content detail path, at both of its addresses", async () => {
     await addContentNote("content-1", "A note");
     expect(mockedRevalidatePath).toHaveBeenCalledWith("/seo/seo-1/content/content-1");
-    expect(mockedRevalidatePath).toHaveBeenCalledTimes(1);
+    expect(mockedRevalidatePath).toHaveBeenCalledWith("/content/content-1");
   });
 
   it("8. zero mentions in the body sends zero notifications", async () => {
@@ -1610,7 +1629,7 @@ describe("importContentCsv", () => {
     const formData = makeFormDataWithFile("title,url,status\nFirst Article,https://example.com/a,APPROVED");
     const result = await importContentCsv("seo-1", formData);
     expect(mockedPrisma.content.create).toHaveBeenCalledWith({
-      data: { seoProjectId: "seo-1", title: "First Article", url: "https://example.com/a", status: "APPROVED" },
+      data: { companyId: COMPANY_A, clientId: null, seoProjectId: "seo-1", contentType: "SEO_CONTENT", title: "First Article", url: "https://example.com/a", status: "APPROVED" },
     });
     expect(result).toEqual({ success: true, data: { created: 1, errors: [] } });
   });
@@ -1649,10 +1668,10 @@ describe("importContentCsv", () => {
     const result = await importContentCsv("seo-1", formData);
     expect(mockedPrisma.content.create).toHaveBeenCalledTimes(2);
     expect(mockedPrisma.content.create).toHaveBeenNthCalledWith(1, {
-      data: { seoProjectId: "seo-1", title: "Good Title One", url: null, status: "DRAFT" },
+      data: { companyId: COMPANY_A, clientId: null, seoProjectId: "seo-1", contentType: "SEO_CONTENT", title: "Good Title One", url: null, status: "DRAFT" },
     });
     expect(mockedPrisma.content.create).toHaveBeenNthCalledWith(2, {
-      data: { seoProjectId: "seo-1", title: "Good Title Two", url: null, status: "APPROVED" },
+      data: { companyId: COMPANY_A, clientId: null, seoProjectId: "seo-1", contentType: "SEO_CONTENT", title: "Good Title Two", url: null, status: "APPROVED" },
     });
     expect(result.success).toBe(true);
     if (result.success) {
@@ -1706,3 +1725,4 @@ describe("importContentCsv", () => {
     expect(mockedRevalidatePath).not.toHaveBeenCalled();
   });
 });
+

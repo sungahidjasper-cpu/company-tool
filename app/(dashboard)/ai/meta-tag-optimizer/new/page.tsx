@@ -6,12 +6,24 @@ import { Tags } from "lucide-react";
 import Link from "next/link";
 
 import MetaTagOptimizerPicker from "@/features/ai-workspace/components/MetaTagOptimizerPicker";
+import { parseContentOptimizerParams, resolveContentOptimizerSelection } from "@/features/ai-workspace/services/content-optimizer-handoff";
 import { listSeoProjectOptions } from "@/features/seo/services/seo-project.service";
 import { requireUser } from "@/lib/auth";
 import { assertPermission, Permissions } from "@/lib/authorization";
 import { prisma } from "@/lib/prisma";
 
-export default async function NewMetaTagOptimizerPage() {
+/**
+ * Phase C4.1 — accepts an optional contextual hand-off from a Content record
+ * (?seoProjectId=&contentId=). These are PRESELECTION HINTS ONLY: they are
+ * resolved below against this route's own company-scoped, non-soft-deleted
+ * query, and the generate/apply actions re-verify company, project and
+ * soft-delete state independently before anything is generated or written.
+ */
+type NewMetaTagOptimizerPageProps = {
+  searchParams: Promise<{ seoProjectId?: string; contentId?: string }>;
+};
+
+export default async function NewMetaTagOptimizerPage({ searchParams }: NewMetaTagOptimizerPageProps) {
   const user = await requireUser();
   assertPermission(user, Permissions.manageSeoProjects);
 
@@ -26,6 +38,12 @@ export default async function NewMetaTagOptimizerPage() {
 
   const contentByProject: Record<string, { id: string; title: string; url: string | null; currentMetaTitle: string | null; currentMetaDescription: string | null }[]> = {};
   for (const item of content) {
+    /*
+     * These tools are SEO-project scoped: they are picked BY project, so a
+     * client-owned row with no project has no group to appear under and is
+     * not eligible for them. Skipped rather than forced into a bucket.
+     */
+    if (item.seoProjectId === null) continue;
     (contentByProject[item.seoProjectId] ??= []).push({
       id: item.id,
       title: item.title,
@@ -34,6 +52,12 @@ export default async function NewMetaTagOptimizerPage() {
       currentMetaDescription: item.metaDescription,
     });
   }
+
+  const preselection = resolveContentOptimizerSelection(
+    parseContentOptimizerParams(await searchParams),
+    seoProjectOptions.map((option) => option.id),
+    contentByProject
+  );
 
   return (
     <PageContainer>
@@ -56,7 +80,12 @@ export default async function NewMetaTagOptimizerPage() {
               }
             />
           ) : (
-            <MetaTagOptimizerPicker seoProjectOptions={seoProjectOptions} contentByProject={contentByProject} />
+            <MetaTagOptimizerPicker
+              seoProjectOptions={seoProjectOptions}
+              contentByProject={contentByProject}
+              initialSeoProjectId={preselection.seoProjectId}
+              initialSelectedContentIds={preselection.contentIds}
+            />
           )}
         </CardContent>
       </Card>

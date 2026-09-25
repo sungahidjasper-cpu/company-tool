@@ -14,8 +14,11 @@ import {
   hasMalformedHashtag,
   measureCaption,
   effectiveCaption,
+  effectiveFirstComment,
   effectiveLink,
+  evaluatePublishEligibility,
   inheritingPlatforms,
+  resolveInitialAccountSelection,
   validateComposerDraft,
   validateTargets,
   type ComposerDraft,
@@ -234,6 +237,7 @@ const target = (over: Partial<TargetDraft> = {}): TargetDraft => ({
   label: "@storagemoguls",
   caption: null,
   link: null,
+  firstComment: null,
   ...over,
 });
 
@@ -250,6 +254,24 @@ describe("a target either follows the shared caption or replaces it", () => {
 
   it("38. an empty string is a customization, not inheritance — the distinction is null", () => {
     expect(effectiveCaption("Shared text", target({ caption: "" }))).toBe("");
+  });
+});
+
+describe("effectiveFirstComment — the same inherit-or-override rule, but nullable at the base too", () => {
+  it("38b. null inherits the shared first comment", () => {
+    expect(effectiveFirstComment("Shared comment", target())).toBe("Shared comment");
+  });
+
+  it("38c. no shared comment and no override means nothing to post", () => {
+    expect(effectiveFirstComment(null, target())).toBe("");
+  });
+
+  it("38d. an override wins over the shared comment, even when the shared one is null", () => {
+    expect(effectiveFirstComment(null, target({ firstComment: "Just for this account" }))).toBe("Just for this account");
+  });
+
+  it("38e. whitespace-only text resolves to empty — there is nothing real to publish", () => {
+    expect(effectiveFirstComment("   ", target())).toBe("");
   });
 });
 
@@ -373,5 +395,152 @@ describe("a social post names its own record, so nobody has to", () => {
     for (const caption of ["", "#a", "x".repeat(5000), "Line\nLine\nLine", "  padded  "]) {
       expect([...deriveSocialPostTitle(caption, NOW)].length).toBeLessThanOrEqual(MAX_POST_TITLE_LENGTH);
     }
+  });
+});
+
+/**
+ * Stage 4 — a new, never-saved post should not require a manual click on the
+ * one obvious account before "Publish Now" can do anything, but must never
+ * guess among several. These are the same functions SocialComposer.tsx calls
+ * directly (not a re-implementation to keep in sync with) — this repo has no
+ * component-rendering test infrastructure, so this is the exact JSX-gating
+ * logic, tested at the pure-function boundary.
+ */
+describe("resolveInitialAccountSelection", () => {
+  const connected = (id: string) => ({ id, connectionState: "CONNECTED" as const });
+  const notConnected = (id: string) => ({ id, connectionState: "NOT_CONNECTED" as const });
+
+  it("1. a reopened post's own saved selection always wins, even over a sole connected account", () => {
+    expect(resolveInitialAccountSelection([connected("a"), connected("b")], ["b"])).toEqual(["b"]);
+  });
+
+  it("2. exactly one connected account is selected automatically for a brand-new post", () => {
+    expect(resolveInitialAccountSelection([connected("a"), notConnected("b")], [])).toEqual(["a"]);
+  });
+
+  it("6. two or more connected accounts are never auto-selected — that would be a guess, not a convenience", () => {
+    expect(resolveInitialAccountSelection([connected("a"), connected("b")], [])).toEqual([]);
+  });
+
+  it("5. zero connected accounts leaves the selection empty", () => {
+    expect(resolveInitialAccountSelection([notConnected("a")], [])).toEqual([]);
+    expect(resolveInitialAccountSelection([], [])).toEqual([]);
+  });
+});
+
+describe("evaluatePublishEligibility", () => {
+  const CONNECTED = { connectionState: "CONNECTED" as const };
+  const NOT_CONNECTED = { connectionState: "NOT_CONNECTED" as const };
+  const OK_CONTENT = validateComposerDraft({ caption: "Cloud Compass integration test — please ignore.", link: "", accountIds: ["a"] }, ["FACEBOOK"]);
+  const EMPTY_CONTENT = validateComposerDraft({ caption: "", link: "", accountIds: ["a"] }, ["FACEBOOK"]);
+  const OK_TARGETS = validateTargets([]);
+
+  it("1 & 2. a new post with one connected, selected account and valid text is publishable", () => {
+    const result = evaluatePublishEligibility({
+      allAccounts: [CONNECTED],
+      selectedAccounts: [{ id: "a", ...CONNECTED }],
+      activeAccountId: null,
+      contentValidation: OK_CONTENT,
+      targetsValidation: OK_TARGETS,
+    });
+    expect(result).toEqual({ ok: true, accountId: "a" });
+  });
+
+  it("3. media is not part of this check at all — the same account+caption rule covers a post with an image exactly as it does text-only", () => {
+    // evaluatePublishEligibility never looks at media; a caller with an image attached passes the identical inputs.
+    const withImageAttached = evaluatePublishEligibility({
+      allAccounts: [CONNECTED],
+      selectedAccounts: [{ id: "a", ...CONNECTED }],
+      activeAccountId: null,
+      contentValidation: OK_CONTENT,
+      targetsValidation: OK_TARGETS,
+    });
+    expect(withImageAttached.ok).toBe(true);
+  });
+
+  it("4. a new post with no meaningful content remains blocked, with the same reason Save Draft would show", () => {
+    const result = evaluatePublishEligibility({
+      allAccounts: [CONNECTED],
+      selectedAccounts: [{ id: "a", ...CONNECTED }],
+      activeAccountId: null,
+      contentValidation: EMPTY_CONTENT,
+      targetsValidation: OK_TARGETS,
+    });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.reason).toBe(!EMPTY_CONTENT.ok ? EMPTY_CONTENT.error : "");
+  });
+
+  it("5. no connected account at all remains blocked, and says to connect one", () => {
+    const result = evaluatePublishEligibility({
+      allAccounts: [NOT_CONNECTED],
+      selectedAccounts: [],
+      activeAccountId: null,
+      contentValidation: OK_CONTENT,
+      targetsValidation: OK_TARGETS,
+    });
+    expect(result).toEqual({ ok: false, reason: "Connect an account before publishing." });
+  });
+
+  it("5b. a connected account that simply isn't SELECTED is a distinct, clearer reason — never silent", () => {
+    const result = evaluatePublishEligibility({
+      allAccounts: [CONNECTED],
+      selectedAccounts: [],
+      activeAccountId: null,
+      contentValidation: OK_CONTENT,
+      targetsValidation: OK_TARGETS,
+    });
+    expect(result).toEqual({ ok: false, reason: "Select an account to publish to." });
+  });
+
+  it("6. multiple connected, selected accounts with no active tab require explicit disambiguation — never an arbitrary pick", () => {
+    const result = evaluatePublishEligibility({
+      allAccounts: [CONNECTED, CONNECTED],
+      selectedAccounts: [{ id: "a", ...CONNECTED }, { id: "b", ...CONNECTED }],
+      activeAccountId: null,
+      contentValidation: OK_CONTENT,
+      targetsValidation: OK_TARGETS,
+    });
+    expect(result).toEqual({ ok: false, reason: "Open the platform's tab you want to Publish Now for." });
+  });
+
+  it("6b. opening one of the several accounts' own tab resolves the ambiguity to exactly that account", () => {
+    const result = evaluatePublishEligibility({
+      allAccounts: [CONNECTED, CONNECTED],
+      selectedAccounts: [{ id: "a", ...CONNECTED }, { id: "b", ...CONNECTED }],
+      activeAccountId: "b",
+      contentValidation: OK_CONTENT,
+      targetsValidation: OK_TARGETS,
+    });
+    expect(result).toEqual({ ok: true, accountId: "b" });
+  });
+
+  it("7. selecting an account changes eligibility from blocked to publishable, all else equal", () => {
+    const nothingSelected = evaluatePublishEligibility({
+      allAccounts: [CONNECTED],
+      selectedAccounts: [],
+      activeAccountId: null,
+      contentValidation: OK_CONTENT,
+      targetsValidation: OK_TARGETS,
+    });
+    const nowSelected = evaluatePublishEligibility({
+      allAccounts: [CONNECTED],
+      selectedAccounts: [{ id: "a", ...CONNECTED }],
+      activeAccountId: null,
+      contentValidation: OK_CONTENT,
+      targetsValidation: OK_TARGETS,
+    });
+    expect(nothingSelected.ok).toBe(false);
+    expect(nowSelected.ok).toBe(true);
+  });
+
+  it("a selected but NOT_CONNECTED account is never publishable, connection-state security stays authoritative", () => {
+    const result = evaluatePublishEligibility({
+      allAccounts: [NOT_CONNECTED],
+      selectedAccounts: [{ id: "a", ...NOT_CONNECTED }],
+      activeAccountId: null,
+      contentValidation: OK_CONTENT,
+      targetsValidation: OK_TARGETS,
+    });
+    expect(result).toEqual({ ok: false, reason: "Connect an account before publishing." });
   });
 });

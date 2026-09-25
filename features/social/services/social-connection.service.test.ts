@@ -309,6 +309,35 @@ describe("an existing hand-configured account is reattached, not duplicated", ()
     expect(mockedPrisma.socialAccount.create).not.toHaveBeenCalled();
     expect(mockedStore).not.toHaveBeenCalled();
   });
+
+  it("14. Phase 9E — a SECOND, DIFFERENT Page for a client that already has one connected account creates a NEW row", async () => {
+    /*
+     * The spec: "Client A: Facebook Page 1, Facebook Page 2, Instagram
+     * Account 1". Priority 2 (companyId + platform + externalId) only ever
+     * matches the EXACT same real Page — a different externalId matches
+     * nothing there, and priority 3 only reattaches to an identity-only
+     * account (externalId: null), never to one that is already connected to
+     * a different real Page. So a second, distinct Page must fall through to
+     * create(), not silently reuse or collide with the first.
+     */
+    const SECOND_PAGE_ID = "10002";
+    mockedPrisma.socialAccount.findFirst.mockImplementation(async ({ where }) => {
+      if ("id" in where) return null;
+      // Priority 2 — no existing row carries THIS externalId yet.
+      if ("externalId" in where && where.externalId === SECOND_PAGE_ID) return null;
+      // Priority 3 — the client's existing Facebook account is already connected (externalId set), so it must not match here.
+      if ("deletedAt" in where) return null;
+      return null;
+    });
+
+    const result = await completeConnectionFromSelection({ ...selection, externalId: SECOND_PAGE_ID });
+
+    expect(result.ok).toBe(true);
+    expect(mockedPrisma.socialAccount.update).not.toHaveBeenCalled();
+    const [{ data }] = mockedPrisma.socialAccount.create.mock.calls[0];
+    expect(data.externalId).toBe(SECOND_PAGE_ID);
+    expect(data.clientId).toBe(CLIENT_ID);
+  });
 });
 
 describe("the credential is stored, and only the credential", () => {

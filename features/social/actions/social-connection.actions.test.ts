@@ -409,6 +409,20 @@ describe("what the settings screen is told about configuration", () => {
     expect(connectable).toEqual(["FACEBOOK"]);
   });
 
+  it("24b. Phase 9E — provider configuration cannot be spoofed by the browser, because it takes no input at all", async () => {
+    /*
+     * listPlatformConnectivityAction has no parameters — it reads only the
+     * session and process.env. This proves that literally, not by
+     * inspection: calling it with arbitrary extra arguments (as a
+     * hand-crafted request against the action could attempt) produces the
+     * exact same result as calling it with none.
+     */
+    const clean = await listPlatformConnectivityAction();
+    // @ts-expect-error — deliberately calling with arguments the signature does not accept.
+    const spoofed = await listPlatformConnectivityAction({ platform: "FACEBOOK", connectable: true, configured: true });
+    expect(spoofed).toEqual(clean);
+  });
+
   it("25. starting a flow for a platform with no provider is refused", async () => {
     const result = await startSocialConnectionAction({ clientId: CLIENT_ID, platform: "INSTAGRAM" });
     expect(result.success).toBe(false);

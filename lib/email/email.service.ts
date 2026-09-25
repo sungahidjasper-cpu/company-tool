@@ -16,3 +16,12 @@ export function isEmailConfigured(): boolean {
 export async function sendPasswordResetEmail(params: { to: string; resetUrl: string }): Promise<SendEmailResult> {
   return adapter.sendPasswordResetEmail(params);
 }
+
+export async function sendInvitationEmail(params: {
+  to: string;
+  inviteUrl: string;
+  firstName: string;
+  companyName: string;
+}): Promise<SendEmailResult> {
+  return adapter.sendInvitationEmail(params);
+}

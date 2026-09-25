@@ -6,6 +6,7 @@ import { actionError, actionSuccess, type ActionResult } from "@/lib/action-resu
 import { logActivity } from "@/lib/activity";
 import { requireUser } from "@/lib/auth";
 import { Permissions } from "@/lib/authorization";
+import { contentRevalidatePaths } from "@/features/content-workspace/services/content-location";
 import { prisma } from "@/lib/prisma";
 import { createContentRevisionSnapshot } from "@/features/seo/services/content-revision.service";
 
@@ -24,7 +25,7 @@ async function getOwnedContent(contentId: string, companyId: string) {
     where: { id: contentId },
     include: { seoProject: { select: { id: true, companyId: true } } },
   });
-  if (!content || content.seoProject.companyId !== companyId) return null;
+  if (!content || content.companyId !== companyId) return null;
   return content;
 }
 
@@ -134,7 +135,7 @@ export async function restoreContentRevisionAction(input: RestoreContentRevision
       actorId: actor.id,
       action: "content.revision_restored",
       companyId: actor.companyId,
-      seoProjectId: existing.seoProject.id,
+      seoProjectId: existing.seoProjectId ?? undefined,
       contentId: input.contentId,
       metadata: {
         restoredFromRevisionId: preflight.restoredFromRevision.id,
@@ -151,6 +152,6 @@ export async function restoreContentRevisionAction(input: RestoreContentRevision
     });
   }
 
-  revalidatePath(`/seo/${existing.seoProject.id}/content/${input.contentId}`);
+  contentRevalidatePaths({ id: input.contentId, seoProjectId: existing.seoProjectId }).forEach((path) => revalidatePath(path));
   return actionSuccess({ id: input.contentId, noOp: false });
 }

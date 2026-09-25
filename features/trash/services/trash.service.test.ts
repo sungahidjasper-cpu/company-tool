@@ -85,10 +85,10 @@ describe("getTrashItems — tenant isolation", () => {
     ]);
   });
 
-  it("scopes the Content query by seoProject.companyId with deletedAt: { not: null }", async () => {
+  it("scopes the Content query by the content's OWN companyId with deletedAt: { not: null }", async () => {
     await getTrashItems(COMPANY_A);
     expect(mockedPrisma.content.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { seoProject: { companyId: COMPANY_A }, deletedAt: { not: null } } })
+      expect.objectContaining({ where: { companyId: COMPANY_A, deletedAt: { not: null } } })
     );
   });
 

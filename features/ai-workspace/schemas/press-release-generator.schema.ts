@@ -85,3 +85,27 @@ export const pressReleaseJobResultSchema = zv4.object({
   result: pressReleaseResultSchema.nullable(),
 });
 export type PressReleaseJobResult = zv4.infer<typeof pressReleaseJobResultSchema>;
+
+/**
+ * Renders a canonical result as Markdown for `Content.body` — the same
+ * "single Markdown string" convention `formatLongFormContentAsMarkdown`
+ * already established for long-form content, applied here for the press
+ * release save action. `subheadline`/`dateline` (structural metadata) are
+ * rendered here too so the body reads as a complete release, but are ALSO
+ * duplicated into `Content.aiBriefDetails` (the full canonical result) so
+ * nothing is lost regardless of how this function serializes the body.
+ * `reasoning` is reviewer-only and is never rendered into the body.
+ */
+export function formatPressReleaseAsMarkdown(result: PressReleaseResult): string {
+  const parts: string[] = [];
+
+  if (result.subheadline.trim()) parts.push(`*${result.subheadline}*`);
+  if (result.dateline.trim()) parts.push(result.dateline);
+  parts.push(result.leadParagraph);
+  for (const paragraph of result.bodyParagraphs) parts.push(paragraph);
+  if (result.quoteSection.trim()) parts.push(`> ${result.quoteSection}`);
+  if (result.callToAction.trim()) parts.push(result.callToAction);
+  if (result.boilerplate.trim()) parts.push(`## About\n\n${result.boilerplate}`);
+
+  return parts.join("\n\n");
+}

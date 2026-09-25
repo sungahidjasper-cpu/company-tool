@@ -42,7 +42,7 @@ const MANAGER = { id: "user-manager", role: "MANAGER", companyId: COMPANY_A };
 const EMPLOYEE = { id: "user-employee", role: "EMPLOYEE", companyId: COMPANY_A };
 
 const SEO_PROJECT = { id: "seo-1", companyId: COMPANY_A, name: "Acme SEO", domain: "acme.test" };
-const CONTENT_ROW = { id: "content-1", seoProjectId: "seo-1", seoProject: { companyId: COMPANY_A } };
+const CONTENT_ROW = { id: "content-1", seoProjectId: "seo-1", companyId: COMPANY_A, seoProject: { companyId: COMPANY_A } };
 
 const VALID_INPUT = { seoProjectId: "seo-1", contentId: "content-1", platforms: ["X" as const] };
 
@@ -103,7 +103,7 @@ describe("startSocialSnippetGeneratorAction", () => {
   });
 
   it("8. rejects when the content belongs to another company", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, seoProject: { companyId: COMPANY_B } });
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } });
     const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
     expect(result.success).toBe(false);
     if (!result.success) expect(result.message).toMatch(/not found/i);
@@ -133,5 +133,84 @@ describe("startSocialSnippetGeneratorAction", () => {
     expect(result.success).toBe(true);
     if (result.success) expect(result.data.jobId).toBe("existing-job");
     expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Phase C4.5 — the server-side lifecycle boundary for the Social Snippet
+ * Generator, brought in line with the three tools already connected to
+ * Content Detail (schema-markup, content-rewriter, meta-tag-optimizer).
+ *
+ * Before C4.5 this action verified company ownership and the project match
+ * but neither soft-delete state, so a crafted request naming a trashed
+ * project or a trashed Content row of the actor's own company was accepted
+ * and a real AI job was created for it. These tests drive the action
+ * directly, the way such a request would.
+ */
+describe("startSocialSnippetGeneratorAction — project/content lifecycle is enforced server-side", () => {
+  const TRASHED = new Date("2026-08-12T00:00:00.000Z");
+
+  it("12. ALLOWED — active owned project + active owned Content", async () => {
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(true);
+    expect(mockedCreateAiGenerationJob).toHaveBeenCalled();
+  });
+
+  it("13. ALLOWED — fixtures that OMIT deletedAt are treated as live, never wrongly rejected", async () => {
+    expect("deletedAt" in SEO_PROJECT).toBe(false);
+    expect("deletedAt" in CONTENT_ROW).toBe(false);
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(true);
+  });
+
+  it("14. BLOCKED — soft-deleted SEO project, even within the actor's own company; no AI job is created", async () => {
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, deletedAt: TRASHED });
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/not found/i);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+    expect(mockedRunAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("15. BLOCKED — soft-deleted Content under a live owned project; no AI job is created", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, deletedAt: TRASHED });
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/not found/i);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+    expect(mockedRunAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("16. BLOCKED — FOREIGN project (another company)", async () => {
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, companyId: COMPANY_B });
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(false);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("17. BLOCKED — FOREIGN Content (another company)", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } });
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(false);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("18. BLOCKED — PROJECT MISMATCH: Content of the same company but a different project", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, seoProjectId: "seo-OTHER" });
+    const result = await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(result.success).toBe(false);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("19. a trashed project short-circuits BEFORE the Content row is ever read", async () => {
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, deletedAt: TRASHED });
+    await startSocialSnippetGeneratorAction(VALID_INPUT);
+    expect(mockedPrisma.content.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("20. the platform selection is unchanged by these checks — a valid request still passes the platforms through untouched", async () => {
+    await startSocialSnippetGeneratorAction({ ...VALID_INPUT, platforms: ["X", "LINKEDIN", "FACEBOOK"] });
+    const created = mockedCreateAiGenerationJob.mock.calls[0][0];
+    expect(created.inputJson.platforms).toEqual(["X", "LINKEDIN", "FACEBOOK"]);
   });
 });

@@ -109,3 +109,56 @@ describe("resendAdapter.sendPasswordResetEmail", () => {
     expect(JSON.stringify(mockedLoggerError.mock.calls)).not.toContain("test-resend-key");
   });
 });
+
+describe("resendAdapter.sendInvitationEmail", () => {
+  const VALID_PARAMS = { to: "jane@acme.test", inviteUrl: "https://app.test/accept-invitation?token=secret", firstName: "Jane", companyName: "Acme Co" };
+
+  it("14. returns NOT_CONFIGURED without calling fetch when unconfigured", async () => {
+    delete process.env.RESEND_API_KEY;
+    const fetchSpy = vi.spyOn(global, "fetch");
+
+    const result = await resendAdapter.sendInvitationEmail(VALID_PARAMS);
+
+    expect(result).toEqual({ ok: false, errorType: "NOT_CONFIGURED", message: expect.any(String) });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("15. sends the expected request — includes the invitee's name, company name, and invite link — and returns ok", async () => {
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(new Response(JSON.stringify({ id: "email-1" }), { status: 200 }));
+
+    const result = await resendAdapter.sendInvitationEmail(VALID_PARAMS);
+
+    expect(result).toEqual({ ok: true });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.resend.com/emails");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer test-resend-key");
+    const body = JSON.parse(init.body as string);
+    expect(body.to).toBe("jane@acme.test");
+    expect(body.from).toBe("noreply@cloudcompass.test");
+    expect(body.html).toContain("Jane");
+    expect(body.html).toContain("Acme Co");
+    expect(body.html).toContain("https://app.test/accept-invitation?token=secret");
+    expect(body.text).toContain("7 days");
+  });
+
+  it("16. classifies a 401 as AUTH_FAILED", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(new Response("unauthorized", { status: 401 }));
+    const result = await resendAdapter.sendInvitationEmail(VALID_PARAMS);
+    expect(result).toEqual({ ok: false, errorType: "AUTH_FAILED", message: expect.any(String) });
+  });
+
+  it("17. returns a safe PROVIDER_UNAVAILABLE result — never throws — when fetch itself rejects", async () => {
+    vi.spyOn(global, "fetch").mockRejectedValue(new Error("network down"));
+    const result = await resendAdapter.sendInvitationEmail(VALID_PARAMS);
+    expect(result).toEqual({ ok: false, errorType: "PROVIDER_UNAVAILABLE", message: expect.any(String) });
+  });
+
+  it("18. never logs the API key or the invite URL on a provider error", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(new Response("unauthorized", { status: 401 }));
+    await resendAdapter.sendInvitationEmail(VALID_PARAMS);
+    const loggedText = JSON.stringify(mockedLoggerError.mock.calls);
+    expect(loggedText).not.toContain("test-resend-key");
+    expect(loggedText).not.toContain("secret");
+  });
+});

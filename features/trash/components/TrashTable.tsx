@@ -222,7 +222,7 @@ export default function TrashTable({ items }: TrashTableProps) {
                     <Button type="button" size="sm" variant="outline" disabled={isPending} onClick={() => handleRestore(item)}>
                       Restore
                     </Button>
-                    {item.purgeAvailable && item.identifiers.entityType === "content" && (
+                    {item.purgeAvailable && item.identifiers.entityType === "content" && item.identifiers.seoProjectId !== undefined && (
                       <Button
                         type="button"
                         size="sm"
@@ -230,7 +230,7 @@ export default function TrashTable({ items }: TrashTableProps) {
                         disabled={isPending}
                         onClick={() => {
                           const ids = item.identifiers;
-                          if (ids.entityType !== "content") return;
+                          if (ids.entityType !== "content" || ids.seoProjectId === undefined) return;
                           handlePurgeContent(ids.contentId, ids.seoProjectId, item.displayName);
                         }}
                       >

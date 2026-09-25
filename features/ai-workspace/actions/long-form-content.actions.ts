@@ -7,6 +7,7 @@ import { logActivity } from "@/lib/activity";
 import { LlmProviderError, describeLlmError } from "@/lib/ai/providers/errors";
 import { requireUser } from "@/lib/auth";
 import { Permissions } from "@/lib/authorization";
+import { contentRevalidatePaths } from "@/features/content-workspace/services/content-location";
 import { prisma } from "@/lib/prisma";
 import { computeInputHash, createAiGenerationJob, findActiveAiGenerationJob } from "@/lib/jobs/ai-generation-job-table";
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
@@ -46,7 +47,7 @@ async function getOwnedContent(contentId: string, companyId: string) {
     where: { id: contentId },
     include: { seoProject: { select: { id: true, name: true, domain: true, companyId: true } }, keywords: { select: { id: true, term: true, intent: true } } },
   });
-  if (!content || content.seoProject.companyId !== companyId) return null;
+  if (!content || content.companyId !== companyId) return null;
   // Phase B M2 — a trashed page is neither a valid generation source nor a
   // valid write target; the pickers already exclude these when listing.
   if (content.deletedAt) return null;
@@ -186,6 +187,16 @@ export async function generateLongFormFromContentAction(contentId: string): Prom
     return actionError("Content not found.");
   }
 
+  /*
+   * Long-form generation is a genuinely SEO-project-scoped tool: it grounds
+   * the article in the project's name and domain. Now that a content row can
+   * exist without a project, that requirement is stated plainly instead of
+   * being assumed — and it stays a requirement rather than being weakened.
+   */
+  if (!content.seoProject) {
+    return actionError("This tool needs an SEO project for the site context it writes against. Move this content into an SEO project first.");
+  }
+
   const brief = buildBriefFromContentRow(content);
   if (!brief) {
     return actionError("This content has no saved brief to generate an article from.");
@@ -231,6 +242,9 @@ export async function startLongFormGenerationAction(input: StartLongFormGenerati
     const content = await getOwnedContent(input.contentId, actor.companyId);
     if (!content) {
       return actionError("Content not found.");
+    }
+    if (!content.seoProject) {
+      return actionError("This tool needs an SEO project for the site context it writes against. Move this content into an SEO project first.");
     }
     const brief = buildBriefFromContentRow(content);
     if (!brief) {
@@ -361,7 +375,10 @@ export async function saveLongFormAsNewContentAction(input: SaveLongFormAsNewCon
 
   const content = await prisma.content.create({
     data: {
+      companyId: seoProject.companyId,
+      clientId: seoProject.clientId ?? null,
       seoProjectId: seoProject.id,
+      contentType: "SEO_CONTENT",
       authorId: actor.id,
       title: parsedFields.data.title,
       status: "DRAFT",
@@ -509,7 +526,7 @@ export async function updateLongFormContentAction(input: UpdateLongFormContentIn
       actorId: actor.id,
       action: "content.ai_long_form_saved",
       companyId: actor.companyId,
-      seoProjectId: content.seoProject.id,
+      seoProjectId: content.seoProjectId ?? undefined,
       contentId: content.id,
       metadata: { title: parsedFields.data.title },
     });
@@ -520,7 +537,6 @@ export async function updateLongFormContentAction(input: UpdateLongFormContentIn
     });
   }
 
-  revalidatePath(`/seo/${content.seoProject.id}/content`);
-  revalidatePath(`/seo/${content.seoProject.id}/content/${content.id}`);
+  contentRevalidatePaths(content).forEach((path) => revalidatePath(path));
   return actionSuccess({ id: content.id });
 }

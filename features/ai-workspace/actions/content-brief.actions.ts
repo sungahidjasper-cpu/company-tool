@@ -195,7 +195,13 @@ export async function saveContentBriefAction(input: SaveContentBriefInput): Prom
 
   const content = await prisma.content.create({
     data: {
+      // Ownership recorded directly: company is the authorization root, and
+      // the client is inherited from the project that was just verified.
+      companyId: seoProject.companyId,
+      clientId: seoProject.clientId ?? null,
       seoProjectId: seoProject.id,
+      // A keyword-driven brief from the SEO workflow.
+      contentType: "SEO_CONTENT",
       authorId: actor.id,
       title: brief.title,
       status: "DRAFT",

@@ -29,6 +29,14 @@ type ContentOption = { id: string; title: string; url: string | null; currentMet
 type MetaTagOptimizerPickerProps = {
   seoProjectOptions: SeoProjectOption[];
   contentByProject: Record<string, ContentOption[]>;
+  /**
+   * Phase C4.1 — optional preselection handed over from a Content record, so
+   * the user does not have to find the same page again. Already resolved
+   * server-side against the actor own company-scoped data; the generate and
+   * apply actions still re-verify ownership independently.
+   */
+  initialSeoProjectId?: string;
+  initialSelectedContentIds?: string[];
 };
 
 /**
@@ -171,13 +179,18 @@ export const META_TAG_EMPTY_RESULT_MESSAGE = "No suggestions were returned — t
 /** Phase B B5.1 — shown while no SEO project is chosen. A prompt to choose, never a claim that the project is invalid (only the server can determine that). */
 export const SELECT_PROJECT_HINT = "Select an SEO project before generating.";
 
-export default function MetaTagOptimizerPicker({ seoProjectOptions, contentByProject }: MetaTagOptimizerPickerProps) {
+export default function MetaTagOptimizerPicker({
+  seoProjectOptions,
+  contentByProject,
+  initialSeoProjectId = "",
+  initialSelectedContentIds = [],
+}: MetaTagOptimizerPickerProps) {
   // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
   // let a user generate against a project they never consciously chose; the
   // server still re-derives and enforces ownership regardless of this value.
-  const [seoProjectId, setSeoProjectId] = useState("");
+  const [seoProjectId, setSeoProjectId] = useState(initialSeoProjectId);
   const contentOptions = useMemo(() => contentByProject[seoProjectId] ?? [], [contentByProject, seoProjectId]);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set(initialSelectedContentIds));
 
   const [result, setResult] = useState<MetaTagOptimizerResult | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);

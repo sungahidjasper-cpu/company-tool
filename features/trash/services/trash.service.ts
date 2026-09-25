@@ -1,3 +1,4 @@
+import { contentDetailHref } from "@/features/content-workspace/services/content-location";
 import { prisma } from "@/lib/prisma";
 import { resolveEntityTypeFromFile, getEntityIdFromFile } from "@/features/files/services/entity-target";
 import type { FileEntityType } from "@/features/files/schemas/file.schema";
@@ -9,7 +10,7 @@ import type { FileEntityType } from "@/features/files/schemas/file.schema";
 export type NoteParentType = "lead" | "project" | "client" | "seoProject" | "content" | "task";
 
 export type TrashIdentifiers =
-  | { entityType: "content"; contentId: string; seoProjectId: string }
+  | { entityType: "content"; contentId: string; seoProjectId?: string }
   | { entityType: "keyword"; keywordId: string; seoProjectId: string }
   | { entityType: "file"; fileId: string }
   | { entityType: "note"; noteId: string; noteParentType: NoteParentType };
@@ -66,7 +67,7 @@ async function buildParentLookup(
     }
     case "content": {
       const rows = await prisma.content.findMany({ where: { id: { in: ids } }, select: { id: true, title: true, seoProjectId: true } });
-      rows.forEach((r) => map.set(r.id, { label: r.title, href: `/seo/${r.seoProjectId}/content/${r.id}` }));
+      rows.forEach((r) => map.set(r.id, { label: r.title, href: contentDetailHref(r) }));
       break;
     }
     case "company": {
@@ -203,8 +204,12 @@ async function getTrashedNotes(companyId: string): Promise<TrashItem[]> {
 
 async function getTrashedContent(companyId: string): Promise<TrashItem[]> {
   const content = await prisma.content.findMany({
-    where: { seoProject: { companyId }, deletedAt: { not: null } },
-    select: { id: true, title: true, deletedAt: true, seoProjectId: true, seoProject: { select: { name: true } } },
+    where: { companyId, deletedAt: { not: null } },
+    select: {
+      id: true, title: true, deletedAt: true,
+      seoProjectId: true, seoProject: { select: { name: true } },
+      clientId: true, client: { select: { name: true } },
+    },
     orderBy: { deletedAt: "desc" },
   });
   if (content.length === 0) return [];
@@ -221,11 +226,11 @@ async function getTrashedContent(companyId: string): Promise<TrashItem[]> {
     entityType: "content" as const,
     displayName: c.title,
     deletedAt: c.deletedAt as Date,
-    parentLabel: c.seoProject.name,
-    parentHref: `/seo/${c.seoProjectId}`,
+    parentLabel: c.seoProject?.name ?? c.client?.name ?? "No project",
+    parentHref: c.seoProjectId ? `/seo/${c.seoProjectId}` : c.clientId ? `/clients/${c.clientId}` : "/content",
     restoreAvailable: true,
     purgeAvailable: !blockedIds.has(c.id),
-    identifiers: { entityType: "content", contentId: c.id, seoProjectId: c.seoProjectId },
+    identifiers: { entityType: "content", contentId: c.id, seoProjectId: c.seoProjectId ?? undefined },
   }));
 }
 

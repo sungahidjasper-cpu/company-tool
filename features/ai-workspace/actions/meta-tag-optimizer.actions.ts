@@ -26,6 +26,19 @@ import {
 async function getOwnedSeoProject(seoProjectId: string, companyId: string) {
   const seoProject = await prisma.sEOProject.findUnique({ where: { id: seoProjectId } });
   if (!seoProject || seoProject.companyId !== companyId) return null;
+  /*
+   * C4 security-consistency pass — a TRASHED project is rejected, matching
+   * the rule getOwnedContentRows below already applies to each Content row
+   * and that schema-markup-generator.actions.ts now applies to both. The
+   * picker lists only live projects and the C4 contextual action hides itself
+   * for a trashed one, but neither is the boundary: this is. Both
+   * startMetaTagOptimizerAction and applyMetaTagSuggestionAction call this,
+   * so the generate and apply paths are covered by this single guard.
+   *
+   * Truthy rather than `!== null`: a fixture or caller may omit the field
+   * entirely, and `undefined !== null` would wrongly reject a live project.
+   */
+  if (seoProject.deletedAt) return null;
   return seoProject;
 }
 
@@ -49,7 +62,7 @@ async function getOwnedContentRows(contentIds: string[], companyId: string, seoP
   });
   if (rows.length !== uniqueIds.length) return null;
   for (const row of rows) {
-    if (row.seoProject.companyId !== companyId || row.seoProjectId !== seoProjectId) return null;
+    if (row.companyId !== companyId || row.seoProjectId !== seoProjectId) return null;
     // Phase B M2 — a trashed page is not an editable page. All-or-nothing,
     // matching this helper's existing discipline: one trashed row rejects
     // the whole request rather than silently dropping it.

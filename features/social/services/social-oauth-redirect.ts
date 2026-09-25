@@ -22,6 +22,30 @@ export type RedirectUriResolution =
   | { ok: true; redirectUri: string }
   | { ok: false; missingKeys: string[] };
 
+export type OAuthOriginResolution =
+  | { ok: true; origin: string }
+  | { ok: false; missingKeys: string[] };
+
+/**
+ * The public origin Cloud Compass is reachable at, for building a
+ * BROWSER-FACING redirect during the OAuth flow (the provider's callback
+ * itself, and where the callback route in turn sends the browser next).
+ *
+ * THE ONE SOURCE OF TRUTH FOR THIS. A request's own `nextUrl.origin` is not
+ * safe to use here: behind a reverse proxy or tunnel (ngrok, in local dev),
+ * that reflects where the Node process is actually bound (e.g.
+ * `localhost:3000`), not the public address the browser can reach — a
+ * redirect built from it sends the browser somewhere it cannot load. This is
+ * the same `SOCIAL_OAUTH_REDIRECT_BASE_URL` (falling back to `NEXTAUTH_URL`)
+ * that `resolveRedirectUri` already uses for the provider-facing URI, kept as
+ * one function so the two can never drift apart.
+ */
+export function resolveOAuthOrigin(): OAuthOriginResolution {
+  const base = process.env.SOCIAL_OAUTH_REDIRECT_BASE_URL || process.env.NEXTAUTH_URL;
+  if (!base) return { ok: false, missingKeys: ["SOCIAL_OAUTH_REDIRECT_BASE_URL"] };
+  return { ok: true, origin: base.replace(/\/+$/, "") };
+}
+
 /**
  * The exact callback URI for one platform.
  *
@@ -37,9 +61,7 @@ export type RedirectUriResolution =
  * guess about someone else's app settings.
  */
 export function resolveRedirectUri(platform: SocialPlatform): RedirectUriResolution {
-  const base = process.env.SOCIAL_OAUTH_REDIRECT_BASE_URL || process.env.NEXTAUTH_URL;
-  if (!base) return { ok: false, missingKeys: ["SOCIAL_OAUTH_REDIRECT_BASE_URL"] };
-
-  const trimmed = base.replace(/\/+$/, "");
-  return { ok: true, redirectUri: `${trimmed}/api/social/connect/${platformSlug(platform)}/callback` };
+  const resolved = resolveOAuthOrigin();
+  if (!resolved.ok) return resolved;
+  return { ok: true, redirectUri: `${resolved.origin}/api/social/connect/${platformSlug(platform)}/callback` };
 }

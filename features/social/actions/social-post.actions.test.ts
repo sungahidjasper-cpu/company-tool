@@ -60,6 +60,7 @@ const input = (over: Partial<SaveSocialPostInput> = {}): SaveSocialPostInput => 
   seoProjectId: PROJECT_ID,
   caption: "Three things to check before buying. #selfstorage",
   link: "",
+  firstComment: "",
   accountIds: [],
   ...over,
 });
@@ -513,5 +514,59 @@ describe("a composer-created record says it is a social post", () => {
     const [{ data }] = mockedPrisma.content.create.mock.calls[0];
     expect(data.contentType).toBe("SOCIAL_POST");
     expect(data.seoProjectId).toBeNull();
+  });
+});
+
+/* ------------------------------ first comment ---------------------------- */
+
+describe("First Comment persistence — mirrors caption/link exactly", () => {
+  it("44. an empty first comment is stored as null, not an empty string", async () => {
+    await saveSocialPostAction(input({ firstComment: "" }));
+    const [{ data }] = mockedPrisma.socialPost.create.mock.calls[0];
+    expect(data.firstComment).toBeNull();
+  });
+
+  it("45. a written first comment is trimmed and persisted on SocialPost", async () => {
+    await saveSocialPostAction(input({ firstComment: "  Link in bio!  " }));
+    const [{ data }] = mockedPrisma.socialPost.create.mock.calls[0];
+    expect(data.firstComment).toBe("Link in bio!");
+  });
+
+  it("46. it survives a reload — persisted the same way on update as on create", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue({
+      id: CONTENT_ID, status: "DRAFT", deletedAt: null,
+      companyId: "company-1", clientId: CLIENT_ID, seoProjectId: PROJECT_ID, socialPost: { id: "social-1" },
+    });
+    await saveSocialPostAction(input({ contentId: CONTENT_ID, firstComment: "Updated first comment" }));
+    const [{ data }] = mockedPrisma.socialPost.update.mock.calls[0];
+    expect(data.firstComment).toBe("Updated first comment");
+  });
+
+  it("47. with no override every target stores null — they all follow the shared first comment", async () => {
+    twoAccounts();
+    await saveSocialPostAction(input({ accountIds: [FB_ID, IG_ID], firstComment: "Shared comment" }));
+    expect(upsertFor(FB_ID)!.create.firstComment).toBeNull();
+    expect(upsertFor(IG_ID)!.create.firstComment).toBeNull();
+  });
+
+  it("48. a customized target stores ITS OWN first comment while the other still inherits", async () => {
+    twoAccounts();
+    await saveSocialPostAction(
+      input({ accountIds: [FB_ID, IG_ID], firstComment: "Shared", platformOverrides: { [IG_ID]: { firstComment: "Instagram-only comment" } } })
+    );
+    expect(upsertFor(IG_ID)!.create.firstComment).toBe("Instagram-only comment");
+    expect(upsertFor(FB_ID)!.create.firstComment).toBeNull();
+  });
+
+  it("49. resetting a target's first comment back to shared WRITES null, so no stale version survives", async () => {
+    twoAccounts();
+    await saveSocialPostAction(input({ accountIds: [FB_ID, IG_ID], platformOverrides: { [IG_ID]: { firstComment: null } } }));
+    expect(upsertFor(IG_ID)!.update.firstComment).toBeNull();
+  });
+
+  it("50. an empty per-platform first comment override is stored as null, not an empty string", async () => {
+    twoAccounts();
+    await saveSocialPostAction(input({ accountIds: [FB_ID, IG_ID], platformOverrides: { [IG_ID]: { firstComment: "   " } } }));
+    expect(upsertFor(IG_ID)!.create.firstComment).toBeNull();
   });
 });

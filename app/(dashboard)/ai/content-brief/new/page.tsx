@@ -6,15 +6,28 @@ import { FileText } from "lucide-react";
 import Link from "next/link";
 
 import ContentBriefPicker from "@/features/ai-workspace/components/ContentBriefPicker";
+import { parseBriefHandoffParams } from "@/features/ai-workspace/services/content-gap-to-brief";
 import { listSeoProjectOptions } from "@/features/seo/services/seo-project.service";
 import { requireUser } from "@/lib/auth";
 import { assertPermission, Permissions } from "@/lib/authorization";
 import { prisma } from "@/lib/prisma";
 
-export default async function NewContentBriefPage() {
+/**
+ * Phase C2.2 — accepts an optional Content Gap Analysis hand-off in the query
+ * string. These are FORM PREFILLS ONLY: every value is parsed defensively,
+ * rendered into editable fields, and re-validated server-side on generate and
+ * save. A hand-crafted URL cannot widen what the actor may generate against —
+ * ownership is re-derived from the authenticated user, never from these params.
+ */
+type NewContentBriefPageProps = {
+  searchParams: Promise<{ seoProjectId?: string; notes?: string; contentType?: string }>;
+};
+
+export default async function NewContentBriefPage({ searchParams }: NewContentBriefPageProps) {
   const user = await requireUser();
   assertPermission(user, Permissions.manageSeoProjects);
   const canPreviewPrompt = Permissions.manageCompanies(user.role);
+  const handoff = parseBriefHandoffParams(await searchParams);
 
   const [seoProjectOptions, keywords] = await Promise.all([
     listSeoProjectOptions(user.companyId),
@@ -51,7 +64,14 @@ export default async function NewContentBriefPage() {
               }
             />
           ) : (
-            <ContentBriefPicker seoProjectOptions={seoProjectOptions} keywordsByProject={keywordsByProject} canPreviewPrompt={canPreviewPrompt} />
+            <ContentBriefPicker
+              seoProjectOptions={seoProjectOptions}
+              keywordsByProject={keywordsByProject}
+              canPreviewPrompt={canPreviewPrompt}
+              initialSeoProjectId={seoProjectOptions.some((option) => option.id === handoff.seoProjectId) ? handoff.seoProjectId : ""}
+              initialNotes={handoff.notes}
+              initialContentType={handoff.contentType}
+            />
           )}
         </CardContent>
       </Card>

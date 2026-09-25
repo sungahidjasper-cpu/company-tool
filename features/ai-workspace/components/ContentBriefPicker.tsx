@@ -45,6 +45,14 @@ type ContentBriefPickerProps = {
   keywordsByProject: Record<string, KeywordOption[]>;
   /** SUPER_ADMIN-only — gates the "Preview AI prompt" button, mirroring Phase 19's CompanyAiLimitsForm visibility pattern. */
   canPreviewPrompt?: boolean;
+  /**
+   * Phase C2.2 — optional prefills handed over from a Content Gap Analysis
+   * opportunity. Seed the form only; the user reviews and can change every
+   * one of them before generating, and the server re-validates regardless.
+   */
+  initialSeoProjectId?: string;
+  initialNotes?: string;
+  initialContentType?: ContentBriefType | null;
 };
 
 function CheckboxRow({ label, checked, onCheckedChange }: { label: string; checked: boolean; onCheckedChange: (value: boolean) => void }) {
@@ -80,16 +88,23 @@ export const SELECT_PROJECT_HINT = "Select an SEO project before generating.";
  * and "Regenerate" both just populate `brief` in memory via
  * generateContentBriefAction, which itself performs no DB write.
  */
-export default function ContentBriefPicker({ seoProjectOptions, keywordsByProject, canPreviewPrompt = false }: ContentBriefPickerProps) {
+export default function ContentBriefPicker({
+  seoProjectOptions,
+  keywordsByProject,
+  canPreviewPrompt = false,
+  initialSeoProjectId = "",
+  initialNotes = "",
+  initialContentType = null,
+}: ContentBriefPickerProps) {
   const router = useRouter();
 
   // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
   // let a user generate against a project they never consciously chose; the
   // server still re-derives and enforces ownership regardless of this value.
-  const [seoProjectId, setSeoProjectId] = useState("");
+  const [seoProjectId, setSeoProjectId] = useState(initialSeoProjectId);
   const [keywordId, setKeywordId] = useState("");
-  const [contentType, setContentType] = useState<ContentBriefType>("BLOG_POST");
-  const [notes, setNotes] = useState("");
+  const [contentType, setContentType] = useState<ContentBriefType>(initialContentType ?? "BLOG_POST");
+  const [notes, setNotes] = useState(initialNotes);
   const [settings, setSettings] = useState<ContentBriefSettings>(DEFAULT_CONTENT_BRIEF_SETTINGS);
 
   const [brief, setBrief] = useState<ContentBriefOutput | null>(null);

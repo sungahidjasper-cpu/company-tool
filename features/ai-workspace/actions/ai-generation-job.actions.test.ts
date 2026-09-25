@@ -67,6 +67,89 @@ describe("getAiGenerationJobAction", () => {
   });
 });
 
+/**
+ * Polling reliability — a POLL that fails is not a JOB that failed.
+ *
+ * A poll is a pure read of a job the client neither owns nor drives. When the
+ * read itself breaks at the connection/protocol layer the generation is still
+ * running server-side, so the only correct answer is "no verdict yet, ask
+ * again" — never "generation failed". Before this guard the exception escaped
+ * the server action entirely and surfaced as a runtime error.
+ */
+describe("getAiGenerationJobAction — transient database failures", () => {
+  function transient08P01() {
+    return Object.assign(new Error('Invalid `prisma.aiGenerationJob.findUnique()` invocation:\nDatabase error. Code: 08P01. Message: bind message supplies 3 parameters, but prepared statement "" requires 0'), {
+      name: "PrismaClientKnownRequestError",
+      code: "P2010",
+      meta: { driverAdapterError: { name: "DriverAdapterError", cause: { originalCode: "08P01" } } },
+    });
+  }
+
+  it("6. TRANSIENT 08P01 — does not throw, and reports no verdict rather than a failure, so the caller keeps polling", async () => {
+    mockedGetAiGenerationJob.mockRejectedValue(transient08P01());
+    const result = await getAiGenerationJobAction("job-1");
+    expect(result).toEqual({ success: true, data: null });
+  });
+
+  it("7. TRANSIENT 08P01 — never reported as 'not found', which would stop polling and blame a job that is still running", async () => {
+    mockedGetAiGenerationJob.mockRejectedValue(transient08P01());
+    const result = await getAiGenerationJobAction("job-1");
+    expect(result.success).toBe(true);
+  });
+
+  it("8. RECOVERY — a tick that fails transiently is followed by a normal successful tick", async () => {
+    const job = makeJob({ status: "SUCCEEDED" });
+    mockedGetAiGenerationJob.mockRejectedValueOnce(transient08P01()).mockResolvedValue(job);
+
+    const first = await getAiGenerationJobAction("job-1");
+    const second = await getAiGenerationJobAction("job-1");
+
+    expect(first).toEqual({ success: true, data: null });
+    expect(second).toEqual({ success: true, data: job });
+  });
+
+  it("9. UNEXPECTED database error — surfaced as a real error, never disguised as a retryable poll", async () => {
+    mockedGetAiGenerationJob.mockRejectedValue(
+      Object.assign(new Error("Database error. Code: 42P01"), {
+        name: "PrismaClientKnownRequestError",
+        code: "P2010",
+        meta: { driverAdapterError: { cause: { originalCode: "42P01" } } },
+      })
+    );
+    const result = await getAiGenerationJobAction("job-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Could not check the generation status. Please try again.");
+  });
+
+  it("10. UNEXPECTED programming error — still handled as an error result, and logged so it stays diagnosable", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockedGetAiGenerationJob.mockRejectedValue(new TypeError("x is not a function"));
+
+    const result = await getAiGenerationJobAction("job-1");
+
+    expect(result.success).toBe(false);
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("11. a transient failure is logged too — diagnostics are never silently swallowed", async () => {
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockedGetAiGenerationJob.mockRejectedValue(transient08P01());
+
+    await getAiGenerationJobAction("job-1");
+
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("08P01"));
+    consoleWarn.mockRestore();
+  });
+
+  it("12. tenant isolation is unaffected — another company's job still reads back as not found, even with the new error handling in place", async () => {
+    mockedGetAiGenerationJob.mockResolvedValue(makeJob({ companyId: COMPANY_B }));
+    const result = await getAiGenerationJobAction("job-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toBe("Generation job not found.");
+  });
+});
+
 /** Phase 30 Stage 10 */
 describe("cancelAiGenerationJobAction", () => {
   beforeEach(() => {

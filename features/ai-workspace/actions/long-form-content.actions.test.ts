@@ -113,6 +113,9 @@ function makeContentWithBrief(overrides: Partial<Record<string, unknown>> = {}) 
       examples: VALID_BRIEF.examples,
     },
     keywords: [] as { id: string; term: string; intent: string | null }[],
+    // Authorization reads the row's own company now; the project is context.
+    companyId: COMPANY_A,
+    seoProjectId: SEO_PROJECT.id,
     seoProject: SEO_PROJECT,
     ...overrides,
   };
@@ -128,6 +131,8 @@ function makeOwnedContent(overrides: Partial<Record<string, unknown>> = {}) {
     aiBriefDetails: null,
     deletedAt: null,
     keywords: [],
+    companyId: COMPANY_A,
+    seoProjectId: "seo-1",
     seoProject: { id: "seo-1", name: "Project", domain: "example.com", companyId: COMPANY_A },
     ...overrides,
   };
@@ -162,7 +167,7 @@ describe("updateLongFormContentAction", () => {
   });
 
   it("rejects when the actor's company differs from the Content's company", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue(makeOwnedContent({ seoProject: { id: "seo-1", name: "P", domain: "d", companyId: COMPANY_B } }));
+    mockedPrisma.content.findUnique.mockResolvedValue(makeOwnedContent({ companyId: COMPANY_B, seoProject: { id: "seo-1", name: "P", domain: "d", companyId: COMPANY_B } }));
     const result = await updateLongFormContentAction(makeInput());
     expect(result.success).toBe(false);
     expect(mockedPrisma.content.update).not.toHaveBeenCalled();
@@ -215,6 +220,33 @@ describe("updateLongFormContentAction", () => {
   it("B3.5. still records the activity log normally when it succeeds", async () => {
     await updateLongFormContentAction(makeInput({ body: "New body" }));
     expect(mockedLogActivity).toHaveBeenCalledWith(expect.objectContaining({ action: "content.ai_long_form_saved" }));
+  });
+
+  /**
+   * Phase C2.4/C2.5 — the workflow's single most important data-integrity
+   * rule: once the Brief has created a Content row, continuing to Long-Form
+   * must UPDATE that row, never create a second one. This is the update lane
+   * the connected workflow routes through; `saveLongFormAsNewContentAction`
+   * (which does create) is deliberately not part of it.
+   */
+  it("C2. updates the existing Content row and NEVER creates a second one", async () => {
+    const result = await updateLongFormContentAction(makeInput({ body: "New body" }));
+    expect(result.success).toBe(true);
+    expect(mockedPrisma.content.update).toHaveBeenCalledTimes(1);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("C2. writes back to the SAME contentId it was given", async () => {
+    await updateLongFormContentAction(makeInput({ body: "New body" }));
+    const [updateArgs] = mockedPrisma.content.update.mock.calls[0];
+    expect(updateArgs.where).toEqual({ id: "content-1" });
+  });
+
+  it("C2. never lets the client change which project the row belongs to", async () => {
+    await updateLongFormContentAction(makeInput({ body: "New body", seoProjectId: "attacker-project" } as never));
+    const [updateArgs] = mockedPrisma.content.update.mock.calls[0];
+    expect(updateArgs.data).not.toHaveProperty("seoProjectId");
+    expect(updateArgs.data).not.toHaveProperty("authorId");
   });
 
   describe("2. AI regeneration creates an AI_REGENERATION revision with exact pre-change values", () => {
@@ -446,7 +478,7 @@ describe("generateLongFormFromContentAction", () => {
   });
 
   it("12. rejects when the Content row belongs to a different company, without calling the AI service", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue(makeContentWithBrief({ seoProject: { ...SEO_PROJECT, companyId: COMPANY_B } }));
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContentWithBrief({ companyId: COMPANY_B, seoProject: { ...SEO_PROJECT, companyId: COMPANY_B } }));
     const result = await generateLongFormFromContentAction("content-1");
     expect(result.success).toBe(false);
     if (!result.success) expect(result.message).toBe("Content not found.");
@@ -516,7 +548,7 @@ describe("startLongFormGenerationAction", () => {
     });
 
     it("18. rejects when the Content row belongs to a different company, without creating a job", async () => {
-      mockedPrisma.content.findUnique.mockResolvedValue(makeContentWithBrief({ seoProject: { ...SEO_PROJECT, companyId: COMPANY_B } }));
+      mockedPrisma.content.findUnique.mockResolvedValue(makeContentWithBrief({ companyId: COMPANY_B, seoProject: { ...SEO_PROJECT, companyId: COMPANY_B } }));
       const result = await startLongFormGenerationAction({ mode: "fromContent", contentId: "content-1" });
       expect(result.success).toBe(false);
       if (!result.success) expect(result.message).toBe("Content not found.");
@@ -670,7 +702,12 @@ describe("saveLongFormAsNewContentAction", () => {
     await saveLongFormAsNewContentAction(makeSaveInput());
     expect(mockedPrisma.content.create).toHaveBeenCalledWith({
       data: {
+        // Ownership is recorded on the row, derived from the verified project.
+        companyId: COMPANY_A,
+        clientId: null,
         seoProjectId: "seo-1",
+        // A keyword-driven article from the SEO workflow.
+        contentType: "SEO_CONTENT",
         authorId: MANAGER.id,
         title: "How to Rent Storage",
         status: "DRAFT",

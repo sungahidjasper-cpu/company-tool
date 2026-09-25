@@ -245,6 +245,23 @@ describe("adding an account", () => {
       expect.objectContaining({ action: "client.social_account_added", clientId: CLIENT_ID, companyId: "company-1" })
     );
   });
+
+  it("15. Phase 9E — adding an identity by hand never writes a connection fact of any kind", async () => {
+    /*
+     * The manual "Add an account for preview" form must never create
+     * anything that reads as a real connection. This asserts it directly
+     * against the actual write, not just against the schema default: the
+     * create() payload contains no connectionState, externalId, connectedAt
+     * or credential field at all — only identity.
+     */
+    await addSocialAccountAction({ clientId: CLIENT_ID, platform: "FACEBOOK", handle: "storagemoguls" });
+    const [{ data }] = mockedPrisma.socialAccount.create.mock.calls[0];
+    expect(data).not.toHaveProperty("connectionState");
+    expect(data).not.toHaveProperty("externalId");
+    expect(data).not.toHaveProperty("connectedAt");
+    expect(data).not.toHaveProperty("credential");
+    expect(Object.keys(data).sort()).toEqual(["clientId", "companyId", "displayName", "handle", "platform", "status"]);
+  });
 });
 
 describe("editing an account", () => {

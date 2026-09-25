@@ -1,10 +1,12 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { startPressReleaseGenerationAction } from "@/features/ai-workspace/actions/press-release-generator.actions";
+import { savePressReleaseAsContentAction, startPressReleaseGenerationAction } from "@/features/ai-workspace/actions/press-release-generator.actions";
 import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
 import PressReleaseReview from "@/features/ai-workspace/components/PressReleaseReview";
 import { useAiGenerationLifecycle } from "@/features/ai-workspace/hooks/use-ai-generation-lifecycle";
@@ -90,12 +92,12 @@ export const SELECT_PROJECT_HINT = "Select an SEO project before generating.";
  * The eighth AI Workspace tool's UI — a plain announcement form, NOT a
  * Content/page picker: this tool never grounds in or selects an existing
  * page. Reuses the exact same job→poll→stream generation lifecycle every
- * other AI Workspace tool's picker already uses. Generate-and-display-only,
- * matching Schema Markup Generator's own precedent — no Apply control
- * exists here, and none is planned: this tool never writes to Content or
- * ContentRevision.
+ * other AI Workspace tool's picker already uses. Generate-and-display, PLUS
+ * an explicit "Save as Content" action — the release is only ever written
+ * to Content when the reviewer clicks Save, never automatically.
  */
 export default function PressReleaseGeneratorPicker({ seoProjectOptions }: PressReleaseGeneratorPickerProps) {
+  const router = useRouter();
   // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
   // let a user generate against a project they never consciously chose; the
   // server still re-derives and enforces ownership regardless of this value.
@@ -104,6 +106,7 @@ export default function PressReleaseGeneratorPicker({ seoProjectOptions }: Press
 
   const [jobResult, setJobResult] = useState<PressReleaseJobResult | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorType, setErrorType] = useState<LlmErrorType | null>(null);
 
@@ -208,6 +211,27 @@ export default function PressReleaseGeneratorPicker({ seoProjectOptions }: Press
     lifecycle.cancel(() => setIsGenerating(false));
   }
 
+  /**
+   * Saves the CURRENT job's own result as a real Content row. Reads the job
+   * id from the lifecycle's own activeJobId — never anything the user could
+   * tamper with; the server independently re-reads the job's actual
+   * resultJson rather than trusting any text from this component's state.
+   */
+  async function handleSave() {
+    const jobId = lifecycle.activeJobId;
+    if (!jobId) return;
+    setError(null);
+    setIsSaving(true);
+    const result = await savePressReleaseAsContentAction({ jobId });
+    setIsSaving(false);
+    if (!result.success) {
+      setError(result.message);
+      return;
+    }
+    toast.success("Saved as Content");
+    router.push(`/seo/${seoProjectId}/content/${result.data.id}`);
+  }
+
   const canGenerate = computeCanGenerateRelease(form.headline, form.keyFacts);
 
   return (
@@ -294,7 +318,9 @@ export default function PressReleaseGeneratorPicker({ seoProjectOptions }: Press
         <p className="text-sm text-slate-500">{PRESS_RELEASE_NULL_RESULT_MESSAGE}</p>
       )}
 
-      {jobResult && jobResult.result && <PressReleaseReview result={jobResult.result} />}
+      {jobResult && jobResult.result && (
+        <PressReleaseReview result={jobResult.result} onSave={lifecycle.activeJobId ? handleSave : undefined} isSaving={isSaving} />
+      )}
     </div>
   );
 }

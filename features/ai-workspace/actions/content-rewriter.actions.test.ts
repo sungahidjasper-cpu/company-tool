@@ -65,7 +65,7 @@ const CONTENT_ROW = {
   id: CONTENT_ID,
   seoProjectId: SEO_PROJECT_ID,
   body: "## Introduction\n\nReal article body text.",
-  seoProject: { companyId: COMPANY_A },
+  companyId: COMPANY_A, seoProject: { companyId: COMPANY_A },
 };
 
 const VALID_INPUT = { seoProjectId: SEO_PROJECT_ID, contentId: CONTENT_ID };
@@ -144,7 +144,7 @@ describe("startContentRewriteAction", () => {
   });
 
   it("9. rejects when the content belongs to another company, even though the SEO project id matches", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, seoProject: { companyId: COMPANY_B } });
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } });
     const result = await startContentRewriteAction(VALID_INPUT);
     expect(result.success).toBe(false);
     expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
@@ -209,7 +209,7 @@ function makeCurrentContentRow(overrides: Partial<Record<string, unknown>> = {})
     metaDescription: "Current Meta Description",
     body: "Current body.",
     deletedAt: null,
-    seoProject: { companyId: COMPANY_A },
+    companyId: COMPANY_A, seoProject: { companyId: COMPANY_A },
     ...overrides,
   };
 }
@@ -289,7 +289,7 @@ describe("applyContentRewriteAction", () => {
   });
 
   it("9. rejects when the content belongs to another company, even though the SEO project id matches (cross-company rejection via content)", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue(makeCurrentContentRow({ seoProject: { companyId: COMPANY_B } }));
+    mockedPrisma.content.findUnique.mockResolvedValue(makeCurrentContentRow({ companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } }));
     const result = await applyContentRewriteAction(APPLY_INPUT);
     expect(result.success).toBe(false);
     expect(mockedPrisma.content.update).not.toHaveBeenCalled();
@@ -441,5 +441,102 @@ describe("applyContentRewriteAction", () => {
     const result = await applyContentRewriteAction(APPLY_INPUT);
     expect(result.success).toBe(true);
     expect(mockedPrisma.content.update).toHaveBeenCalled();
+  });
+});
+
+/**
+ * C4 security-consistency pass — the server-side lifecycle boundary.
+ *
+ * getOwnedSeoProject now rejects a soft-deleted project, matching the rule
+ * getOwnedContent already applies to the Content row. Both
+ * startContentRewriteAction and applyContentRewriteAction route through that
+ * one helper, so both paths are covered here. The picker never lists a
+ * trashed project and the C4 contextual action hides itself for one, but
+ * neither is the boundary — these tests drive the actions directly, the way a
+ * crafted request would.
+ */
+describe("Content Rewriter — project/content lifecycle is enforced server-side", () => {
+  const TRASHED = new Date("2026-08-12T00:00:00.000Z");
+
+  describe("startContentRewriteAction", () => {
+    it("22. ALLOWED — active owned project + active owned Content", async () => {
+      const result = await startContentRewriteAction(VALID_INPUT);
+      expect(result.success).toBe(true);
+      expect(mockedCreateAiGenerationJob).toHaveBeenCalled();
+    });
+
+    it("23. ALLOWED — fixtures that OMIT deletedAt are treated as live, never wrongly rejected", async () => {
+      // Neither fixture carries the key; a `!== null` check would break both.
+      expect("deletedAt" in SEO_PROJECT).toBe(false);
+      expect("deletedAt" in CONTENT_ROW).toBe(false);
+      const result = await startContentRewriteAction(VALID_INPUT);
+      expect(result.success).toBe(true);
+    });
+
+    it("24. REJECTED — soft-deleted SEO project, even though it belongs to the actor's own company", async () => {
+      mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, deletedAt: TRASHED });
+      const result = await startContentRewriteAction(VALID_INPUT);
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.message).toMatch(/not found/i);
+      expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+      expect(mockedRunAiGenerationJob).not.toHaveBeenCalled();
+    });
+
+    it("25. REJECTED — soft-deleted Content under a live owned project", async () => {
+      mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, deletedAt: TRASHED });
+      const result = await startContentRewriteAction(VALID_INPUT);
+      expect(result.success).toBe(false);
+      expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+      expect(mockedRunAiGenerationJob).not.toHaveBeenCalled();
+    });
+
+    it("26. REJECTED — FOREIGN project (another company)", async () => {
+      mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, companyId: COMPANY_B });
+      const result = await startContentRewriteAction(VALID_INPUT);
+      expect(result.success).toBe(false);
+      expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+    });
+
+    it("27. REJECTED — FOREIGN Content (another company)", async () => {
+      mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } });
+      const result = await startContentRewriteAction(VALID_INPUT);
+      expect(result.success).toBe(false);
+      expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+    });
+
+    it("28. REJECTED — PROJECT MISMATCH: Content of the same company but a different project", async () => {
+      mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, seoProjectId: "00000000-0000-4000-8000-0000000000ff" });
+      const result = await startContentRewriteAction(VALID_INPUT);
+      expect(result.success).toBe(false);
+      expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+    });
+
+    it("29. a trashed project short-circuits BEFORE the Content row is ever read", async () => {
+      mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, deletedAt: TRASHED });
+      await startContentRewriteAction(VALID_INPUT);
+      expect(mockedPrisma.content.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("applyContentRewriteAction — the same guard covers the write path", () => {
+    beforeEach(() => {
+      mockedPrisma.content.findUnique.mockResolvedValue(CONTENT_ROW);
+    });
+
+    it("30. REJECTED — a soft-deleted project blocks APPLY, so no Content is ever written", async () => {
+      mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, deletedAt: TRASHED });
+      const result = await applyContentRewriteAction(APPLY_INPUT);
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.message).toMatch(/not found/i);
+      expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+      expect(mockedPrisma.contentRevision.create).not.toHaveBeenCalled();
+    });
+
+    it("31. REJECTED — a FOREIGN project blocks APPLY", async () => {
+      mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, companyId: COMPANY_B });
+      const result = await applyContentRewriteAction(APPLY_INPUT);
+      expect(result.success).toBe(false);
+      expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+    });
   });
 });

@@ -66,9 +66,42 @@ export function getContentById(id: string) {
   return prisma.content.findUnique({
     where: { id },
     include: {
-      seoProject: { select: { id: true, name: true, companyId: true } },
+      // Phase C4.1 — deletedAt added so callers can tell whether the owning
+      // project is in the trash. Additive only: existing consumers are
+      // unaffected by the extra field.
+      // Phase 4 — clientId/client added so the Content detail page can state
+      // which client the record belongs to. SEOProject.clientId is optional,
+      // so `client` may legitimately be null and callers must say
+      // "no client assigned" rather than guess. Additive only.
+      seoProject: { select: { id: true, name: true, companyId: true, deletedAt: true, clientId: true, client: { select: { id: true, name: true } } } },
+      // The record's OWN client. Content is client-owned now, so this is the
+      // primary answer to "who is this for"; the project's client above is
+      // only a fallback for rows that predate the column.
+      client: { select: { id: true, name: true } },
       author: { select: { id: true, firstName: true, lastName: true } },
       keywords: { select: { id: true, term: true } },
+      // Phase 7 — the Blog Studio edits the article's tags, which are a real
+      // existing company-owned relation on Content.
+      tags: { select: { id: true, name: true } },
+      // Phase 6 — present only when this record IS a social post. Its
+      // presence is what makes the record a social post; there is no
+      // contentType column.
+      socialPost: {
+        select: {
+          id: true,
+          caption: true,
+          link: true,
+          // Phase 7 — caption/link are this target's OWN version; null means
+          // it posts the shared caption above.
+          targets: {
+            select: {
+              caption: true,
+              link: true,
+              socialAccount: { select: { id: true, platform: true, handle: true, displayName: true } },
+            },
+          },
+        },
+      },
       notes: {
         where: { deletedAt: null },
         orderBy: { createdAt: "desc" },

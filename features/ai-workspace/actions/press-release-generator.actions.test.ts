@@ -1,37 +1,46 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/auth", () => ({ requireUser: vi.fn() }));
+vi.mock("@/lib/activity", () => ({ logActivity: vi.fn() }));
 vi.mock("@/lib/jobs/ai-generation-job-table", () => ({
   computeInputHash: vi.fn(),
   createAiGenerationJob: vi.fn(),
   findActiveAiGenerationJob: vi.fn(),
+  getAiGenerationJob: vi.fn(),
 }));
 vi.mock("@/lib/jobs/ai-generation-job-runner", () => ({ runAiGenerationJob: vi.fn() }));
 
 type MockPrisma = {
   sEOProject: { findUnique: ReturnType<typeof vi.fn> };
+  content: { create: ReturnType<typeof vi.fn> };
 };
 
 function createMockPrisma(): MockPrisma {
   return {
     sEOProject: { findUnique: vi.fn() },
+    content: { create: vi.fn() },
   };
 }
 
 vi.mock("@/lib/prisma", () => ({ prisma: createMockPrisma() }));
 
 import { requireUser } from "@/lib/auth";
+import { logActivity } from "@/lib/activity";
 import { prisma } from "@/lib/prisma";
-import { computeInputHash, createAiGenerationJob, findActiveAiGenerationJob } from "@/lib/jobs/ai-generation-job-table";
+import { computeInputHash, createAiGenerationJob, findActiveAiGenerationJob, getAiGenerationJob } from "@/lib/jobs/ai-generation-job-table";
 import { runAiGenerationJob } from "@/lib/jobs/ai-generation-job-runner";
-import { startPressReleaseGenerationAction } from "@/features/ai-workspace/actions/press-release-generator.actions";
+import { savePressReleaseAsContentAction, startPressReleaseGenerationAction } from "@/features/ai-workspace/actions/press-release-generator.actions";
+import type { PressReleaseResult } from "@/features/ai-workspace/schemas/press-release-generator.schema";
 
 const mockedRequireUser = requireUser as unknown as ReturnType<typeof vi.fn>;
+const mockedLogActivity = logActivity as unknown as ReturnType<typeof vi.fn>;
 const mockedPrisma = prisma as unknown as MockPrisma;
 const mockedComputeInputHash = computeInputHash as unknown as ReturnType<typeof vi.fn>;
 const mockedCreateAiGenerationJob = createAiGenerationJob as unknown as ReturnType<typeof vi.fn>;
 const mockedFindActiveAiGenerationJob = findActiveAiGenerationJob as unknown as ReturnType<typeof vi.fn>;
 const mockedRunAiGenerationJob = runAiGenerationJob as unknown as ReturnType<typeof vi.fn>;
+const mockedGetAiGenerationJob = getAiGenerationJob as unknown as ReturnType<typeof vi.fn>;
 
 const COMPANY_A = "company-a";
 const COMPANY_B = "company-b";
@@ -169,5 +178,160 @@ describe("startPressReleaseGenerationAction", () => {
     expect(callArgs.inputJson.dateline).toBeUndefined();
     expect(callArgs.inputJson.callToAction).toBeUndefined();
     expect(callArgs.inputJson.notes).toBeUndefined();
+  });
+});
+
+/* -------------------------------- Save as Content -------------------------------- */
+
+const JOB_ID = "01a002a5-ffa5-705e-9731-806267514300";
+
+const PRESS_RELEASE_RESULT: PressReleaseResult = {
+  headline: "Acme Launches New Product Line",
+  subheadline: "Available starting next month",
+  dateline: "Austin, TX",
+  leadParagraph: "Acme today announced a new product line.",
+  bodyParagraphs: ["The new line expands on Acme's existing offering."],
+  quoteSection: '"We are thrilled" - Jane Doe, CEO',
+  boilerplate: "Acme is a leading provider of widgets.",
+  callToAction: "Visit acme.example.com to learn more",
+  reasoning: "Grounded entirely in the supplied announcement facts.",
+};
+
+const SUCCEEDED_JOB = {
+  id: JOB_ID,
+  companyId: COMPANY_A,
+  taskType: "PRESS_RELEASE_GENERATION",
+  status: "SUCCEEDED",
+  seoProjectId: SEO_PROJECT_ID,
+  resultJson: { result: PRESS_RELEASE_RESULT },
+};
+
+describe("savePressReleaseAsContentAction", () => {
+  beforeEach(() => {
+    mockedGetAiGenerationJob.mockResolvedValue(SUCCEEDED_JOB);
+    mockedPrisma.content.create.mockResolvedValue({ id: "content-1", title: PRESS_RELEASE_RESULT.headline });
+  });
+
+  it("1. the correct user (same company, manageSeoProjects role) can save", async () => {
+    const result = await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data).toEqual({ id: "content-1" });
+  });
+
+  it("2. a user from another company cannot save — the job lookup is company-scoped", async () => {
+    mockedRequireUser.mockResolvedValue({ id: "user-b", role: "MANAGER", companyId: COMPANY_B });
+    const result = await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("3. a non-owned/non-existent job cannot be saved", async () => {
+    mockedGetAiGenerationJob.mockResolvedValue(null);
+    const result = await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("3b. a job for a different task type is refused, even if it belongs to this company", async () => {
+    mockedGetAiGenerationJob.mockResolvedValue({ ...SUCCEEDED_JOB, taskType: "EMAIL_NEWSLETTER" });
+    const result = await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("3c. a job that has not succeeded yet cannot be saved", async () => {
+    mockedGetAiGenerationJob.mockResolvedValue({ ...SUCCEEDED_JOB, status: "RUNNING" });
+    const result = await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("4. a non-owned SEO project cannot be saved against", async () => {
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, companyId: COMPANY_B });
+    const result = await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("5. sets contentType = PRESS_RELEASE", async () => {
+    await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    const [{ data }] = mockedPrisma.content.create.mock.calls[0];
+    expect(data.contentType).toBe("PRESS_RELEASE");
+  });
+
+  it("6. sets status = DRAFT", async () => {
+    await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    const [{ data }] = mockedPrisma.content.create.mock.calls[0];
+    expect(data.status).toBe("DRAFT");
+  });
+
+  it("7. sets generatedByAi = true", async () => {
+    await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    const [{ data }] = mockedPrisma.content.create.mock.calls[0];
+    expect(data.generatedByAi).toBe(true);
+  });
+
+  it("8. companyId comes from the authenticated user, never client input", async () => {
+    await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    const [{ data }] = mockedPrisma.content.create.mock.calls[0];
+    expect(data.companyId).toBe(COMPANY_A);
+  });
+
+  it("9. clientId comes from seoProject.clientId ?? null", async () => {
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, clientId: "client-42" });
+    await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    const [{ data: withClient }] = mockedPrisma.content.create.mock.calls[0];
+    expect(withClient.clientId).toBe("client-42");
+
+    mockedPrisma.content.create.mockClear();
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, clientId: null });
+    await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    const [{ data: withoutClient }] = mockedPrisma.content.create.mock.calls[0];
+    expect(withoutClient.clientId).toBeNull();
+  });
+
+  it("10. Content.body contains the generated document", async () => {
+    await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    const [{ data }] = mockedPrisma.content.create.mock.calls[0];
+    expect(data.body).toContain(PRESS_RELEASE_RESULT.subheadline);
+    expect(data.body).toContain(PRESS_RELEASE_RESULT.dateline);
+    expect(data.body).toContain(PRESS_RELEASE_RESULT.leadParagraph);
+    expect(data.body).toContain(PRESS_RELEASE_RESULT.bodyParagraphs[0]);
+    expect(data.body).toContain(PRESS_RELEASE_RESULT.quoteSection);
+    expect(data.body).toContain(PRESS_RELEASE_RESULT.boilerplate);
+    expect(data.body).toContain(PRESS_RELEASE_RESULT.callToAction);
+  });
+
+  it("11. Content.aiBriefDetails preserves the full structured press release — nothing lost in conversion", async () => {
+    await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    const [{ data }] = mockedPrisma.content.create.mock.calls[0];
+    expect(data.aiBriefDetails).toEqual(PRESS_RELEASE_RESULT);
+  });
+
+  it("12. logs the activity", async () => {
+    await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    expect(mockedLogActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "content.ai_press_release_saved", companyId: COMPANY_A, contentId: "content-1" })
+    );
+  });
+
+  it("13. the browser-supplied jobId is the only input — the actual text is re-read from the job row, never trusted from the client", async () => {
+    const result = await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    expect(result.success).toBe(true);
+    expect(mockedGetAiGenerationJob).toHaveBeenCalledWith(JOB_ID);
+  });
+
+  it("14. an EMPLOYEE cannot save", async () => {
+    mockedRequireUser.mockResolvedValue(EMPLOYEE);
+    const result = await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
+  });
+
+  it("15. a job with a null result (generation succeeded but produced nothing valid) cannot be saved", async () => {
+    mockedGetAiGenerationJob.mockResolvedValue({ ...SUCCEEDED_JOB, resultJson: { result: null } });
+    const result = await savePressReleaseAsContentAction({ jobId: JOB_ID });
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.create).not.toHaveBeenCalled();
   });
 });

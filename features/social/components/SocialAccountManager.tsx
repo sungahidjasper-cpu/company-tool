@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import PlatformMark from "@/features/social/components/PlatformMark";
 import SocialAvailabilityRow from "@/features/social/components/SocialAvailabilityRow";
 import SocialConnectionRow from "@/features/social/components/SocialConnectionRow";
-import { buildPlatformSections, canOfferConnect, type PlatformSection } from "@/features/social/components/social-account-manager.logic";
+import { buildPlatformSections, type PlatformSection } from "@/features/social/components/social-account-manager.logic";
 import {
   addSocialAccountAction,
   removeSocialAccountAction,
@@ -23,6 +23,7 @@ import {
 } from "@/features/social/actions/social-connection.actions";
 import type { SocialAccountSummary } from "@/features/social/schemas/social-account.schema";
 import type { PlatformConnectivity } from "@/features/social/schemas/social-connection.schema";
+import { describePlatformCapability } from "@/features/social/services/social-connection-status";
 import { platformDefinition } from "@/features/social/services/social-platforms";
 import type { SocialPlatform } from "@/lib/generated/prisma/enums";
 
@@ -504,9 +505,17 @@ function AccountCard({
  *
  * Every platform ALL_PLATFORMS knows about gets one of these, whether or not
  * it can be connected today — the point is that a person can SEE Instagram
- * exists as a platform without first discovering the manual form. The
- * primary action is Connect wherever that can genuinely work; everywhere
- * else, an honest sentence takes its place.
+ * exists as a platform without first discovering the manual form.
+ *
+ * Phase 9E — the status label itself now distinguishes NOT_IMPLEMENTED from
+ * everything else: "Not available yet" for a platform with no OAuth provider
+ * at all (no environment variable would ever fix that), and "Not connected"
+ * for one that could genuinely be connected — whether or not it is
+ * configured yet — because a real connection simply has not happened. Both
+ * the wording and the READY/NOT_CONFIGURED/NOT_IMPLEMENTED split come from
+ * the single describePlatformCapability function, so this card can never
+ * disagree with SocialConnectionRow's own action slot for an existing
+ * account on the same platform.
  */
 function NoAccountCard({
   section,
@@ -520,10 +529,8 @@ function NoAccountCard({
   onAddIdentity: () => void;
 }) {
   const definition = platformDefinition(section.platform);
-  const canConnect = canOfferConnect(section.connectivity);
-  const unavailableReason = section.connectivity
-    ? section.connectivity.summary
-    : `Connecting ${definition.name} is not available yet.`;
+  const capability = describePlatformCapability(section.connectivity);
+  const statusLabel = capability.state === "NOT_IMPLEMENTED" ? "Not available yet" : "Not connected";
 
   return (
     <li className="flex flex-col gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/50 p-3">
@@ -533,22 +540,29 @@ function NoAccountCard({
           <span className="text-sm font-medium text-slate-700">{definition.name}</span>
           <span className="flex items-center gap-1.5 text-xs text-slate-500">
             <span className="size-2 shrink-0 rounded-full bg-slate-300" aria-hidden />
-            Not connected — no {definition.accountNoun.toLowerCase()} configured for this client yet
+            {statusLabel} — no {definition.accountNoun.toLowerCase()} configured for this client yet
           </span>
         </span>
 
-        {canConnect && (
+        {capability.state === "READY" && (
           <Button type="button" size="sm" onClick={onConnect} disabled={isPending}>
             <Plus size={14} /> Connect {definition.name}
           </Button>
         )}
+
+        {/* An honest stand-in, never a functioning-looking control — nothing here can be "activated". */}
+        {capability.state !== "READY" && (
+          <span className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-400">
+            {capability.state === "NOT_IMPLEMENTED" ? "Not available" : "Configuration required"}
+          </span>
+        )}
       </div>
 
-      {!canConnect && (
+      {capability.state !== "READY" && (
         <p className="text-xs text-slate-500">
-          {unavailableReason}
-          {section.connectivity && section.connectivity.missingKeys.length > 0 && (
-            <span className="text-slate-400"> Set {section.connectivity.missingKeys.join(" and ")} to enable it.</span>
+          {capability.detail}
+          {capability.missingKeys.length > 0 && (
+            <span className="text-slate-400"> Set {capability.missingKeys.join(" and ")} to enable it.</span>
           )}
         </p>
       )}

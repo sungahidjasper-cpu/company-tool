@@ -25,6 +25,14 @@ type ContentOption = { id: string; title: string };
 type SchemaMarkupGeneratorPickerProps = {
   seoProjectOptions: SeoProjectOption[];
   contentByProject: Record<string, ContentOption[]>;
+  /**
+   * Phase C4.3 — optional preselection handed over from a Content record so
+   * the user does not have to find the same page again. Already resolved
+   * server-side against this route’s own company-scoped, non-soft-deleted
+   * list; the generate action still re-verifies ownership independently.
+   */
+  initialSeoProjectId?: string;
+  initialContentId?: string;
 };
 
 /**
@@ -48,12 +56,17 @@ export const SCHEMA_MARKUP_EMPTY_RESULT_MESSAGE = "No structured-data recommenda
 /** Phase B B5.1 — shown while no SEO project is chosen. A prompt to choose, never a claim that the project is invalid (only the server can determine that). */
 export const SELECT_PROJECT_HINT = "Select an SEO project before generating.";
 
-export default function SchemaMarkupGeneratorPicker({ seoProjectOptions, contentByProject }: SchemaMarkupGeneratorPickerProps) {
+export default function SchemaMarkupGeneratorPicker({
+  seoProjectOptions,
+  contentByProject,
+  initialSeoProjectId = "",
+  initialContentId = "",
+}: SchemaMarkupGeneratorPickerProps) {
   // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
   // let a user generate against a project they never consciously chose; the
   // server still re-derives and enforces ownership regardless of this value.
-  const [seoProjectId, setSeoProjectId] = useState("");
-  const [contentId, setContentId] = useState("");
+  const [seoProjectId, setSeoProjectId] = useState(initialSeoProjectId);
+  const [contentId, setContentId] = useState(initialContentId);
   const [notes, setNotes] = useState("");
 
   const [result, setResult] = useState<SchemaMarkupOutput | null>(null);

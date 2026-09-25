@@ -31,6 +31,35 @@ describe("computeCanGenerate — selection cannot choose ineligible content", ()
 });
 
 /**
+ * Phase C4.2 — arriving from a Content record's "Rewrite Content" action.
+ *
+ * The route resolves the requested ids against its own company-scoped,
+ * body-bearing list (resolveContentOptimizerSelection) and seeds the picker's
+ * initial state from the result. These tests pin the seam between the two:
+ * whatever the resolver hands over must still pass the picker's own
+ * eligibility gate, and a dropped hand-off must leave the picker in exactly
+ * the state a direct visit produces.
+ */
+describe("preselection hand-off — a seeded selection is subject to the same gate", () => {
+  const ELIGIBLE = ["content-1", "content-2"];
+
+  it("10. a resolved hand-off lands generate-ready — no re-selection needed", () => {
+    // resolveContentOptimizerSelection returned { contentIds: ["content-1"] }.
+    expect(computeCanGenerate("content-1", ELIGIBLE)).toBe(true);
+  });
+
+  it("11. a DROPPED hand-off (foreign/trashed/body-less id) seeds null and cannot generate — identical to a direct visit", () => {
+    // resolveContentOptimizerSelection returned { contentIds: [] }; the route
+    // passes `contentIds[0] ?? null`, so the picker starts unselected.
+    expect(computeCanGenerate(null, ELIGIBLE)).toBe(false);
+  });
+
+  it("12. the hand-off cannot smuggle in an ineligible id — the gate re-checks it against the route's own list", () => {
+    expect(computeCanGenerate("content-from-another-company", ELIGIBLE)).toBe(false);
+  });
+});
+
+/**
  * The picker's applyResult() calls contentRewriterJobResultSchema.safeParse
  * on whatever resultJson a job returns — these tests exercise that same
  * schema directly, covering exactly the success/empty/invalid paths

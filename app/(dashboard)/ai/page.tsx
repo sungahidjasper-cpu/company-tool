@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   Tags,
   Users,
+  type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -29,21 +30,29 @@ import { formatEnumLabel } from "@/lib/utils";
  * redesign as each one gets built out in a future phase (per the review's
  * item 18: deepen Content Brief/Draft now, don't build new shallow tools).
  */
-const AI_TOOLS = [
+type AiToolCard = {
+  name: string;
+  description: string;
+  href: string | null;
+  icon: LucideIcon;
+  status: "available" | "coming-soon";
+};
+
+const AI_TOOLS: AiToolCard[] = [
   { name: "SEO Content Brief", description: "Configurable title, meta tags, outline, FAQ, and SEO/GEO/AEO suggestions for a target keyword.", href: "/ai/content-brief/new", icon: FileText, status: "available" as const },
   { name: "Long-Form Content Draft", description: "Generate a full draft article from an approved brief.", href: "/ai/content-brief/new", icon: FileEdit, status: "available" as const },
   { name: "Meta Tag Optimizer", description: "Bulk-review and improve meta titles/descriptions across existing content.", href: "/ai/meta-tag-optimizer/new", icon: Tags, status: "available" as const },
   { name: "Internal Link Analyzer", description: "Suggest internal linking opportunities across your site.", href: "/ai/internal-link-analyzer/new", icon: Link2, status: "available" as const },
   { name: "Content Gap Analysis", description: "Surface content opportunities from your SEO audit, checked against your existing content.", href: "/ai/content-gap-analysis/new", icon: Search, status: "available" as const },
-  { name: "Competitor Content Analysis", description: "Compare your content against top-ranking competitor pages.", href: null, icon: Users, status: "coming-soon" as const },
+  { name: "Competitor Content Analysis", description: "Read a competitor site and compare what it covers against your own content.", href: "/ai/competitor-content-analysis/new", icon: Users, status: "available" as const },
   { name: "Schema Markup Generator", description: "Generate structured-data markup for existing pages.", href: "/ai/schema-markup/new", icon: ShieldCheck, status: "available" as const },
   { name: "Content Rewriter", description: "Rewrite and refresh one existing page's title, meta tags, and body.", href: "/ai/content-rewriter/new", icon: FileEdit, status: "available" as const },
-  { name: "Topic Cluster Planner", description: "Plan pillar/cluster content structures around a topic.", href: null, icon: Network, status: "coming-soon" as const },
-  { name: "Content Calendar Assistant", description: "Plan and schedule upcoming content topics.", href: null, icon: CalendarDays, status: "coming-soon" as const },
-  { name: "Image Alt Text Generator", description: "Generate SEO-friendly alt text for existing images.", href: null, icon: ImageIcon, status: "coming-soon" as const },
+  { name: "Topic Cluster Planner", description: "Plan topical clusters and supporting topics from a primary topic you provide.", href: "/ai/topic-cluster-planner/new", icon: Network, status: "available" as const },
+  { name: "Content Calendar Assistant", description: "Plan and save a content schedule for a date range.", href: "/ai/content-calendar", icon: CalendarDays, status: "available" as const },
+  { name: "Image Alt Text Generator", description: "Write accessible alt text for an existing image from your description.", href: "/ai/image-alt-text/new", icon: ImageIcon, status: "available" as const },
   { name: "Social Snippet Generator", description: "Turn published content into social media posts.", href: "/ai/social-snippet-generator/new", icon: MessageSquareText, status: "available" as const },
   { name: "Press Release Generator", description: "Draft press releases grounded in verified facts.", href: "/ai/press-release-generator/new", icon: Newspaper, status: "available" as const },
-  { name: "Email Newsletter Drafter", description: "Summarize recent content into a newsletter draft.", href: null, icon: Mail, status: "coming-soon" as const },
+  { name: "Email Newsletter Drafter", description: "Draft an email newsletter from one of your existing content records.", href: "/ai/email-newsletter/new", icon: Mail, status: "available" as const },
 ] as const;
 
 export default async function AiWorkspacePage() {

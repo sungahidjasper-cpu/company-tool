@@ -62,9 +62,9 @@ async function resolveCompanyId(input: LogActivityInput): Promise<string | null>
   if (input.contentId) {
     const content = await prisma.content.findUnique({
       where: { id: input.contentId },
-      include: { seoProject: { select: { companyId: true } } },
+      select: { companyId: true },
     });
-    return content?.seoProject.companyId ?? null;
+    return content?.companyId ?? null;
   }
 
   return null;

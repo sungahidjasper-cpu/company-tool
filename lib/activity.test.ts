@@ -130,7 +130,7 @@ describe("logActivity", () => {
 
   describe("regression: resolveCompanyId's existing fallback behavior", () => {
     it("resolves companyId from contentId alone via Content -> SEOProject when companyId is not passed directly", async () => {
-      mockedPrisma.content.findUnique.mockResolvedValue({ seoProject: { companyId: "resolved-company" } });
+      mockedPrisma.content.findUnique.mockResolvedValue({ companyId: "resolved-company", seoProject: { companyId: "resolved-company" } });
 
       await logActivity({ actorId: "actor-1", action: "content.updated", contentId: "content-1" });
 

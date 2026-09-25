@@ -4,6 +4,8 @@
 **Author:** Prepared for Cloud Compass OS, following Phase 10 (SEO Workspace)
 **Scope:** Research and architecture only — no code changes are included in or implied by this document
 
+**UPDATE (2026-09-23) — the "Current state" section below is now stale.** It was accurate when written, but the app has since gained, for other reasons: a full multi-provider AI/LLM client (`lib/ai/`, not the empty `features/ai/` scaffold this doc describes), a working Postgres-backed background job system (`lib/jobs/`), and a real site-crawling stack (`cheerio`, `robots-parser`, `Sitemapper` — see `features/seo/services/website-crawler.service.ts`, which already crawls a live domain and is used by the real, working Website Analysis tool at `/seo/website-analysis`). So the specific groundwork §2 says is missing (job infrastructure, AI SDK, crawling library) already exists — only the actual suggestion/clustering/scoring/wizard workflow this document proposes (§§3 onward) remains unbuilt. Re-verify against the current codebase before starting implementation rather than reusing §2's claims as-is.
+
 ---
 
 ## 1. Executive summary

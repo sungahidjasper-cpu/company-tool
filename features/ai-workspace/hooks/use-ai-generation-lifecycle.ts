@@ -17,6 +17,41 @@ export type PollGenerationJobHandlers = {
   onSettled: () => void;
 };
 
+type PollResponse = Awaited<ReturnType<typeof getAiGenerationJobAction>>;
+type PolledJob = NonNullable<Extract<PollResponse, { success: true }>["data"]>;
+
+export type PollTick = { kind: "retry" } | { kind: "failed"; message: string } | { kind: "job"; job: PolledJob };
+
+/**
+ * What one poll tick means. Extracted as a pure function because it carries
+ * the reliability rule this lifecycle depends on, and this repository has no
+ * React rendering test setup (vitest runs `environment: "node"`) — the same
+ * approach the AI Workspace pickers already use for their own non-trivial
+ * logic (see ContentRewriterPicker's `computeCanGenerate`).
+ *
+ * The critical distinction is between a POLL that failed and a JOB that
+ * failed. They are not the same event and must never share an outcome:
+ *
+ * - `null`      — the poll request itself threw. Nothing was learned about
+ *                 the job, which is still running server-side. RETRY.
+ * - `data: null`— the action ran but has no verdict, which is how it reports
+ *                 a database read it classified as transient and retryable
+ *                 (see getAiGenerationJobAction). RETRY.
+ * - `!success`  — the action reached a definite negative conclusion (job
+ *                 missing, or another company's). A real failure to report.
+ * - otherwise   — a real job row to inspect for FAILED/SUCCEEDED.
+ *
+ * Only the third case may stop polling on the caller's behalf; the retry
+ * cases stay bounded by the caller's own MAX_POLL_MS ceiling, so a poll that
+ * never recovers ends as a timeout rather than an infinite loop.
+ */
+export function classifyPollTick(poll: PollResponse | null): PollTick {
+  if (poll === null) return { kind: "retry" };
+  if (!poll.success) return { kind: "failed", message: poll.message };
+  if (!poll.data) return { kind: "retry" };
+  return { kind: "job", job: poll.data };
+}
+
 /**
  * Phase 30 Stage 11 — the generic job-lifecycle mechanics shared by every
  * AiGenerationJob-backed AI Workspace tool, extracted out of
@@ -137,26 +172,49 @@ export function useAiGenerationLifecycle(onResumeJob: (jobId: string) => void) {
         return;
       }
 
-      const poll = await getAiGenerationJobAction(jobId);
-      if (!poll.success) {
+      let poll: PollResponse | null = null;
+      try {
+        poll = await getAiGenerationJobAction(jobId);
+      } catch {
+        /*
+         * The poll REQUEST itself failed (transport blip, or a server fault
+         * the action could not convert into a result). The generation is
+         * unaffected — it runs server-side, not here — so this must never be
+         * reported as a failed generation. classifyPollTick maps the null
+         * below to "retry", keeping the interval alive for the next tick.
+         *
+         * Previously this rejection was simply unhandled: polling survived by
+         * accident (an async setInterval callback that throws does not clear
+         * its own timer) while the rejection surfaced as a runtime error.
+         * Catching it makes the retry deliberate and stops the crash. The
+         * MAX_POLL_MS ceiling above still bounds this, so a permanently
+         * broken poll ends as a timeout rather than looping forever.
+         */
+        console.warn("[ai-generation] poll request failed; retrying on the next interval.");
+      }
+
+      const tick = classifyPollTick(poll);
+
+      if (tick.kind === "retry") return;
+
+      if (tick.kind === "failed") {
         if (pollRef.current) clearInterval(pollRef.current);
         handlers.onSettled();
-        handlers.onFailed(null, poll.message);
+        handlers.onFailed(null, tick.message);
         return;
       }
-      if (!poll.data) return;
 
-      if (poll.data.status === "FAILED") {
+      if (tick.job.status === "FAILED") {
         if (pollRef.current) clearInterval(pollRef.current);
         handlers.onSettled();
-        handlers.onFailed(poll.data.errorType, poll.data.errorMessage ?? "Generation failed.");
+        handlers.onFailed(tick.job.errorType, tick.job.errorMessage ?? "Generation failed.");
         return;
       }
 
-      if (poll.data.status === "SUCCEEDED") {
+      if (tick.job.status === "SUCCEEDED") {
         if (pollRef.current) clearInterval(pollRef.current);
         handlers.onSettled();
-        handlers.onSucceeded(poll.data.resultJson);
+        handlers.onSucceeded(tick.job.resultJson);
       }
     }, POLL_INTERVAL_MS);
   }
@@ -170,7 +228,13 @@ export function useAiGenerationLifecycle(onResumeJob: (jobId: string) => void) {
     const resumeJobId = searchParams.get("jobId");
     if (!resumeJobId) return;
     const timeoutId = setTimeout(() => {
-      onResumeJobRef.current(resumeJobId);
+      // Fire-and-forget by design (see above), so it needs its own rejection
+      // guard: an unhandled rejection here would be exactly the uncaught
+      // runtime error this lifecycle is meant not to produce. Failing to
+      // resume is harmless — the tool simply opens without a restored job.
+      void Promise.resolve(onResumeJobRef.current(resumeJobId)).catch(() => {
+        console.warn("[ai-generation] could not resume the job named in ?jobId=; starting without it.");
+      });
     }, 0);
     return () => clearTimeout(timeoutId);
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -28,6 +28,14 @@ type ContentOption = { id: string; title: string };
 type InternalLinkAnalyzerPickerProps = {
   seoProjectOptions: SeoProjectOption[];
   contentByProject: Record<string, ContentOption[]>;
+  /**
+   * Phase 4 — optional hand-off from a Content record, already resolved
+   * server-side against this actor's own options. initialContentId is seeded
+   * explicitly rather than left to the first-option fallback below, so a
+   * hand-off lands on the page the user actually came from.
+   */
+  initialSeoProjectId?: string;
+  initialContentId?: string;
 };
 
 /**
@@ -72,13 +80,20 @@ export function formatRecommendationsAsText(result: InternalLinkAnalysisResult):
  * tool's output is never persisted or auto-inserted into any Content row
  * (see internal-link-analyzer.service.ts's own comment on why).
  */
-export default function InternalLinkAnalyzerPicker({ seoProjectOptions, contentByProject }: InternalLinkAnalyzerPickerProps) {
-  // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
-  // let a user generate against a project they never consciously chose; the
-  // server still re-derives and enforces ownership regardless of this value.
-  const [seoProjectId, setSeoProjectId] = useState("");
+export default function InternalLinkAnalyzerPicker({
+  seoProjectOptions,
+  contentByProject,
+  initialSeoProjectId = "",
+  initialContentId = "",
+}: InternalLinkAnalyzerPickerProps) {
+  // Phase B B5.1 — deliberately unselected by DEFAULT. Auto-selecting the
+  // first project let a user generate against a project they never consciously
+  // chose. A Phase 4 hand-off is the one exception: the user arrived from that
+  // specific Content record, so preselecting it is what they asked for. Either
+  // way the server re-derives and enforces ownership regardless of this value.
+  const [seoProjectId, setSeoProjectId] = useState(initialSeoProjectId);
   const contentOptions = useMemo(() => contentByProject[seoProjectId] ?? [], [contentByProject, seoProjectId]);
-  const [contentId, setContentId] = useState(contentOptions[0]?.id ?? "");
+  const [contentId, setContentId] = useState(initialContentId || contentOptions[0]?.id || "");
 
   const [result, setResult] = useState<InternalLinkAnalysisResult | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);

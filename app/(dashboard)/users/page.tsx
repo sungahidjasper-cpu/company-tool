@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Plus, UserCog } from "lucide-react";
+import { Mail, Plus, UserCog } from "lucide-react";
 
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
 import EmptyState from "@/components/dashboard/EmptyState";
@@ -51,9 +51,14 @@ export default async function UsersPage({ searchParams }: UsersPageProps) {
         title="Users"
         description="Manage the people in your workspace."
         actions={
-          <Link href="/users/new" className={cn(buttonVariants())}>
-            <Plus size={16} /> New user
-          </Link>
+          <div className="flex gap-2">
+            <Link href="/users/invite" className={cn(buttonVariants({ variant: "outline" }))}>
+              <Mail size={16} /> Invite user
+            </Link>
+            <Link href="/users/new" className={cn(buttonVariants())}>
+              <Plus size={16} /> New user
+            </Link>
+          </div>
         }
       />
 

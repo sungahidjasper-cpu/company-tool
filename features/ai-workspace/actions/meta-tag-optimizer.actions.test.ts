@@ -61,8 +61,8 @@ const CONTENT_ID_1 = "00000000-0000-4000-8000-000000000001";
 const CONTENT_ID_2 = "00000000-0000-4000-8000-000000000002";
 const SEO_PROJECT_ID = "00000000-0000-4000-8000-0000000000f0";
 
-const CONTENT_ROW_1 = { id: CONTENT_ID_1, seoProjectId: SEO_PROJECT_ID, deletedAt: null, seoProject: { companyId: COMPANY_A } };
-const CONTENT_ROW_2 = { id: CONTENT_ID_2, seoProjectId: SEO_PROJECT_ID, deletedAt: null, seoProject: { companyId: COMPANY_A } };
+const CONTENT_ROW_1 = { id: CONTENT_ID_1, seoProjectId: SEO_PROJECT_ID, deletedAt: null, companyId: COMPANY_A, seoProject: { companyId: COMPANY_A } };
+const CONTENT_ROW_2 = { id: CONTENT_ID_2, seoProjectId: SEO_PROJECT_ID, deletedAt: null, companyId: COMPANY_A, seoProject: { companyId: COMPANY_A } };
 
 const VALID_INPUT = { seoProjectId: SEO_PROJECT_ID, contentIds: [CONTENT_ID_1, CONTENT_ID_2] };
 
@@ -131,7 +131,7 @@ describe("startMetaTagOptimizerAction", () => {
   });
 
   it("7. rejects when any selected content belongs to another company", async () => {
-    mockedPrisma.content.findMany.mockResolvedValue([CONTENT_ROW_1, { ...CONTENT_ROW_2, seoProject: { companyId: COMPANY_B } }]);
+    mockedPrisma.content.findMany.mockResolvedValue([CONTENT_ROW_1, { ...CONTENT_ROW_2, companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } }]);
     const result = await startMetaTagOptimizerAction(VALID_INPUT);
     expect(result.success).toBe(false);
     if (!result.success) expect(result.message).toMatch(/not found/i);
@@ -255,7 +255,7 @@ describe("applyMetaTagSuggestionAction", () => {
   });
 
   it("rejects when the content belongs to another company, even though the SEO project id matches", async () => {
-    mockedPrisma.content.findMany.mockResolvedValue([{ ...CONTENT_ROW_1, seoProject: { companyId: COMPANY_B } }]);
+    mockedPrisma.content.findMany.mockResolvedValue([{ ...CONTENT_ROW_1, companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } }]);
     const result = await applyMetaTagSuggestionAction(APPLY_INPUT);
     expect(result.success).toBe(false);
     if (!result.success) expect(result.message).toMatch(/not be found/i);
@@ -396,5 +396,96 @@ describe("applyMetaTagSuggestionAction", () => {
     const result = await applyMetaTagSuggestionAction(APPLY_INPUT);
     expect(result.success).toBe(true);
     expect(mockedPrisma.content.update).toHaveBeenCalled();
+  });
+});
+
+/**
+ * C4 security-consistency pass — the server-side lifecycle boundary.
+ *
+ * getOwnedSeoProject now rejects a soft-deleted project, matching the rule
+ * getOwnedContentRows already applies to each Content row. Both
+ * startMetaTagOptimizerAction and applyMetaTagSuggestionAction route through
+ * that one helper, so both paths are covered here.
+ */
+describe("Meta Tag Optimizer — project/content lifecycle is enforced server-side", () => {
+  const TRASHED = new Date("2026-08-12T00:00:00.000Z");
+
+  describe("startMetaTagOptimizerAction", () => {
+    it("9. ALLOWED — active owned project + active owned Content rows", async () => {
+      const result = await startMetaTagOptimizerAction(VALID_INPUT);
+      expect(result.success).toBe(true);
+      expect(mockedCreateAiGenerationJob).toHaveBeenCalled();
+    });
+
+    it("10. ALLOWED — a project fixture that OMITS deletedAt is treated as live", async () => {
+      expect("deletedAt" in SEO_PROJECT).toBe(false);
+      const result = await startMetaTagOptimizerAction(VALID_INPUT);
+      expect(result.success).toBe(true);
+    });
+
+    it("11. REJECTED — soft-deleted SEO project, even within the actor's own company", async () => {
+      mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, id: SEO_PROJECT_ID, deletedAt: TRASHED });
+      const result = await startMetaTagOptimizerAction(VALID_INPUT);
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.message).toMatch(/not found/i);
+      expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+      expect(mockedRunAiGenerationJob).not.toHaveBeenCalled();
+    });
+
+    it("12. REJECTED — one soft-deleted Content row rejects the WHOLE selection, never partially accepts it", async () => {
+      mockedPrisma.content.findMany.mockResolvedValue([CONTENT_ROW_1, { ...CONTENT_ROW_2, deletedAt: TRASHED }]);
+      const result = await startMetaTagOptimizerAction(VALID_INPUT);
+      expect(result.success).toBe(false);
+      expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+      expect(mockedRunAiGenerationJob).not.toHaveBeenCalled();
+    });
+
+    it("13. REJECTED — FOREIGN project (another company)", async () => {
+      mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, id: SEO_PROJECT_ID, companyId: COMPANY_B });
+      const result = await startMetaTagOptimizerAction(VALID_INPUT);
+      expect(result.success).toBe(false);
+      expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+    });
+
+    it("14. REJECTED — FOREIGN Content (another company)", async () => {
+      mockedPrisma.content.findMany.mockResolvedValue([CONTENT_ROW_1, { ...CONTENT_ROW_2, companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } }]);
+      const result = await startMetaTagOptimizerAction(VALID_INPUT);
+      expect(result.success).toBe(false);
+      expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+    });
+
+    it("15. REJECTED — PROJECT MISMATCH: a row of the same company but a different project", async () => {
+      mockedPrisma.content.findMany.mockResolvedValue([CONTENT_ROW_1, { ...CONTENT_ROW_2, seoProjectId: "00000000-0000-4000-8000-0000000000ff" }]);
+      const result = await startMetaTagOptimizerAction(VALID_INPUT);
+      expect(result.success).toBe(false);
+      expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+    });
+
+    it("16. a trashed project short-circuits BEFORE any Content row is read", async () => {
+      mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, id: SEO_PROJECT_ID, deletedAt: TRASHED });
+      await startMetaTagOptimizerAction(VALID_INPUT);
+      expect(mockedPrisma.content.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("applyMetaTagSuggestionAction — the same guard covers the write path", () => {
+    beforeEach(() => {
+      mockedPrisma.content.findMany.mockResolvedValue([CONTENT_ROW_1]);
+    });
+
+    it("17. REJECTED — a soft-deleted project blocks APPLY, so no Content is ever written", async () => {
+      mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, id: SEO_PROJECT_ID, deletedAt: TRASHED });
+      const result = await applyMetaTagSuggestionAction(APPLY_INPUT);
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.message).toMatch(/not found/i);
+      expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+    });
+
+    it("18. REJECTED — a FOREIGN project blocks APPLY", async () => {
+      mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, id: SEO_PROJECT_ID, companyId: COMPANY_B });
+      const result = await applyMetaTagSuggestionAction(APPLY_INPUT);
+      expect(result.success).toBe(false);
+      expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+    });
   });
 });

@@ -6,9 +6,9 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 
-import { createContent, updateContent } from "@/features/seo/actions/content.actions";
+import { createContent, updateContent, type CreateContentSchedule } from "@/features/seo/actions/content.actions";
 import {
-  CONTENT_STATUSES,
+  MANUALLY_SELECTABLE_CONTENT_STATUSES,
   contentSchema,
   type ContentInput,
 } from "@/features/seo/schemas/content.schema";
@@ -33,6 +33,13 @@ type ContentFormProps = {
   };
   userOptions: UserOption[];
   keywordOptions: KeywordOption[];
+  /**
+   * Phase 5 — a schedule carried in from the calendar's creation workflow.
+   * Shown here so the user can see what they are about to commit to, and
+   * applied by createContent in the same action as the create. Ignored when
+   * editing: an existing record's schedule is changed on its own page.
+   */
+  schedule?: CreateContentSchedule & { readable: string };
 };
 
 export default function ContentForm({
@@ -40,6 +47,7 @@ export default function ContentForm({
   content,
   userOptions,
   keywordOptions,
+  schedule,
 }: ContentFormProps) {
   const router = useRouter();
   const [formError, setFormError] = useState<string | null>(null);
@@ -83,20 +91,29 @@ export default function ContentForm({
 
     const result = content
       ? await updateContent(content.id, payload)
-      : await createContent(seoProjectId, payload);
+      : await createContent(seoProjectId, payload, schedule ? { dateIso: schedule.dateIso, time: schedule.time, timeZone: schedule.timeZone } : undefined);
 
     if (!result.success) {
       setFormError(result.message);
       return;
     }
 
-    toast.success(content ? "Content updated" : "Content created");
+    toast.success(content ? "Content updated" : schedule ? "Content created and scheduled" : "Content created");
     router.push(`/seo/${seoProjectId}/content/${result.data.id}`);
     router.refresh();
   };
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
+      {/*
+        Stated before the fields, because it is the one thing on this form the
+        user did not type here — it came from the calendar date they clicked.
+      */}
+      {!content && schedule && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          Will be scheduled for <span className="font-semibold">{schedule.readable}</span> when you save. Nothing is scheduled until then.
+        </p>
+      )}
       <div className="flex flex-col gap-1.5">
         <label htmlFor="title" className="text-sm font-medium">
           Title
@@ -123,7 +140,15 @@ export default function ContentForm({
             Status
           </label>
           <select id="status" className={selectClassName} {...register("status")}>
-            {CONTENT_STATUSES.map((status) => (
+            {/*
+              Phase 5 — SCHEDULED is never offered here. Choosing it from a
+              dropdown would set a publication intent with no date, time or
+              zone behind it; scheduling has its own control on the detail
+              page. A record that IS scheduled keeps its value below, so
+              editing it cannot silently unschedule it.
+            */}
+            {content?.status === "SCHEDULED" && <option value="SCHEDULED">Scheduled (change this on the content page)</option>}
+            {MANUALLY_SELECTABLE_CONTENT_STATUSES.map((status) => (
               <option key={status} value={status}>
                 {formatEnumLabel(status)}
               </option>

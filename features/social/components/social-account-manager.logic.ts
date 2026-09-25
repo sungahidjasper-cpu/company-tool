@@ -61,15 +61,3 @@ export function buildPlatformSections(
     connectivity: connectivityByPlatform.get(platform),
   }));
 }
-
-/**
- * Whether a platform is worth offering "Connect" for right now — real
- * provider, and this deployment holds its credentials. Everything else gets
- * an honest sentence instead of a button, decided by the SAME
- * PlatformConnectivity the settings screen and the connection actions
- * already agree on, so this can never disagree with what clicking the
- * button would actually do.
- */
-export function canOfferConnect(connectivity: PlatformConnectivity | undefined): boolean {
-  return connectivity !== undefined && connectivity.connectable && connectivity.configured;
-}

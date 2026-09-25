@@ -7,7 +7,15 @@ import { socialSnippetGeneratorInputSchema, type SocialSnippetGeneratorInput } f
 import { metaTagOptimizerInputSchema, type MetaTagOptimizerInput } from "@/features/ai-workspace/schemas/meta-tag-optimizer.schema";
 import { contentRewriterInputSchema, type ContentRewriterInput } from "@/features/ai-workspace/schemas/content-rewriter.schema";
 import { pressReleaseGeneratorInputSchema, type PressReleaseGeneratorInput } from "@/features/ai-workspace/schemas/press-release-generator.schema";
+import { topicClusterPlannerInputSchema, type TopicClusterPlannerInput } from "@/features/ai-workspace/schemas/topic-cluster-planner.schema";
+import {
+  competitorContentAnalysisJobInputSchema,
+  type CompetitorContentAnalysisJobInput,
+} from "@/features/ai-workspace/schemas/competitor-content-analysis.schema";
 import { contentGapAnalysisJobInputSchema, type ContentGapAnalysisJobInput } from "@/features/ai-workspace/schemas/content-gap-analysis.schema";
+import { emailNewsletterJobInputSchema, type EmailNewsletterJobInput } from "@/features/ai-workspace/schemas/email-newsletter.schema";
+import { imageAltTextJobInputSchema, type ImageAltTextJobInput } from "@/features/ai-workspace/schemas/image-alt-text.schema";
+import { contentCalendarJobInputSchema, type ContentCalendarJobInput } from "@/features/ai-workspace/schemas/content-calendar.schema";
 
 /**
  * Validators for AiGenerationJob.inputJson, read back from the database by
@@ -157,4 +165,72 @@ export function validateLongFormJobInput(input: unknown): JobInputValidationResu
   }
 
   return { success: false, message: "Invalid input" };
+}
+
+/**
+ * The tenth AI Workspace tool. Its stored job input is the same shape as its
+ * form input (seed topic plus optional real keyword ids), so the form schema
+ * is reused directly rather than declaring a second identical one.
+ */
+export function validateTopicClusterPlannerJobInput(input: unknown): JobInputValidationResult<TopicClusterPlannerInput> {
+  const parsed = topicClusterPlannerInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, message: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  return { success: true, data: parsed.data };
+}
+
+/**
+ * The eleventh AI Workspace tool. Its stored input is richer than its form
+ * input: the action records the competitor ORIGINS it already validated (and
+ * where each came from), so the dispatcher never re-derives an origin from raw
+ * user text. Validated against the stored-shape schema, not the form schema —
+ * the same precedent content-gap-analysis.schema.ts set.
+ */
+export function validateCompetitorContentAnalysisJobInput(input: unknown): JobInputValidationResult<CompetitorContentAnalysisJobInput> {
+  const parsed = competitorContentAnalysisJobInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, message: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  return { success: true, data: parsed.data };
+}
+
+/**
+ * The twelfth AI Workspace tool. Its stored input is the same shape as its
+ * form input — ids plus the user's own text, never any resolved Content
+ * field, because the dispatcher re-fetches the authoritative Content row
+ * itself rather than trusting stored JSON to describe it.
+ */
+export function validateEmailNewsletterJobInput(input: unknown): JobInputValidationResult<EmailNewsletterJobInput> {
+  const parsed = emailNewsletterJobInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, message: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  return { success: true, data: parsed.data };
+}
+
+/**
+ * The thirteenth AI Workspace tool. Its stored input is ids plus the user's
+ * own written description — never any resolved File or Content field,
+ * because the dispatcher re-reads the authoritative File row itself.
+ */
+export function validateImageAltTextJobInput(input: unknown): JobInputValidationResult<ImageAltTextJobInput> {
+  const parsed = imageAltTextJobInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, message: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  return { success: true, data: parsed.data };
+}
+
+/**
+ * The fourteenth AI Workspace tool. Its stored input is ids, dates as plain
+ * yyyy-MM-dd strings, and the user's own words — the dispatcher re-reads every
+ * project record itself and re-derives the date range deterministically.
+ */
+export function validateContentCalendarJobInput(input: unknown): JobInputValidationResult<ContentCalendarJobInput> {
+  const parsed = contentCalendarJobInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, message: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  return { success: true, data: parsed.data };
 }

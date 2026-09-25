@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { validateContentBriefJobInput, validateLongFormJobInput, validateMetaTagOptimizerJobInput } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
+import { validateTopicClusterPlannerJobInput } from "@/features/ai-workspace/schemas/ai-generation-job.schema";
 
 const BRIEF_OUTPUT = {
   title: "Best Plumbers in Austin",
@@ -118,5 +119,44 @@ describe("validateLongFormJobInput — invalid mode", () => {
   it("rejects a non-object input", () => {
     expect(validateLongFormJobInput(null).success).toBe(false);
     expect(validateLongFormJobInput("a string").success).toBe(false);
+  });
+});
+
+/**
+ * The tenth AI Workspace tool. The runner re-validates a stored job input
+ * before dispatching, so a row written by an older/other code path can never
+ * reach the generator unchecked.
+ */
+describe("validateTopicClusterPlannerJobInput", () => {
+  const VALID = { seoProjectId: "00000000-0000-4000-8000-0000000000f0", seedTopic: "self storage investing", keywordIds: [] };
+
+  it("accepts a well-formed stored job input", () => {
+    const result = validateTopicClusterPlannerJobInput(VALID);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.seedTopic).toBe("self storage investing");
+  });
+
+  it("defaults keywordIds when the stored row omits them", () => {
+    const result = validateTopicClusterPlannerJobInput({ seoProjectId: VALID.seoProjectId, seedTopic: VALID.seedTopic });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.keywordIds).toEqual([]);
+  });
+
+  it("rejects a stored row with no seed topic", () => {
+    expect(validateTopicClusterPlannerJobInput({ seoProjectId: VALID.seoProjectId, seedTopic: "" }).success).toBe(false);
+  });
+
+  it("rejects a stored row whose project id is not a UUID", () => {
+    expect(validateTopicClusterPlannerJobInput({ ...VALID, seoProjectId: "nope" }).success).toBe(false);
+  });
+
+  it("rejects a stored row carrying a non-UUID keyword id", () => {
+    expect(validateTopicClusterPlannerJobInput({ ...VALID, keywordIds: ["not-a-uuid"] }).success).toBe(false);
+  });
+
+  it("rejects malformed input entirely", () => {
+    for (const bad of [null, undefined, "string", 42, []]) {
+      expect(validateTopicClusterPlannerJobInput(bad).success).toBe(false);
+    }
   });
 });

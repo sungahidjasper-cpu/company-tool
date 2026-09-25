@@ -1,5 +1,6 @@
 import "server-only";
 
+import { GRAPH_VERSION, graphFetch, type GraphResult } from "@/features/social/services/providers/meta-graph-client";
 import type {
   DiscoveredAccount,
   ProviderAuthorization,
@@ -35,12 +36,13 @@ import { logger } from "@/lib/logger";
  * Meta. With no app credentials configured, `describeConfiguration` reports
  * that and every other method refuses.
  *
- * It does not publish. Nothing here posts to a Page. Meta's Pages API
- * documents `pages_manage_posts` as the permission to "create, edit, and
- * delete Page posts", and its permission reference lists its dependencies as
- * `pages_read_engagement` and `pages_show_list` — which are exactly the two
- * scopes requested below. So a future publishing phase adds ONE permission to
- * SCOPES and an App Review submission; it does not redesign this file.
+ * IT STILL DOES NOT PUBLISH. This file connects an account and confirms an
+ * authorization — it never posts to a Page. Phase 10A added the
+ * `pages_manage_posts` scope (see SCOPES below) because that publishing
+ * phase needed it, but the actual publish call lives entirely in
+ * meta-facebook.publisher.ts, a separate file with a separate, narrower
+ * job: this one's job stays "prove Cloud Compass can identify and authorize
+ * the client's Page," unchanged since Phase 9B.
  *
  * IT IS NOT AN ADS INTEGRATION. A Page connection is not an advertising
  * account connection. `/me/adaccounts` is never called, no ad-account id is
@@ -59,17 +61,13 @@ import { logger } from "@/lib/logger";
  */
 
 /**
- * Pinned, and current: Meta's versioning guide names v26.0 as the current
- * Graph API version, and states each version "is guaranteed to operate for at
- * least two years". Pinning matters because an unpinned call silently changes
- * behaviour when Meta promotes a new default.
+ * GRAPH_VERSION is pinned in meta-graph-client.ts (v26.0, current per Meta's
+ * versioning guide) and shared with meta-facebook.publisher.ts — one place
+ * decides the Graph API version this app speaks.
  */
-const GRAPH_VERSION = "v26.0";
 const AUTHORIZE_ENDPOINT = `https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth`;
 const TOKEN_ENDPOINT = `https://graph.facebook.com/${GRAPH_VERSION}/oauth/access_token`;
 const ACCOUNTS_ENDPOINT = `https://graph.facebook.com/${GRAPH_VERSION}/me/accounts`;
-
-const REQUEST_TIMEOUT_MS = 10_000;
 
 /**
  * The fields the accounts edge is asked for.
@@ -97,11 +95,25 @@ const MAX_PAGES_FOLLOWED = 5;
  * Page it belongs to, which is what turns CONNECTED into NEEDS_RECONNECT when
  * a token stops working.
  *
- * `pages_manage_posts` is intentionally absent: publishing is out of scope,
- * and requesting a permission the app does not exercise is both an App Review
- * risk and a promise Cloud Compass is not keeping in this phase.
+ * `pages_manage_posts` — ADDED in Phase 10A, and only because Phase 10A's own
+ * task is to implement REAL Facebook publishing. Meta's permission reference
+ * documents this as the permission to "create, edit, and delete Page posts",
+ * and its dependency list names exactly `pages_read_engagement` and
+ * `pages_show_list` — the two scopes already requested above. Nothing wider
+ * (`business_management` or any other permission) was added; this one alone
+ * is what Meta's own documentation says publishing requires, and Phase 10A
+ * was explicitly authorized to build publishing.
+ *
+ * `pages_manage_engagement` — ADDED for First Comment, and only because that
+ * feature needs it. Meta's own object/comments reference documents the
+ * requirement for POSTING (creating) a comment as either a Page token from a
+ * MODERATE-task holder OR this permission — nothing more. Deliberately NOT
+ * requesting `pages_read_user_content`: that permission covers READING and
+ * moderating comments other users wrote, a capability this feature never
+ * uses (it only ever posts the Page's own comment), and it is documented as
+ * requiring Meta App Review — explicitly out of scope for this change.
  */
-const SCOPES = ["pages_show_list", "pages_read_engagement"] as const;
+const SCOPES = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "pages_manage_engagement"] as const;
 
 type MetaConfig = { appId: string; appSecret: string };
 
@@ -151,39 +163,6 @@ function expiryFromResponse(expiresIn: unknown): Date | null {
 function providerFailure(message: string, logDetail: string): { ok: false; failure: ProviderFailure } {
   logger.warn("Facebook provider call failed", { detail: logDetail });
   return { ok: false, failure: { message, logDetail } };
-}
-
-type GraphResult = { ok: true; body: unknown } | { ok: false; detail: string };
-
-async function graphFetch(url: string): Promise<GraphResult> {
-  try {
-    const response = await fetch(url, {
-      // A token exchange must never be served from a cache.
-      cache: "no-store",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    const text = await response.text();
-
-    let body: unknown = null;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = null;
-    }
-
-    if (!response.ok) {
-      const errorMessage =
-        typeof body === "object" && body !== null && "error" in body
-          ? JSON.stringify((body as { error: unknown }).error)
-          : `HTTP ${response.status}`;
-      return { ok: false, detail: errorMessage };
-    }
-    if (body === null) return { ok: false, detail: "Response was not JSON." };
-    return { ok: true, body };
-  } catch (error) {
-    /* Never interpolates the URL — it holds the app secret on the token call. */
-    return { ok: false, detail: error instanceof Error ? error.name : "Unknown fetch failure" };
-  }
 }
 
 /** One Page as Meta returned it, before it becomes a DiscoveredAccount. */

@@ -42,7 +42,7 @@ const MANAGER = { id: "user-manager", role: "MANAGER", companyId: COMPANY_A };
 const EMPLOYEE = { id: "user-employee", role: "EMPLOYEE", companyId: COMPANY_A };
 
 const SEO_PROJECT = { id: "seo-1", companyId: COMPANY_A, name: "Acme SEO", domain: "acme.test" };
-const CONTENT_ROW = { id: "content-1", seoProjectId: "seo-1", seoProject: { companyId: COMPANY_A } };
+const CONTENT_ROW = { id: "content-1", seoProjectId: "seo-1", companyId: COMPANY_A, seoProject: { companyId: COMPANY_A } };
 
 const VALID_INPUT = { seoProjectId: "seo-1", contentId: "content-1" };
 
@@ -86,7 +86,7 @@ describe("startInternalLinkAnalysisAction", () => {
   });
 
   it("5. rejects when the source content belongs to another company", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, seoProject: { companyId: COMPANY_B } });
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } });
     const result = await startInternalLinkAnalysisAction(VALID_INPUT);
     expect(result.success).toBe(false);
     if (!result.success) expect(result.message).toMatch(/not found/i);

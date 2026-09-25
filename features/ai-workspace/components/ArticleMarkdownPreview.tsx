@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { isSafeHref, parseMarkdownBlocks, type MarkdownBlock } from "@/features/ai-workspace/services/markdown-preview.service";
+import { isSafeHref, parseMarkdownBlocks, type HeadingLevel, type MarkdownBlock } from "@/features/ai-workspace/services/markdown-preview.service";
 
 /**
  * Builds real DOM elements directly — never an HTML string passed through
@@ -9,7 +9,7 @@ import { isSafeHref, parseMarkdownBlocks, type MarkdownBlock } from "@/features/
  * manual safety check needed is the link href itself (see isSafeHref);
  * everything else has no raw-HTML injection surface at all by construction.
  */
-const INLINE_TOKEN = /\*\*(.+?)\*\*|\[(.+?)\]\((.+?)\)|\*(.+?)\*|_(.+?)_/g;
+const INLINE_TOKEN = /\*\*(.+?)\*\*|\[(.+?)\]\((.+?)\)|~~(.+?)~~|`(.+?)`|\*(.+?)\*|_(.+?)_/g;
 
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
@@ -19,7 +19,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
   let match: RegExpExecArray | null;
   while ((match = INLINE_TOKEN.exec(text)) !== null) {
     if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
-    const [, bold, linkText, linkHref, italicStar, italicUnderscore] = match;
+    const [, bold, linkText, linkHref, struck, inlineCode, italicStar, italicUnderscore] = match;
     if (bold !== undefined) {
       nodes.push(<strong key={`${keyPrefix}-${index++}`}>{bold}</strong>);
     } else if (linkText !== undefined) {
@@ -33,6 +33,14 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
         // Neutralize rather than render: keep the visible text, drop the unsafe scheme entirely.
         nodes.push(linkText);
       }
+    } else if (struck !== undefined) {
+      nodes.push(<s key={`${keyPrefix}-${index++}`}>{struck}</s>);
+    } else if (inlineCode !== undefined) {
+      nodes.push(
+        <code key={`${keyPrefix}-${index++}`} className="rounded bg-slate-100 px-1 py-0.5 text-[0.9em]">
+          {inlineCode}
+        </code>
+      );
     } else if (italicStar !== undefined) {
       nodes.push(<em key={`${keyPrefix}-${index++}`}>{italicStar}</em>);
     } else if (italicUnderscore !== undefined) {
@@ -44,11 +52,13 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
   return nodes;
 }
 
-const HEADING_CLASSES: Record<1 | 2 | 3 | 4, string> = {
+const HEADING_CLASSES: Record<HeadingLevel, string> = {
   1: "text-2xl font-bold text-slate-900",
   2: "text-xl font-semibold text-slate-900 mt-6",
   3: "text-lg font-medium text-slate-900 mt-4",
   4: "text-base font-medium text-slate-900 mt-3",
+  5: "text-sm font-semibold text-slate-900 mt-3",
+  6: "text-xs font-semibold tracking-wide text-slate-700 uppercase mt-3",
 };
 
 function renderBlock(block: MarkdownBlock, key: number): ReactNode {
@@ -79,6 +89,18 @@ function renderBlock(block: MarkdownBlock, key: number): ReactNode {
             <h4 key={key} className={HEADING_CLASSES[4]}>
               {text}
             </h4>
+          );
+        case 5:
+          return (
+            <h5 key={key} className={HEADING_CLASSES[5]}>
+              {text}
+            </h5>
+          );
+        case 6:
+          return (
+            <h6 key={key} className={HEADING_CLASSES[6]}>
+              {text}
+            </h6>
           );
       }
       break;
@@ -137,6 +159,50 @@ function renderBlock(block: MarkdownBlock, key: number): ReactNode {
           </table>
         </div>
       );
+    /*
+     * Phase 7 — media inside the article.
+     *
+     * The src is an application path to an existing File record, and it is
+     * put through the same href check as a link, so a `javascript:` or
+     * `data:` src can never reach an element. An unsafe src renders as the
+     * alt text instead, which is the same neutralising choice links make.
+     */
+    case "image":
+      if (!isSafeHref(block.src)) {
+        return (
+          <p key={key} className="text-sm text-slate-500 italic">
+            {block.alt || "Image"}
+          </p>
+        );
+      }
+      return (
+        <figure key={key} className="flex flex-col gap-1.5">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={block.src} alt={block.alt} className="w-full rounded-lg border border-slate-200 object-cover" />
+          {block.caption && <figcaption className="text-xs text-slate-500">{block.caption}</figcaption>}
+        </figure>
+      );
+    case "video":
+      if (!isSafeHref(block.src)) return null;
+      return <video key={key} src={block.src} controls className="w-full rounded-lg border border-slate-200" />;
+    case "quote":
+      return (
+        <blockquote key={key} className="border-l-4 border-slate-300 pl-4 text-slate-600 italic">
+          {block.lines.map((line, i) => (
+            <span key={i} className="block">
+              {renderInline(line, `q-${key}-${i}`)}
+            </span>
+          ))}
+        </blockquote>
+      );
+    case "code":
+      return (
+        <pre key={key} className="overflow-x-auto rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800">
+          <code>{block.lines.join("\n")}</code>
+        </pre>
+      );
+    case "divider":
+      return <hr key={key} className="border-slate-200" />;
   }
 }
 

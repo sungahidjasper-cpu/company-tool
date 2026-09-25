@@ -1,9 +1,13 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
+import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { buildBriefHandoff, buildBriefHandoffHref } from "@/features/ai-workspace/services/content-gap-to-brief";
 import { Progress } from "@/components/ui/progress";
 import { startContentGapAnalysisAction } from "@/features/ai-workspace/actions/content-gap-analysis.actions";
 import { getAiGenerationJobAction } from "@/features/ai-workspace/actions/ai-generation-job.actions";
@@ -254,6 +258,26 @@ export default function ContentGapAnalysisPicker({ seoProjectOptions }: ContentG
               ) : (
                 <p className="text-xs text-emerald-600">No matching existing page title found — nothing to update, so this would be new content.</p>
               )}
+
+              {/*
+                Phase C2.1 — the contextual next action, in the same family as
+                the Content detail page's own "Generate Long-Form Content"
+                button. Rendered only when buildBriefHandoff accepts the
+                opportunity, so a malformed item can never start a brief.
+                Navigating here writes nothing: it opens the Brief form with
+                editable prefilled values the user still has to review.
+              */}
+              {(() => {
+                const handoff = buildBriefHandoff(seoProjectId, item);
+                if (!handoff) return null;
+                return (
+                  <div className="pt-1">
+                    <Link href={buildBriefHandoffHref(handoff)} className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
+                      <Sparkles size={16} /> Create Content Brief
+                    </Link>
+                  </div>
+                );
+              })()}
             </div>
           ))}
         </div>

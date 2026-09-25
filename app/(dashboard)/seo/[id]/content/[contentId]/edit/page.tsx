@@ -27,7 +27,7 @@ export default async function EditContentPage({ params }: EditContentPageProps) 
   if (!content || content.seoProjectId !== seoProjectId) {
     notFound();
   }
-  assertCompanyAccess(user, content.seoProject.companyId);
+  assertCompanyAccess(user, content.companyId);
 
   const [userOptions, keywordOptions] = await Promise.all([
     listUserOptions(user.companyId),
@@ -38,7 +38,7 @@ export default async function EditContentPage({ params }: EditContentPageProps) 
     <PageContainer>
       <DashboardHeader
         title={`Edit ${content.title}`}
-        description={`Part of ${content.seoProject.name}.`}
+        description={content.seoProject ? `Part of ${content.seoProject.name}.` : "Not in an SEO project."}
       />
 
       <Card className="max-w-xl">

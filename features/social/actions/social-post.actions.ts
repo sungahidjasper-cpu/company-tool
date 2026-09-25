@@ -45,16 +45,19 @@ export type SaveSocialPostInput = {
   seoProjectId?: string;
   caption: string;
   link: string;
+  /** First Comment's shared base text. Empty means no comment is intended. */
+  firstComment: string;
   /** Social account ids the post targets. Verified against the project's client. */
   accountIds: string[];
   /**
-   * Phase 7 — each account's own caption and link, keyed by account id.
+   * Phase 7 — each account's own caption, link and first comment, keyed by
+   * account id.
    *
    * Absent, or `null` for a field, means that account inherits the post's
    * shared value. Ids not in `accountIds`, or not this client's, are dropped
    * with the account itself — this map cannot smuggle in a target.
    */
-  platformOverrides?: Record<string, { caption?: string | null; link?: string | null }>;
+  platformOverrides?: Record<string, { caption?: string | null; link?: string | null; firstComment?: string | null }>;
   /** Supplied only when the user explicitly chooses to schedule. */
   schedule?: { dateIso: string; time: string; timeZone: string };
 };
@@ -113,7 +116,9 @@ async function resolveOwnedAccounts(
   });
 }
 
-export async function saveSocialPostAction(input: SaveSocialPostInput): Promise<ActionResult<{ contentId: string; scheduled: boolean }>> {
+export async function saveSocialPostAction(
+  input: SaveSocialPostInput
+): Promise<ActionResult<{ contentId: string; scheduled: boolean; targetIds: { accountId: string; id: string }[] }>> {
   const actor = await requireUser();
   if (!Permissions.manageSeoProjects(actor.role)) {
     return actionError("You do not have permission to create social posts.");
@@ -178,6 +183,7 @@ export async function saveSocialPostAction(input: SaveSocialPostInput): Promise<
       label: account.displayName?.trim() || account.handle,
       caption: typeof override?.caption === "string" ? override.caption : null,
       link: typeof override?.link === "string" ? override.link : null,
+      firstComment: typeof override?.firstComment === "string" ? override.firstComment : null,
     };
   });
 
@@ -230,6 +236,7 @@ export async function saveSocialPostAction(input: SaveSocialPostInput): Promise<
   }
 
   const caption = input.caption.trim();
+  const firstComment = input.firstComment.trim();
   /*
    * The record's name is DERIVED, never supplied. Nobody writing a post
    * should have to name a database row, so the caption — which already says
@@ -267,11 +274,20 @@ export async function saveSocialPostAction(input: SaveSocialPostInput): Promise<
         });
 
     const socialPost = existing?.socialPostId
-      ? await tx.socialPost.update({ where: { id: existing.socialPostId }, data: { caption, link: link || null } })
-      : await tx.socialPost.create({ data: { contentId: content.id, caption, link: link || null } });
+      ? await tx.socialPost.update({ where: { id: existing.socialPostId }, data: { caption, link: link || null, firstComment: firstComment || null } })
+      : await tx.socialPost.create({ data: { contentId: content.id, caption, link: link || null, firstComment: firstComment || null } });
 
     // Targets are replaced wholesale, so an unselected account never lingers.
     await tx.socialPostTarget.deleteMany({ where: { socialPostId: socialPost.id, socialAccountId: { notIn: ownedAccountIds.length ? ownedAccountIds : ["00000000-0000-0000-0000-000000000000"] } } });
+    /*
+     * Stage 1 — collected and returned below. The composer needs each
+     * target's real id the moment it is saved, in the SAME response, because
+     * it deliberately does not re-run the server page after a save (that was
+     * already the design, to avoid clobbering in-progress edits with a fresh
+     * server render) — so this is the only way a just-created target's id
+     * ever reaches the client without reopening the post.
+     */
+    const targetIds: { accountId: string; id: string }[] = [];
     for (const target of targets) {
       /*
        * null is written deliberately, not skipped: it is how "this account
@@ -282,15 +298,18 @@ export async function saveSocialPostAction(input: SaveSocialPostInput): Promise<
       const values = {
         caption: target.caption === null ? null : target.caption.trim(),
         link: target.link === null ? null : target.link.trim() || null,
+        firstComment: target.firstComment === null ? null : target.firstComment.trim() || null,
       };
-      await tx.socialPostTarget.upsert({
+      const row = await tx.socialPostTarget.upsert({
         where: { socialPostId_socialAccountId: { socialPostId: socialPost.id, socialAccountId: target.accountId } },
         create: { socialPostId: socialPost.id, socialAccountId: target.accountId, ...values },
         update: values,
+        select: { id: true, socialAccountId: true },
       });
+      targetIds.push({ accountId: row.socialAccountId, id: row.id });
     }
 
-    return { contentId: content.id };
+    return { contentId: content.id, targetIds };
   });
 
   await logActivity({
@@ -310,5 +329,5 @@ export async function saveSocialPostAction(input: SaveSocialPostInput): Promise<
 
   contentRevalidatePaths({ id: result.contentId, seoProjectId: project?.id ?? null }).forEach((path) => revalidatePath(path));
 
-  return actionSuccess({ contentId: result.contentId, scheduled: scheduledInstant !== null });
+  return actionSuccess({ contentId: result.contentId, scheduled: scheduledInstant !== null, targetIds: result.targetIds });
 }

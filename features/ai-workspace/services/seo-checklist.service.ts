@@ -54,6 +54,22 @@ function extractBlockText(block: MarkdownBlock): string[] {
       return block.items;
     case "table":
       return [...block.headers, ...block.rows.flat()];
+    /*
+     * Phase 7 — a pull quote is prose the reader reads, so it counts.
+     *
+     * Code, dividers, images and video do not: a code sample is not article
+     * writing, and counting image alt text or captions would inflate the word
+     * count with text that is not the article's body copy. Listed explicitly
+     * rather than defaulted, so a future block type has to make this same
+     * decision instead of silently landing on one.
+     */
+    case "quote":
+      return block.lines;
+    case "code":
+    case "divider":
+    case "image":
+    case "video":
+      return [];
   }
 }
 

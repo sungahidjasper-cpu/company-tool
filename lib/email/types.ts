@@ -20,4 +20,5 @@ export type SendEmailResult = { ok: true } | { ok: false; errorType: EmailErrorT
 export type EmailAdapter = {
   isConfigured(): boolean;
   sendPasswordResetEmail(params: { to: string; resetUrl: string }): Promise<SendEmailResult>;
+  sendInvitationEmail(params: { to: string; inviteUrl: string; firstName: string; companyName: string }): Promise<SendEmailResult>;
 };

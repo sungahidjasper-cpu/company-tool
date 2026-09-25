@@ -6,6 +6,7 @@ import { FileEdit } from "lucide-react";
 import Link from "next/link";
 
 import ContentRewriterPicker from "@/features/ai-workspace/components/ContentRewriterPicker";
+import { parseContentOptimizerParams, resolveContentOptimizerSelection } from "@/features/ai-workspace/services/content-optimizer-handoff";
 import { listSeoProjectOptions } from "@/features/seo/services/seo-project.service";
 import { requireUser } from "@/lib/auth";
 import { assertPermission, Permissions } from "@/lib/authorization";
@@ -16,7 +17,19 @@ function countWords(body: string): number {
   return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
 }
 
-export default async function NewContentRewriterPage() {
+/**
+ * Phase C4.2 — accepts an optional contextual hand-off from a Content record
+ * (?seoProjectId=&contentId=), matching C4.1's contract. Preselection hints
+ * only: they are resolved below against this route's own company-scoped query,
+ * which already excludes soft-deleted rows and rows without a body, and
+ * startContentRewriteAction re-verifies company, project, soft-delete state
+ * and a non-empty body server-side before anything is generated or applied.
+ */
+type NewContentRewriterPageProps = {
+  searchParams: Promise<{ seoProjectId?: string; contentId?: string }>;
+};
+
+export default async function NewContentRewriterPage({ searchParams }: NewContentRewriterPageProps) {
   const user = await requireUser();
   assertPermission(user, Permissions.manageSeoProjects);
 
@@ -38,6 +51,12 @@ export default async function NewContentRewriterPage() {
     // too — this is a display convenience only, never the actual security
     // or eligibility boundary (the action re-checks this itself).
     if (!item.body || !item.body.trim()) continue;
+    /*
+     * These tools are SEO-project scoped: they are picked BY project, so a
+     * client-owned row with no project has no group to appear under and is
+     * not eligible for them. Skipped rather than forced into a bucket.
+     */
+    if (item.seoProjectId === null) continue;
     (contentByProject[item.seoProjectId] ??= []).push({
       id: item.id,
       title: item.title,
@@ -45,6 +64,12 @@ export default async function NewContentRewriterPage() {
       wordCount: countWords(item.body),
     });
   }
+
+  const preselection = resolveContentOptimizerSelection(
+    parseContentOptimizerParams(await searchParams),
+    seoProjectOptions.map((option) => option.id),
+    contentByProject
+  );
 
   return (
     <PageContainer>
@@ -67,7 +92,12 @@ export default async function NewContentRewriterPage() {
               }
             />
           ) : (
-            <ContentRewriterPicker seoProjectOptions={seoProjectOptions} contentByProject={contentByProject} />
+            <ContentRewriterPicker
+              seoProjectOptions={seoProjectOptions}
+              contentByProject={contentByProject}
+              initialSeoProjectId={preselection.seoProjectId}
+              initialSelectedContentId={preselection.contentIds[0] ?? null}
+            />
           )}
         </CardContent>
       </Card>

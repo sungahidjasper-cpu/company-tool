@@ -18,6 +18,18 @@ import { schemaMarkupInputSchema, type SchemaMarkupInput } from "@/features/ai-w
 async function getOwnedSeoProject(seoProjectId: string, companyId: string) {
   const seoProject = await prisma.sEOProject.findUnique({ where: { id: seoProjectId } });
   if (!seoProject || seoProject.companyId !== companyId) return null;
+  /*
+   * C4.3 follow-up — a TRASHED project is rejected here too. The route only
+   * ever lists live projects (listSeoProjectOptions) and the C4 contextual
+   * action hides itself for one, but neither of those is the security
+   * boundary: this function is. A crafted request naming a soft-deleted
+   * project of the actor's own company used to pass.
+   *
+   * Truthy rather than `!== null`, matching content-rewriter.actions.ts and
+   * meta-tag-optimizer.actions.ts — a caller or fixture may omit the field
+   * entirely, and `undefined !== null` would wrongly reject a live row.
+   */
+  if (seoProject.deletedAt) return null;
   return seoProject;
 }
 
@@ -35,7 +47,12 @@ async function getOwnedContent(contentId: string, companyId: string, seoProjectI
     where: { id: contentId },
     include: { seoProject: { select: { companyId: true } } },
   });
-  if (!content || content.seoProject.companyId !== companyId || content.seoProjectId !== seoProjectId) return null;
+  if (!content || content.companyId !== companyId || content.seoProjectId !== seoProjectId) return null;
+  // C4.3 follow-up — a trashed Content row reads back as "not found" here as
+  // well, the same lifecycle rule content-rewriter.actions.ts and
+  // meta-tag-optimizer.actions.ts already enforce. The route excludes
+  // soft-deleted rows from its own list, but the server is the boundary.
+  if (content.deletedAt) return null;
   return content;
 }
 

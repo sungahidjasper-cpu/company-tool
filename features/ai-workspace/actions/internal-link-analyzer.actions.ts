@@ -26,7 +26,7 @@ async function getOwnedContent(contentId: string, companyId: string) {
     where: { id: contentId },
     include: { seoProject: { select: { companyId: true } } },
   });
-  if (!content || content.seoProject.companyId !== companyId) return null;
+  if (!content || content.companyId !== companyId) return null;
   return content;
 }
 

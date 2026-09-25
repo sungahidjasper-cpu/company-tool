@@ -4,7 +4,7 @@ import {
   SOCIAL_CONNECT_SELECTION_COOKIE,
   SOCIAL_CONNECT_SELECTION_MAX_AGE_SECONDS,
 } from "@/features/social/services/social-connect-cookie";
-import { resolveRedirectUri } from "@/features/social/services/social-oauth-redirect";
+import { resolveOAuthOrigin, resolveRedirectUri } from "@/features/social/services/social-oauth-redirect";
 import {
   consumeOAuthState,
   stashPendingAuthorization,
@@ -53,9 +53,29 @@ const SETTINGS_ROOT = "/settings/clients";
  */
 type FailureCode = "state" | "denied" | "config" | "exchange" | "pages" | "no_pages" | "session";
 
+/**
+ * The origin every redirect in this route sends the BROWSER to.
+ *
+ * Deliberately not `request.nextUrl.origin`: behind a reverse proxy or tunnel
+ * (ngrok in local dev), that reflects where this process is bound
+ * (`localhost:3000`), not the public address the browser can actually reach —
+ * a redirect built from it would send the browser somewhere it cannot load.
+ * `resolveOAuthOrigin()` is the same trusted configuration
+ * (`SOCIAL_OAUTH_REDIRECT_BASE_URL`, falling back to `NEXTAUTH_URL`) already
+ * used to build the redirect URI Meta itself was given, so the two can never
+ * disagree. Falling back to `request.nextUrl.origin` only if that
+ * configuration is entirely absent — which would already have failed the
+ * `configured` check below on any real attempt — keeps this route from ever
+ * throwing instead of redirecting.
+ */
+function browserOrigin(request: NextRequest): string {
+  const resolved = resolveOAuthOrigin();
+  return resolved.ok ? resolved.origin : request.nextUrl.origin;
+}
+
 function failure(request: NextRequest, code: FailureCode, clientId?: string): NextResponse {
   const path = clientId ? `${SETTINGS_ROOT}/${clientId}/social-accounts` : SETTINGS_ROOT;
-  const url = new URL(path, request.nextUrl.origin);
+  const url = new URL(path, browserOrigin(request));
   url.searchParams.set("connectError", code);
   return NextResponse.redirect(url);
 }
@@ -173,7 +193,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   const destination = new URL(
     `${SETTINGS_ROOT}/${context.clientId}/social-accounts/connect/facebook`,
-    request.nextUrl.origin
+    browserOrigin(request)
   );
   const response = NextResponse.redirect(destination);
   response.cookies.set({

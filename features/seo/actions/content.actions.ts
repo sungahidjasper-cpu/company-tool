@@ -11,13 +11,15 @@ import {
 import { requireUser } from "@/lib/auth";
 import { Permissions } from "@/lib/authorization";
 import { parseCsv } from "@/lib/csv";
+import { contentDetailHref, contentRevalidatePaths } from "@/features/content-workspace/services/content-location";
 import { prisma } from "@/lib/prisma";
 import { extractMentionedUserIds } from "@/features/notifications/services/mention.service";
 import { createNotification } from "@/features/notifications/services/notification.service";
+import { validateScheduleRequest } from "@/features/content-workspace/services/content-scheduling";
 import { createContentRevisionSnapshot } from "@/features/seo/services/content-revision.service";
 import {
-  CONTENT_STATUS_ORDER,
   contentImportRowSchema,
+  nextContentStatus,
   contentSchema,
   type ContentInput,
 } from "@/features/seo/schemas/content.schema";
@@ -25,13 +27,24 @@ import {
 function getContentWithProject(id: string) {
   return prisma.content.findUnique({
     where: { id },
-    include: { seoProject: { select: { id: true, companyId: true } } },
+    include: { seoProject: { select: { id: true, companyId: true, deletedAt: true } } },
   });
 }
 
+/**
+ * Phase 5 — an optional schedule applied at creation.
+ *
+ * The calendar's creation workflow carries the date, time and zone the user
+ * chose here, so "create this and schedule it" is ONE explicit action rather
+ * than a create followed by a separate schedule the user might never finish.
+ * Nothing is written unless the schedule validates.
+ */
+export type CreateContentSchedule = { dateIso: string; time: string; timeZone: string };
+
 export async function createContent(
   seoProjectId: string,
-  input: ContentInput
+  input: ContentInput,
+  schedule?: CreateContentSchedule
 ): Promise<ActionResult<{ id: string }>> {
   const actor = await requireUser();
 
@@ -49,13 +62,41 @@ export async function createContent(
     return actionError(parsed.error.issues[0]?.message ?? "Invalid input");
   }
 
+  if (parsed.data.status === "SCHEDULED" && !schedule) {
+    return actionError("Use the scheduling controls to schedule this content — a status alone cannot schedule it.");
+  }
+
+  /*
+   * The schedule is validated BEFORE anything is created, so a bad date can
+   * never leave a stray Content row behind. The project's soft-delete state
+   * is already known good: it was resolved from the actor's company above.
+   */
+  let scheduledInstant: Date | null = null;
+  if (schedule) {
+    const validation = validateScheduleRequest({
+      request: schedule,
+      status: "DRAFT",
+      contentDeletedAt: null,
+      projectDeletedAt: seoProject.deletedAt,
+      now: new Date(),
+    });
+    if (!validation.ok) return actionError(validation.error);
+    scheduledInstant = validation.instant;
+  }
+
   const content = await prisma.content.create({
     data: {
+      companyId: seoProject.companyId,
+      clientId: seoProject.clientId ?? null,
       seoProjectId,
+      // Created inside an SEO project's own content form.
+      contentType: "SEO_CONTENT",
       authorId: parsed.data.authorId || null,
       title: parsed.data.title,
       url: parsed.data.url || null,
-      status: parsed.data.status,
+      status: scheduledInstant ? "SCHEDULED" : parsed.data.status,
+      scheduledAt: scheduledInstant,
+      scheduledTimezone: scheduledInstant ? schedule!.timeZone : null,
       publishedAt: parsed.data.publishedAt ? new Date(parsed.data.publishedAt) : null,
       body: parsed.data.body || null,
       keywords: parsed.data.keywordIds
@@ -70,8 +111,10 @@ export async function createContent(
     companyId: actor.companyId,
     seoProjectId,
     contentId: content.id,
-    metadata: { title: content.title },
+    metadata: { title: content.title, ...(scheduledInstant ? { scheduledAt: scheduledInstant.toISOString(), timezone: schedule!.timeZone } : {}) },
   });
+
+  if (scheduledInstant) revalidatePath("/content");
 
   revalidatePath(`/seo/${seoProjectId}/content`);
   revalidatePath(`/seo/${seoProjectId}`);
@@ -89,13 +132,25 @@ export async function updateContent(
   }
 
   const existing = await getContentWithProject(id);
-  if (!existing || existing.seoProject.companyId !== actor.companyId) {
+  if (!existing || existing.companyId !== actor.companyId) {
     return actionError("Content not found.");
   }
 
   const parsed = contentSchema.safeParse(input);
   if (!parsed.success) {
     return actionError(parsed.error.issues[0]?.message ?? "Invalid input");
+  }
+
+  /*
+   * Phase 5 — SCHEDULED may only be RETAINED here, never introduced.
+   *
+   * The form does not offer it, but this is a server action and the input is
+   * a client value: a hand-crafted submission could otherwise set SCHEDULED
+   * on a record with no scheduledAt and no timezone, which is exactly the
+   * state the whole scheduling model forbids.
+   */
+  if (parsed.data.status === "SCHEDULED" && existing.status !== "SCHEDULED") {
+    return actionError("Use the scheduling controls to schedule this content — a status change alone cannot schedule it.");
   }
 
   const newTitle = parsed.data.title;
@@ -140,6 +195,13 @@ export async function updateContent(
         url: parsed.data.url || null,
         status: parsed.data.status,
         publishedAt: parsed.data.publishedAt ? new Date(parsed.data.publishedAt) : null,
+        /*
+         * Phase 5 — a manual edit that moves the record OFF SCHEDULED clears
+         * the schedule with it, so no row is left holding a scheduled instant
+         * it no longer honours. Editing a record that stays SCHEDULED leaves
+         * the fields untouched; the scheduling action owns them.
+         */
+        ...(parsed.data.status === "SCHEDULED" ? {} : { scheduledAt: null, scheduledTimezone: null }),
         body: newBody,
         keywords: { set: (parsed.data.keywordIds ?? []).map((keywordId) => ({ id: keywordId })) },
       },
@@ -156,13 +218,12 @@ export async function updateContent(
     actorId: actor.id,
     action: "content.updated",
     companyId: actor.companyId,
-    seoProjectId: existing.seoProject.id,
+    seoProjectId: existing.seoProjectId ?? undefined,
     contentId: content.id,
     metadata: { title: content.title },
   });
 
-  revalidatePath(`/seo/${existing.seoProject.id}/content`);
-  revalidatePath(`/seo/${existing.seoProject.id}/content/${id}`);
+    contentRevalidatePaths(existing).forEach((path) => revalidatePath(path));
   return actionSuccess({ id: content.id });
 }
 
@@ -175,14 +236,23 @@ export async function advanceContentStatus(id: string): Promise<ActionResult> {
   }
 
   const existing = await getContentWithProject(id);
-  if (!existing || existing.seoProject.companyId !== actor.companyId) {
+  if (!existing || existing.companyId !== actor.companyId) {
     return actionError("Content not found.");
   }
 
-  const currentIndex = CONTENT_STATUS_ORDER.indexOf(existing.status);
-  const nextStatus = CONTENT_STATUS_ORDER[currentIndex + 1];
+  /*
+   * Phase 5 — nextContentStatus returns null for SCHEDULED as well as for the
+   * final stage. A scheduled record advances by its schedule arriving or
+   * being cancelled, not by this button, and the previous indexOf would have
+   * returned -1 and quietly "advanced" it back to DRAFT.
+   */
+  const nextStatus = nextContentStatus(existing.status);
   if (!nextStatus) {
-    return actionError("This content is already at its final stage.");
+    return actionError(
+      existing.status === "SCHEDULED"
+        ? "This content is scheduled. Cancel the schedule before changing its stage."
+        : "This content is already at its final stage."
+    );
   }
 
   await prisma.content.update({
@@ -197,13 +267,12 @@ export async function advanceContentStatus(id: string): Promise<ActionResult> {
     actorId: actor.id,
     action: "content.status_advanced",
     companyId: actor.companyId,
-    seoProjectId: existing.seoProject.id,
+    seoProjectId: existing.seoProjectId ?? undefined,
     contentId: id,
     metadata: { from: existing.status, to: nextStatus },
   });
 
-  revalidatePath(`/seo/${existing.seoProject.id}/content`);
-  revalidatePath(`/seo/${existing.seoProject.id}/content/${id}`);
+    contentRevalidatePaths(existing).forEach((path) => revalidatePath(path));
   return actionSuccess();
 }
 
@@ -215,7 +284,7 @@ export async function archiveContent(id: string): Promise<ActionResult> {
   }
 
   const existing = await getContentWithProject(id);
-  if (!existing || existing.seoProject.companyId !== actor.companyId) {
+  if (!existing || existing.companyId !== actor.companyId) {
     return actionError("Content not found.");
   }
 
@@ -225,11 +294,11 @@ export async function archiveContent(id: string): Promise<ActionResult> {
     actorId: actor.id,
     action: "content.archived",
     companyId: actor.companyId,
-    seoProjectId: existing.seoProject.id,
+    seoProjectId: existing.seoProjectId ?? undefined,
     contentId: id,
   });
 
-  revalidatePath(`/seo/${existing.seoProject.id}/content`);
+  contentRevalidatePaths({ id, seoProjectId: existing.seoProjectId }).forEach((path) => revalidatePath(path));
   return actionSuccess();
 }
 
@@ -241,7 +310,7 @@ export async function restoreContent(id: string): Promise<ActionResult> {
   }
 
   const existing = await getContentWithProject(id);
-  if (!existing || existing.seoProject.companyId !== actor.companyId) {
+  if (!existing || existing.companyId !== actor.companyId) {
     return actionError("Content not found.");
   }
 
@@ -251,11 +320,11 @@ export async function restoreContent(id: string): Promise<ActionResult> {
     actorId: actor.id,
     action: "content.restored",
     companyId: actor.companyId,
-    seoProjectId: existing.seoProject.id,
+    seoProjectId: existing.seoProjectId ?? undefined,
     contentId: id,
   });
 
-  revalidatePath(`/seo/${existing.seoProject.id}/content`);
+  contentRevalidatePaths({ id, seoProjectId: existing.seoProjectId }).forEach((path) => revalidatePath(path));
   return actionSuccess();
 }
 
@@ -266,7 +335,7 @@ export async function addContentNote(
   const actor = await requireUser();
 
   const existing = await getContentWithProject(contentId);
-  if (!existing || existing.seoProject.companyId !== actor.companyId) {
+  if (!existing || existing.companyId !== actor.companyId) {
     return actionError("Content not found.");
   }
 
@@ -282,7 +351,7 @@ export async function addContentNote(
     actorId: actor.id,
     action: "content.note_added",
     companyId: actor.companyId,
-    seoProjectId: existing.seoProject.id,
+    seoProjectId: existing.seoProjectId ?? undefined,
     contentId,
   });
 
@@ -296,11 +365,11 @@ export async function addContentNote(
       userId,
       type: "COMMENT_MENTION",
       message: `${actor.firstName} mentioned you in a note on "${existing.title}"`,
-      link: `/seo/${existing.seoProject.id}/content/${contentId}`,
+      link: contentDetailHref({ id: contentId, seoProjectId: existing.seoProjectId }),
     });
   }
 
-  revalidatePath(`/seo/${existing.seoProject.id}/content/${contentId}`);
+  contentRevalidatePaths({ id: contentId, seoProjectId: existing.seoProjectId }).forEach((path) => revalidatePath(path));
   return actionSuccess();
 }
 
@@ -314,9 +383,9 @@ export async function addContentNote(
 async function getOwnedContentNote(noteId: string, companyId: string) {
   const note = await prisma.note.findUnique({
     where: { id: noteId },
-    include: { content: { select: { id: true, seoProject: { select: { id: true, companyId: true } } } } },
+    include: { content: { select: { id: true, companyId: true, seoProjectId: true } } },
   });
-  if (!note || !note.content || note.content.seoProject.companyId !== companyId) return null;
+  if (!note || !note.content || note.content.companyId !== companyId) return null;
   return { ...note, content: note.content };
 }
 
@@ -354,12 +423,12 @@ export async function updateContentNote(input: { noteId: string; body: string })
     actorId: actor.id,
     action: "content.note_updated",
     companyId: actor.companyId,
-    seoProjectId: note.content.seoProject.id,
+    seoProjectId: note.content.seoProjectId ?? undefined,
     contentId: note.content.id,
     metadata: { noteId: input.noteId },
   });
 
-  revalidatePath(`/seo/${note.content.seoProject.id}/content/${note.content.id}`);
+  contentRevalidatePaths(note.content).forEach((path) => revalidatePath(path));
   return actionSuccess();
 }
 
@@ -386,12 +455,12 @@ export async function deleteContentNote(input: { noteId: string }): Promise<Acti
     actorId: actor.id,
     action: "content.note_deleted",
     companyId: actor.companyId,
-    seoProjectId: note.content.seoProject.id,
+    seoProjectId: note.content.seoProjectId ?? undefined,
     contentId: note.content.id,
     metadata: { noteId: input.noteId },
   });
 
-  revalidatePath(`/seo/${note.content.seoProject.id}/content/${note.content.id}`);
+  contentRevalidatePaths(note.content).forEach((path) => revalidatePath(path));
   return actionSuccess();
 }
 
@@ -423,12 +492,12 @@ export async function restoreContentNote(input: { noteId: string }): Promise<Act
     actorId: actor.id,
     action: "content.note_restored",
     companyId: actor.companyId,
-    seoProjectId: note.content.seoProject.id,
+    seoProjectId: note.content.seoProjectId ?? undefined,
     contentId: note.content.id,
     metadata: { noteId: input.noteId },
   });
 
-  revalidatePath(`/seo/${note.content.seoProject.id}/content/${note.content.id}`);
+  contentRevalidatePaths(note.content).forEach((path) => revalidatePath(path));
   return actionSuccess();
 }
 
@@ -672,7 +741,10 @@ export async function importContentCsv(
     try {
       await prisma.content.create({
         data: {
+          companyId: seoProject.companyId,
+          clientId: seoProject.clientId ?? null,
           seoProjectId,
+          contentType: "SEO_CONTENT",
           title: parsedRow.data.title,
           url: parsedRow.data.url || null,
           status: parsedRow.data.status,

@@ -21,23 +21,22 @@ export function formatPressReleaseAsText(result: PressReleaseResult): string {
 
 type PressReleaseReviewProps = {
   result: PressReleaseResult;
+  /** Present once a job exists to save — absent while resuming a job whose id isn't known yet. */
+  onSave?: () => void;
+  isSaving?: boolean;
 };
 
 /**
  * The dedicated review component — read-only display of the generated
- * press release, plus a copy-to-clipboard action. Purely presentational:
- * no server action, no Content/ContentRevision involvement at all (this
- * tool never touches either model). No Apply control exists and none is
- * planned — matching Schema Markup Generator's own "generate, display, and
- * copy only" precedent exactly (confirmed by inspection: that tool has no
- * apply action anywhere in this codebase).
- *
- * Renders plain text, not through ArticleMarkdownPreview — a press release
- * has no Markdown structure to preserve (no headings/lists the way a
- * Long-Form article or Content Rewriter body does), so introducing that
- * renderer here would add complexity with nothing for it to render.
+ * press release, a copy-to-clipboard action, and an explicit "Save as
+ * Content" action. Renders plain text, not through ArticleMarkdownPreview —
+ * a press release has no Markdown structure shown on THIS screen (no
+ * headings/lists the way a Long-Form article or Content Rewriter body
+ * does), though the saved Content.body is serialized as Markdown by
+ * formatPressReleaseAsMarkdown. Saving only ever happens on the reviewer's
+ * own click — never merely because generation finished.
  */
-export default function PressReleaseReview({ result }: PressReleaseReviewProps) {
+export default function PressReleaseReview({ result, onSave, isSaving = false }: PressReleaseReviewProps) {
   async function handleCopy() {
     await navigator.clipboard.writeText(formatPressReleaseAsText(result));
     toast.success("Copied press release to clipboard");
@@ -47,7 +46,7 @@ export default function PressReleaseReview({ result }: PressReleaseReviewProps) 
     <div className="flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4">
       <div className="flex items-center justify-between gap-2">
         <p className="font-semibold text-slate-800">Press release draft</p>
-        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-500">Not saved — copy to use it</span>
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-500">Not sent automatically</span>
       </div>
 
       <div className="flex flex-col gap-3 text-sm text-slate-800">
@@ -71,10 +70,15 @@ export default function PressReleaseReview({ result }: PressReleaseReviewProps) 
         <p className="text-sm text-slate-600">{result.reasoning}</p>
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
         <Button type="button" size="sm" variant="outline" onClick={handleCopy}>
           Copy press release
         </Button>
+        {onSave && (
+          <Button type="button" size="sm" onClick={onSave} disabled={isSaving}>
+            {isSaving ? "Saving..." : "Save as Content"}
+          </Button>
+        )}
       </div>
     </div>
   );

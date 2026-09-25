@@ -52,6 +52,8 @@ function makeContent(overrides: Partial<Record<string, unknown>> = {}) {
     metaDescription: "Current Meta Description",
     body: "Current body",
     deletedAt: null,
+    companyId: COMPANY_A,
+    seoProjectId: "seo-1",
     seoProject: { id: "seo-1", companyId: COMPANY_A },
     ...overrides,
   };
@@ -144,7 +146,7 @@ describe("restoreContentRevisionAction", () => {
     });
 
     it("rejects when the Content itself belongs to a different company", async () => {
-      mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ seoProject: { id: "seo-1", companyId: COMPANY_B } }));
+      mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ companyId: COMPANY_B, seoProject: { id: "seo-1", companyId: COMPANY_B } }));
 
       const result = await restoreContentRevisionAction(INPUT);
 

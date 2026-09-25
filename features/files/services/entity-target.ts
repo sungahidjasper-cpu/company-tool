@@ -1,5 +1,6 @@
 import { Permissions } from "@/lib/authorization";
 import type { UserRole } from "@/lib/generated/prisma/enums";
+import { contentDetailHref } from "@/features/content-workspace/services/content-location";
 import { prisma } from "@/lib/prisma";
 import type { FileEntityType } from "@/features/files/schemas/file.schema";
 
@@ -129,8 +130,8 @@ export async function resolveEntityContext(
       });
       if (!content) return null;
       return {
-        companyId: content.seoProject.companyId,
-        paths: [`/seo/${content.seoProject.id}/content/${content.id}`],
+        companyId: content.companyId,
+        paths: [contentDetailHref(content)],
         isAssignee: content.authorId === actorId,
       };
     }

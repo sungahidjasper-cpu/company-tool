@@ -26,6 +26,19 @@ import {
 async function getOwnedSeoProject(seoProjectId: string, companyId: string) {
   const seoProject = await prisma.sEOProject.findUnique({ where: { id: seoProjectId } });
   if (!seoProject || seoProject.companyId !== companyId) return null;
+  /*
+   * C4 security-consistency pass — a TRASHED project is rejected, matching
+   * the rule getOwnedContent below already applies to the Content row and
+   * that schema-markup-generator.actions.ts now applies to both. The picker
+   * lists only live projects and the C4 contextual action hides itself for a
+   * trashed one, but neither is the boundary: this is. Both
+   * startContentRewriteAction and applyContentRewriteAction call this, so the
+   * generate and apply paths are covered by this single guard.
+   *
+   * Truthy rather than `!== null`: a fixture or caller may omit the field
+   * entirely, and `undefined !== null` would wrongly reject a live project.
+   */
+  if (seoProject.deletedAt) return null;
   return seoProject;
 }
 
@@ -41,7 +54,7 @@ async function getOwnedContent(contentId: string, companyId: string, seoProjectI
     where: { id: contentId },
     include: { seoProject: { select: { companyId: true } } },
   });
-  if (!content || content.seoProject.companyId !== companyId || content.seoProjectId !== seoProjectId) return null;
+  if (!content || content.companyId !== companyId || content.seoProjectId !== seoProjectId) return null;
   // Phase B M2 — a trashed page is not an editable page. The picker already
   // filters these out when listing, so reaching here means either a stale
   // screen or a direct action call; both are rejected the same way.

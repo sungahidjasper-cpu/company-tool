@@ -29,12 +29,42 @@ function buildPasswordResetContent(resetUrl: string): { subject: string; text: s
   return { subject, text, html };
 }
 
-async function sendPasswordResetEmail({ to, resetUrl }: { to: string; resetUrl: string }): Promise<SendEmailResult> {
+function buildInvitationContent({
+  firstName,
+  companyName,
+  inviteUrl,
+}: {
+  firstName: string;
+  companyName: string;
+  inviteUrl: string;
+}): { subject: string; text: string; html: string } {
+  const subject = `You're invited to join ${companyName} on Cloud Compass`;
+  const text = `Hi ${firstName},\n\nYou've been invited to join ${companyName} on Cloud Compass OS.\n\nAccept your invitation and set up your account:\n${inviteUrl}\n\nThis invitation link expires in 7 days. If you weren't expecting this, you can safely ignore this email.`;
+  const html = `<p>Hi ${firstName},</p><p>You've been invited to join <strong>${companyName}</strong> on Cloud Compass OS.</p><p><a href="${inviteUrl}">Accept your invitation and set up your account</a></p><p>This invitation link expires in 7 days. If you weren't expecting this, you can safely ignore this email.</p>`;
+  return { subject, text, html };
+}
+
+/**
+ * Shared by both send functions below — the only difference between a
+ * password reset and an invitation email is the recipient, subject and body;
+ * the request/error handling is identical.
+ */
+async function sendViaResend({
+  to,
+  subject,
+  text,
+  html,
+  logLabel,
+}: {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+  logLabel: string;
+}): Promise<SendEmailResult> {
   if (!isConfigured()) {
     return { ok: false, errorType: "NOT_CONFIGURED", message: "Email sending is not configured." };
   }
-
-  const { subject, text, html } = buildPasswordResetContent(resetUrl);
 
   try {
     const response = await fetch(RESEND_API_URL, {
@@ -51,15 +81,35 @@ async function sendPasswordResetEmail({ to, resetUrl }: { to: string; resetUrl: 
       const errorType = classifyStatusCode(response.status);
       // Deliberately never logs the response body — Resend may echo request
       // fields (including `to`) back in validation error bodies.
-      logger.error("Resend: password reset email failed", { status: response.status, errorType });
-      return { ok: false, errorType, message: "Failed to send the password reset email." };
+      logger.error(`Resend: ${logLabel} failed`, { status: response.status, errorType });
+      return { ok: false, errorType, message: `Failed to send the ${logLabel}.` };
     }
 
     return { ok: true };
   } catch (error) {
-    logger.error("Resend: password reset email request failed", { error: error instanceof Error ? error.message : "unknown" });
-    return { ok: false, errorType: "PROVIDER_UNAVAILABLE", message: "Failed to send the password reset email." };
+    logger.error(`Resend: ${logLabel} request failed`, { error: error instanceof Error ? error.message : "unknown" });
+    return { ok: false, errorType: "PROVIDER_UNAVAILABLE", message: `Failed to send the ${logLabel}.` };
   }
 }
 
-export const resendAdapter: EmailAdapter = { isConfigured, sendPasswordResetEmail };
+async function sendPasswordResetEmail({ to, resetUrl }: { to: string; resetUrl: string }): Promise<SendEmailResult> {
+  const { subject, text, html } = buildPasswordResetContent(resetUrl);
+  return sendViaResend({ to, subject, text, html, logLabel: "password reset email" });
+}
+
+async function sendInvitationEmail({
+  to,
+  inviteUrl,
+  firstName,
+  companyName,
+}: {
+  to: string;
+  inviteUrl: string;
+  firstName: string;
+  companyName: string;
+}): Promise<SendEmailResult> {
+  const { subject, text, html } = buildInvitationContent({ firstName, companyName, inviteUrl });
+  return sendViaResend({ to, subject, text, html, logLabel: "invitation email" });
+}
+
+export const resendAdapter: EmailAdapter = { isConfigured, sendPasswordResetEmail, sendInvitationEmail };

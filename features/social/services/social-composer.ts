@@ -9,7 +9,7 @@
  * system, and a "target" here means an account this post is INTENDED for.
  */
 
-import type { SocialPlatform } from "@/lib/generated/prisma/enums";
+import type { SocialConnectionState, SocialPlatform } from "@/lib/generated/prisma/enums";
 
 export const SOCIAL_PLATFORM_LABELS: Record<SocialPlatform, string> = {
   FACEBOOK: "Facebook",
@@ -250,6 +250,8 @@ export type TargetDraft = {
   caption: string | null;
   /** null inherits the shared link. */
   link: string | null;
+  /** null inherits the shared first comment (which may itself be null — no comment at all). */
+  firstComment: string | null;
 };
 
 /** What a target actually says once inheritance is resolved. */
@@ -259,6 +261,15 @@ export function effectiveCaption(baseCaption: string, target: Pick<TargetDraft, 
 
 export function effectiveLink(baseLink: string, target: Pick<TargetDraft, "link">): string {
   return target.link ?? baseLink;
+}
+
+/**
+ * What a target's first comment actually says once inheritance is resolved.
+ * `baseFirstComment` is nullable (unlike the base caption, which is always
+ * required) — no shared comment and no override both mean "nothing to post".
+ */
+export function effectiveFirstComment(baseFirstComment: string | null, target: Pick<TargetDraft, "firstComment">): string {
+  return (target.firstComment ?? baseFirstComment ?? "").trim();
 }
 
 /**
@@ -348,4 +359,70 @@ export function deriveSocialPostTitle(caption: string, now: Date): string {
   const characters = [...source];
   if (characters.length <= MAX_POST_TITLE_LENGTH) return source;
   return characters.slice(0, MAX_POST_TITLE_LENGTH - 1).join("").trimEnd() + "…";
+}
+
+/* ------------------------------------------------------- Publish Now */
+
+/**
+ * Which accounts a composer should start with selected.
+ *
+ * A reopened post's own saved targets always win — this never overrides an
+ * explicit past choice. For a brand-new post with nothing saved yet, exactly
+ * one CONNECTED account is selected automatically: with only one real choice
+ * available, requiring a click first is friction with no decision behind it.
+ * Two or more connected accounts (or zero) leave the saved/empty selection
+ * alone — guessing among several would be a real guess, not a convenience.
+ */
+export function resolveInitialAccountSelection(
+  accounts: readonly { id: string; connectionState: SocialConnectionState }[],
+  savedAccountIds: readonly string[]
+): string[] {
+  if (savedAccountIds.length > 0) return [...savedAccountIds];
+  const solelyConnected = accounts.filter((account) => account.connectionState === "CONNECTED");
+  return solelyConnected.length === 1 ? [solelyConnected[0].id] : [...savedAccountIds];
+}
+
+export type PublishEligibility = { ok: true; accountId: string } | { ok: false; reason: string };
+
+/**
+ * Whether "Publish Now" may run right now, and why not when it can't.
+ *
+ * NOT tied to which platform tab happens to be open: a selected, genuinely
+ * CONNECTED account is eligible regardless — the active account only matters
+ * to disambiguate when more than one is selected. Content validity uses the
+ * EXACT SAME `validateComposerDraft`/`validateTargets` Save Draft itself
+ * runs, passed in rather than re-imported here, so there is exactly one
+ * definition of "valid enough to save" — Publish Now never gets a looser or
+ * stricter rule than saving already has.
+ */
+export function evaluatePublishEligibility(input: {
+  allAccounts: readonly { connectionState: SocialConnectionState }[];
+  selectedAccounts: readonly { id: string; connectionState: SocialConnectionState }[];
+  activeAccountId: string | null;
+  contentValidation: ComposerValidation;
+  targetsValidation: TargetValidation;
+}): PublishEligibility {
+  const eligibleConnectedAccounts = input.selectedAccounts.filter((account) => account.connectionState === "CONNECTED");
+  const publishTargetAccount =
+    (input.activeAccountId
+      ? (eligibleConnectedAccounts.find((account) => account.id === input.activeAccountId) ?? null)
+      : null) ?? (eligibleConnectedAccounts.length === 1 ? eligibleConnectedAccounts[0] : null);
+
+  if (publishTargetAccount && input.contentValidation.ok && input.targetsValidation.ok) {
+    return { ok: true, accountId: publishTargetAccount.id };
+  }
+
+  /* NEVER silent — every disabled state says why, including "nothing is selected yet". */
+  if (eligibleConnectedAccounts.length === 0) {
+    return {
+      ok: false,
+      reason: input.allAccounts.some((account) => account.connectionState === "CONNECTED")
+        ? "Select an account to publish to."
+        : "Connect an account before publishing.",
+    };
+  }
+  if (!publishTargetAccount) return { ok: false, reason: "Open the platform's tab you want to Publish Now for." };
+  if (!input.contentValidation.ok) return { ok: false, reason: input.contentValidation.error };
+  if (!input.targetsValidation.ok) return { ok: false, reason: input.targetsValidation.error };
+  return { ok: false, reason: "This post can't be published yet." };
 }

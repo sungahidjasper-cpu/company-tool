@@ -90,6 +90,29 @@ export function markdownToHtml(markdown: string): string {
       continue;
     }
 
+    /*
+     * Phase 7 — an article written in the Blog Studio can contain images
+     * placed inside the body. Without this they would publish as the literal
+     * text "![alt](/api/files/…)". The src goes through the same isSafeHref
+     * check a link does, and both attributes are escaped, so nothing here can
+     * break out of the tag it sits in.
+     */
+    if (lines.length === 1) {
+      const imageMatch = lines[0].trim().match(/^!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)$/);
+      if (imageMatch) {
+        const [, alt, src, caption] = imageMatch;
+        if (isSafeHref(src)) {
+          const attr = (value: string) => escapeHtml(value).replace(/"/g, "&quot;");
+          const img = `<img src="${attr(src)}" alt="${attr(alt ?? "")}" />`;
+          html.push(caption ? `<figure>${img}<figcaption>${escapeHtml(caption)}</figcaption></figure>` : img);
+        } else {
+          // Neutralized the same way an unsafe link is: keep the text, drop the src.
+          html.push(`<p>${escapeHtml(alt ?? "")}</p>`);
+        }
+        continue;
+      }
+    }
+
     const isList = lines.every((line) => line.trim().startsWith("- "));
     if (isList) {
       const items = lines.map((line) => `<li>${inlineMarkdownToHtml(line.trim().slice(2))}</li>`).join("");

@@ -191,16 +191,21 @@ export default async function SocialComposerPage({ searchParams }: SocialCompose
                 contentId: saved.content.id,
                 caption: saved.caption,
                 link: saved.link ?? "",
+                firstComment: saved.firstComment ?? "",
                 /*
-                 * caption/link come back exactly as stored: null means this
-                 * account was following the shared caption, a string means it
-                 * had its own. Reopening therefore restores each platform tab
-                 * in the state it was left in.
+                 * caption/link/firstComment come back exactly as stored: null
+                 * means this account was following the shared value, a
+                 * string means it had its own. Reopening therefore restores
+                 * each platform tab in the state it was left in.
                  */
                 targets: saved.targets.map((target) => ({
+                  id: target.id,
                   accountId: target.socialAccountId,
                   caption: target.caption,
                   link: target.link,
+                  firstComment: target.firstComment,
+                  publication: target.publication,
+                  comment: target.comment,
                 })),
                 status: saved.content.status,
                 files,

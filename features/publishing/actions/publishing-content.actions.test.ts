@@ -6,7 +6,7 @@ vi.mock("@/lib/crypto/publishing-credential-crypto", () => ({ decryptCredentialP
 vi.mock("@/features/publishing/services/wordpress-publish.service", () => ({ publishContentToWordPress: vi.fn() }));
 
 type MockPrisma = {
-  content: { findUnique: ReturnType<typeof vi.fn> };
+  content: { findUnique: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
   publishingConnection: { findUnique: ReturnType<typeof vi.fn> };
   publishingJob: { findFirst: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
   publishingAttempt: { count: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> };
@@ -17,7 +17,7 @@ type MockPrisma = {
 
 function createMockPrisma(): MockPrisma {
   const prisma = {
-    content: { findUnique: vi.fn() },
+    content: { findUnique: vi.fn(), update: vi.fn() },
     publishingConnection: { findUnique: vi.fn() },
     publishingJob: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
     publishingAttempt: { count: vi.fn().mockResolvedValue(0), create: vi.fn() },
@@ -58,7 +58,10 @@ function makeContent(overrides: Partial<Record<string, unknown>> = {}) {
     body: "# Body",
     status: "APPROVED",
     deletedAt: null,
-    seoProject: { companyId: COMPANY_A },
+    url: null,
+    companyId: COMPANY_A,
+    seoProjectId: null,
+    seoProject: { companyId: COMPANY_A, domain: "example.com", deletedAt: null },
     ...overrides,
   };
 }
@@ -108,7 +111,7 @@ describe("publishContentAction", () => {
   });
 
   it("rejects when the actor's company differs from the Content's company", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ seoProject: { companyId: COMPANY_B } }));
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } }));
     const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
     expect(result.success).toBe(false);
     expect(mockedPublish).not.toHaveBeenCalled();
@@ -133,7 +136,7 @@ describe("publishContentAction", () => {
     // same-company pair.
     const sharedCompany = "company-shared";
     mockedRequireUser.mockResolvedValue({ id: "u", role: "MANAGER", companyId: sharedCompany });
-    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ seoProject: { companyId: sharedCompany } }));
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ companyId: sharedCompany, seoProject: { companyId: sharedCompany, domain: "example.com", deletedAt: null } }));
     mockedPrisma.publishingConnection.findUnique.mockResolvedValue(makeConnection({ companyId: sharedCompany }));
     mockedPublish.mockResolvedValue({ ok: true, externalId: "1", externalUrl: "https://x/?p=1", externalStatus: "publish" });
     mockedPrisma.contentPublication.create.mockResolvedValue({ externalId: "1", externalUrl: "https://x/?p=1", publishedAt: new Date() });
@@ -378,7 +381,7 @@ describe("retryPublishAction", () => {
   });
 
   it("re-validates ownership on retry even if the original job would have passed", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ seoProject: { companyId: COMPANY_B } }));
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } }));
     mockedPrisma.publishingJob.findFirst.mockResolvedValue({ id: "job-1", status: "FAILED", errorType: "NETWORK_TIMEOUT" });
 
     const result = await retryPublishAction({ contentId: "content-1", connectionId: "connection-1" });
@@ -439,7 +442,7 @@ describe("executeAttempt error handling (post-external-call persistence / Activi
     const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
 
     expect(result.success).toBe(true);
-    if (result.success) expect(result.data).toEqual({ externalId: "1", externalUrl: "https://x/?p=1", publishedAt: expect.any(Date), alreadyPublished: false });
+    if (result.success) expect(result.data).toEqual({ externalId: "1", externalUrl: "https://x/?p=1", publishedAt: expect.any(Date), alreadyPublished: false, urlConflict: false });
     expect(logActivity).toHaveBeenCalledTimes(1);
   });
 
@@ -529,5 +532,219 @@ describe("executeAttempt error handling (post-external-call persistence / Activi
 
     expect(mockedPublish).toHaveBeenCalledTimes(1);
     errorSpy.mockRestore();
+  });
+});
+
+/**
+ * Phase F.3 — the verified publish-to-Content.url path.
+ *
+ * These tests cover the two new guards (project soft-delete, and destination
+ * host vs project domain) and the Content.url write policy. The negative
+ * cases matter most: a rejection must publish nothing AND write nothing.
+ */
+describe("Phase F.3 — destination domain eligibility", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(MANAGER);
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent());
+    mockedPrisma.publishingConnection.findUnique.mockResolvedValue(makeConnection());
+    mockedPrisma.contentPublication.findUnique.mockResolvedValue(null);
+    mockedPrisma.publishingJob.findFirst.mockResolvedValue(null);
+    mockedPrisma.publishingJob.create.mockResolvedValue({ id: "job-1" });
+    mockedDecrypt.mockReturnValue(JSON.stringify({ username: "admin", applicationPassword: "abcd 1234 EFGH 5678" }));
+  });
+
+  it("F1. ALLOWED — a destination on a genuine subdomain of the project domain", async () => {
+    // connection baseUrl https://blog.example.com vs project example.com
+    mockedPublish.mockResolvedValue({ ok: true, externalId: "1", externalUrl: "https://blog.example.com/post", externalStatus: "publish" });
+    mockedPrisma.contentPublication.create.mockResolvedValue({ externalId: "1", externalUrl: "https://blog.example.com/post", publishedAt: new Date() });
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(true);
+  });
+
+  it("F2. BLOCKED — a destination on an unrelated domain never reaches the provider", async () => {
+    mockedPrisma.publishingConnection.findUnique.mockResolvedValue(makeConnection({ baseUrl: "https://anothercompany.com" }));
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(false);
+    expect(mockedPublish).not.toHaveBeenCalled();
+    expect(mockedPrisma.publishingJob.create).not.toHaveBeenCalled();
+  });
+
+  it("F3. BLOCKED — the deceptive-suffix destination evil-example.com", async () => {
+    mockedPrisma.publishingConnection.findUnique.mockResolvedValue(makeConnection({ baseUrl: "https://evil-example.com" }));
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(false);
+    expect(mockedPublish).not.toHaveBeenCalled();
+  });
+
+  it("F4. BLOCKED — example.com.evil.com", async () => {
+    mockedPrisma.publishingConnection.findUnique.mockResolvedValue(makeConnection({ baseUrl: "https://example.com.evil.com" }));
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(false);
+    expect(mockedPublish).not.toHaveBeenCalled();
+  });
+
+  it("F5. BLOCKED — a project domain that cannot be reduced to a hostname fails closed", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ seoProject: { companyId: COMPANY_A, domain: "", deletedAt: null } }));
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(false);
+    expect(mockedPublish).not.toHaveBeenCalled();
+  });
+});
+
+describe("Phase F.3 — soft-deleted SEO project", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(MANAGER);
+    mockedPrisma.publishingConnection.findUnique.mockResolvedValue(makeConnection());
+    mockedPrisma.contentPublication.findUnique.mockResolvedValue(null);
+    mockedPrisma.publishingJob.findFirst.mockResolvedValue(null);
+    mockedPrisma.publishingJob.create.mockResolvedValue({ id: "job-1" });
+    mockedDecrypt.mockReturnValue(JSON.stringify({ username: "admin", applicationPassword: "abcd 1234 EFGH 5678" }));
+  });
+
+  it("F6. BLOCKED — content under a trashed project is never published", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(
+      makeContent({ seoProject: { companyId: COMPANY_A, domain: "example.com", deletedAt: new Date("2026-08-12") } })
+    );
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(false);
+    expect(mockedPublish).not.toHaveBeenCalled();
+    expect(mockedPrisma.publishingJob.create).not.toHaveBeenCalled();
+  });
+
+  it("F7. BLOCKED — a trashed project also blocks retry", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(
+      makeContent({ seoProject: { companyId: COMPANY_A, domain: "example.com", deletedAt: new Date("2026-08-12") } })
+    );
+    const result = await retryPublishAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(false);
+    expect(mockedPublish).not.toHaveBeenCalled();
+  });
+
+  it("F8. existing protections still hold — soft-deleted Content is still blocked", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ deletedAt: new Date("2026-08-12") }));
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(false);
+    expect(mockedPublish).not.toHaveBeenCalled();
+  });
+
+  it("F9. existing protections still hold — a revoked connection is still blocked", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent());
+    mockedPrisma.publishingConnection.findUnique.mockResolvedValue(makeConnection({ status: "REVOKED" }));
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(false);
+    expect(mockedPublish).not.toHaveBeenCalled();
+  });
+});
+
+describe("Phase F.3 — Content.url write policy", () => {
+  const VERIFIED_URL = "https://blog.example.com/my-post";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedRequireUser.mockResolvedValue(MANAGER);
+    mockedPrisma.publishingConnection.findUnique.mockResolvedValue(makeConnection());
+    mockedPrisma.contentPublication.findUnique.mockResolvedValue(null);
+    mockedPrisma.publishingJob.findFirst.mockResolvedValue(null);
+    mockedPrisma.publishingJob.create.mockResolvedValue({ id: "job-1" });
+    mockedDecrypt.mockReturnValue(JSON.stringify({ username: "admin", applicationPassword: "abcd 1234 EFGH 5678" }));
+    mockedPublish.mockResolvedValue({ ok: true, externalId: "1", externalUrl: VERIFIED_URL, externalStatus: "publish" });
+    mockedPrisma.contentPublication.create.mockResolvedValue({ externalId: "1", externalUrl: VERIFIED_URL, publishedAt: new Date() });
+  });
+
+  it("F10. CASE A — Content.url is empty, so the verified URL is written", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ url: null }));
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(true);
+    expect(mockedPrisma.content.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "content-1" }, data: { url: VERIFIED_URL } })
+    );
+  });
+
+  it("F11. CASE A — an empty-string URL counts as empty", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ url: "   " }));
+    await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(mockedPrisma.content.update).toHaveBeenCalled();
+  });
+
+  it("F12. CASE B — Content.url already equals the verified URL, so nothing is written", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ url: VERIFIED_URL }));
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(true);
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+  });
+
+  it("F13. CASE C — a DIFFERENT existing URL is preserved, never overwritten", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ url: "https://www.example.com/original-seo-url" }));
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(true);
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+  });
+
+  it("F14. CASE C — the conflict is reported on the result and in the activity trail", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ url: "https://www.example.com/original-seo-url" }));
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.urlConflict).toBe(true);
+    expect(logActivity).toHaveBeenCalledWith(expect.objectContaining({ action: expect.stringMatching(/url_conflict/) }));
+  });
+
+  it("F15. no conflict is reported when the URL simply matches", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ url: VERIFIED_URL }));
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    if (result.success) expect(result.data.urlConflict).toBe(false);
+    expect(logActivity).not.toHaveBeenCalledWith(expect.objectContaining({ action: expect.stringMatching(/url_conflict/) }));
+  });
+
+  it("F16. CASE F — a returned URL on the WRONG domain is never recorded, though the publication still stands", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ url: null }));
+    mockedPublish.mockResolvedValue({ ok: true, externalId: "1", externalUrl: "https://evil.com/post", externalStatus: "publish" });
+    mockedPrisma.contentPublication.create.mockResolvedValue({ externalId: "1", externalUrl: "https://evil.com/post", publishedAt: new Date() });
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(true);
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+  });
+
+  it("F17. CASE F — a malformed or non-https returned URL is never recorded", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ url: null }));
+    mockedPublish.mockResolvedValue({ ok: true, externalId: "1", externalUrl: "not a url", externalStatus: "publish" });
+    mockedPrisma.contentPublication.create.mockResolvedValue({ externalId: "1", externalUrl: "not a url", publishedAt: new Date() });
+    await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+  });
+
+  it("F18. CASE D — a failed publish never writes Content.url", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ url: null }));
+    mockedPublish.mockResolvedValue({ ok: false, errorType: "AUTHENTICATION_FAILED", message: "nope" });
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+  });
+
+  it("F19. CASE E — an AMBIGUOUS_RESPONSE never writes Content.url and creates no publication", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ url: null }));
+    mockedPublish.mockResolvedValue({ ok: false, errorType: "AMBIGUOUS_RESPONSE", message: "unconfirmed" });
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
+    expect(mockedPrisma.contentPublication.create).not.toHaveBeenCalled();
+  });
+
+  it("F20. CONCURRENCY — the URL decision is made under the Content row lock inside the write transaction", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ url: null }));
+    await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    // The pre-flight lock plus a second lock inside the success transaction.
+    expect(mockedPrisma.$queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it("F21. the already-published path is idempotent and reports no conflict", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue(makeContent({ url: VERIFIED_URL }));
+    mockedPrisma.contentPublication.findUnique.mockResolvedValue({ externalId: "1", externalUrl: VERIFIED_URL, publishedAt: new Date() });
+    const result = await publishContentAction({ contentId: "content-1", connectionId: "connection-1" });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.alreadyPublished).toBe(true);
+    expect(mockedPublish).not.toHaveBeenCalled();
+    expect(mockedPrisma.content.update).not.toHaveBeenCalled();
   });
 });

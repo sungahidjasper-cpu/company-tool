@@ -154,12 +154,19 @@ describe("the authorization URL", () => {
     expect(built).not.toContain("client_secret");
   });
 
-  it("10. asks for the read permissions only — never permission to publish", () => {
+  it("10. asks for exactly the read + publish + first-comment permissions authorized — nothing wider", () => {
     const url = new URL(metaFacebookProvider.buildAuthorizationUrl({ state: "s".repeat(40), redirectUri: REDIRECT_URI }));
     const scopes = (url.searchParams.get("scope") ?? "").split(",");
-    expect(scopes).toEqual(["pages_show_list", "pages_read_engagement"]);
-    /* Publishing is out of scope for this phase, so the permission is not requested. */
-    expect(scopes).not.toContain("pages_manage_posts");
+    expect(scopes).toEqual(["pages_show_list", "pages_read_engagement", "pages_manage_posts", "pages_manage_engagement"]);
+    /*
+     * Phase 10A added pages_manage_posts because that phase's own task was
+     * real Facebook publishing, and Meta's permission reference names its
+     * only dependencies as the two scopes already requested above.
+     * First Comment added pages_manage_engagement — Meta's own comments
+     * reference documents it as sufficient for POSTING a comment; nothing
+     * wider (never pages_read_user_content, never business_management or any
+     * ads permission) was added.
+     */
   });
 
   it("11. asks for nothing to do with advertising", () => {

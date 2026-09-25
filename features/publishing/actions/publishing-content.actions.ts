@@ -11,6 +11,7 @@ import { prisma } from "@/lib/prisma";
 import { publishContentToWordPress } from "@/features/publishing/services/wordpress-publish.service";
 import { isRetryableErrorType } from "@/features/publishing/services/publishing-errors";
 import { isContentStatusPublishable } from "@/features/publishing/services/content-publication-state.service";
+import { isHostWithinProjectDomain, isRecordablePublicUrl } from "@/features/publishing/services/publishing-domain.service";
 
 /**
  * Phase 24 Stage 2C — the publishing action layer. Owns everything
@@ -41,20 +42,39 @@ export type PublicationSummary = {
   externalUrl: string | null;
   publishedAt: Date;
   alreadyPublished: boolean;
+  /**
+   * Phase F.3 — true when this publication's verified URL differs from a URL
+   * the Content already had. The existing value is always preserved; this
+   * only reports that a person should look at it.
+   */
+  urlConflict: boolean;
 };
 
 async function getPublishableContent(contentId: string, companyId: string) {
   const content = await prisma.content.findUnique({
     where: { id: contentId },
-    include: { seoProject: { select: { companyId: true } } },
+    // Phase F.3 — domain and deletedAt are additionally selected: the first
+    // decides whether a destination may publish this project's content at
+    // all, the second closes the soft-deleted-project gap below.
+    include: { seoProject: { select: { companyId: true, domain: true, deletedAt: true } } },
   });
-  if (!content || content.seoProject.companyId !== companyId) return null;
+  if (!content || content.companyId !== companyId) return null;
   return content;
 }
 
 function checkContentEligibility(content: Awaited<ReturnType<typeof getPublishableContent>>): string | null {
   if (!content) return "Content not found.";
   if (content.deletedAt) return "This content has been archived and cannot be published.";
+  // Phase F.3 — a trashed project is not a publishable project, the same rule
+  // the connected AI tools already enforce.
+  /*
+   * Publishing is domain-scoped: the destination is checked against the SEO
+   * project's own domain. Content with no project has no domain to check
+   * against, so it is not publishable — refused in words rather than by
+   * inventing a domain for it.
+   */
+  if (!content.seoProject) return "This content has no SEO project, so there is no website to publish it to. Move it into an SEO project first.";
+  if (content.seoProject.deletedAt) return "This content's SEO project has been archived and cannot be published.";
   if (!content.body || content.body.trim().length === 0) return "This content has no article body to publish.";
   if (!isContentStatusPublishable(content.status)) {
     return "This content must be approved before it can be published.";
@@ -82,6 +102,62 @@ function checkConnectionEligibility(connection: Awaited<ReturnType<typeof getEli
 /** Defensive, belt-and-suspenders only — wordpress-publish.service.ts's messages are always static per-type strings and never interpolate raw request/response/credential data, so this should never actually trigger. */
 function sanitizeErrorMessage(message: string): string {
   return message.replace(/Basic\s+[A-Za-z0-9+/=]+/gi, "Basic [redacted]").slice(0, 500);
+}
+
+/**
+ * Phase F.3 — the fourth leg of destination eligibility: the connection must
+ * publish to the project's OWN site.
+ *
+ * A PublishingConnection belongs to a Company, not to a project, so company
+ * ownership alone allows a project's content to be published to any site the
+ * company has connected. That was tolerable while nothing was recorded back
+ * onto the Content; once a published URL becomes Content.url it would let one
+ * project's link inventory fill with another domain's URLs. Fails closed when
+ * either value cannot be reduced to a hostname.
+ */
+function checkDestinationDomain(content: ContentRow, connection: ConnectionRow): string | null {
+  if (!content.seoProject || !isHostWithinProjectDomain(connection.baseUrl, content.seoProject.domain)) {
+    return "This destination does not belong to this SEO project's website.";
+  }
+  return null;
+}
+
+/** What the Content.url write decided, for reporting after the transaction commits. */
+type UrlOutcome = "populated" | "unchanged_match" | "conflict" | "not_recordable";
+
+/**
+ * Decides and applies the Content.url write, INSIDE the caller's transaction
+ * and under a fresh `SELECT ... FOR UPDATE` on the Content row.
+ *
+ * The re-lock matters: the pre-flight lock is released when its own
+ * transaction commits, so two publishes to two different connections for the
+ * same Content could otherwise both read a null url and both write. Reading
+ * the current url under the lock, in the same transaction that persists the
+ * publication, makes the decision serialized and atomic with it.
+ *
+ * Never overwrites an existing, different URL — a live indexed URL is not
+ * something an automated process should replace silently.
+ */
+async function associateVerifiedUrl(
+  tx: Pick<typeof prisma, "$queryRaw" | "content">,
+  content: ContentRow,
+  verifiedUrl: string | null
+): Promise<UrlOutcome> {
+  if (!content.seoProject || !isRecordablePublicUrl(verifiedUrl, content.seoProject.domain)) {
+    return "not_recordable";
+  }
+  const url = (verifiedUrl as string).trim();
+
+  await tx.$queryRaw`SELECT id FROM "Content" WHERE id = ${content.id} FOR UPDATE`;
+  const current = await tx.content.findUnique({ where: { id: content.id }, select: { url: true } });
+  const existing = current?.url?.trim() ?? "";
+
+  if (existing === "") {
+    await tx.content.update({ where: { id: content.id }, data: { url } });
+    return "populated";
+  }
+  if (existing === url) return "unchanged_match";
+  return "conflict";
 }
 
 async function nextAttemptNumber(jobId: string): Promise<number> {
@@ -147,14 +223,14 @@ async function executeAttempt(
     // existing Stage 3 startup reaper resolves it to FAILED/
     // AMBIGUOUS_RESPONSE on the next restart, the same safe, non-retryable
     // outcome as any other unconfirmed external result.
-    let publication;
+    let persisted;
     try {
-      publication = await prisma.$transaction(async (tx) => {
+      persisted = await prisma.$transaction(async (tx) => {
         await tx.publishingAttempt.create({
           data: { jobId, attemptNumber, outcome: "SUCCESS", httpStatus: 201, startedAt, finishedAt },
         });
         await tx.publishingJob.update({ where: { id: jobId }, data: { status: "SUCCEEDED", errorType: null, errorMessage: null } });
-        return tx.contentPublication.create({
+        const created = await tx.contentPublication.create({
           data: {
             companyId: actor.companyId,
             contentId: content.id,
@@ -163,6 +239,13 @@ async function executeAttempt(
             externalUrl: result.externalUrl,
           },
         });
+
+        // Phase F.3 — only now, with the publication persisted in this same
+        // transaction, may the verified URL be associated with the Content.
+        // A URL that fails validation leaves Content.url untouched; the
+        // publication itself still stands, because it really did happen.
+        const urlOutcome = await associateVerifiedUrl(tx, content, result.externalUrl);
+        return { publication: created, urlOutcome };
       });
     } catch (err) {
       console.error("Publishing: failed to persist a confirmed successful WordPress publish", {
@@ -174,6 +257,8 @@ async function executeAttempt(
         "The content was published, but Compass could not record the result. This will be reviewed automatically."
       );
     }
+
+    const { publication, urlOutcome } = persisted;
 
     // Best-effort only — Activity is an audit trail, not the source of
     // truth for the publish result. A failure here must never change what
@@ -200,11 +285,38 @@ async function executeAttempt(
       });
     }
 
+    // Phase F.3 — a URL conflict is reported, never resolved automatically.
+    // Best-effort like the activity log above: the publication and the
+    // preserved URL are already durably correct either way.
+    if (urlOutcome === "conflict") {
+      try {
+        await logActivity({
+          actorId: actor.id,
+          companyId: actor.companyId,
+          contentId: content.id,
+          action: "content_publication.url_conflict",
+          metadata: {
+            connectionId: connection.id,
+            publishingJobId: jobId,
+            existingContentUrl: content.url,
+            publishedUrl: publication.externalUrl,
+          },
+        });
+      } catch (err) {
+        console.error("Publishing: failed to record the activity log for a Content URL conflict", {
+          jobId,
+          connectionId: connection.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     return actionSuccess({
       externalId: publication.externalId,
       externalUrl: publication.externalUrl,
       publishedAt: publication.publishedAt,
       alreadyPublished: false,
+      urlConflict: urlOutcome === "conflict",
     });
   }
 
@@ -302,9 +414,12 @@ export async function publishContentAction(input: PublishInput): Promise<ActionR
   // and the connection's company must be the SAME company, not merely each
   // independently equal to the actor's company (which the two lookups
   // above already enforce).
-  if (content.seoProject.companyId !== connection.companyId) {
+  if (content.companyId !== connection.companyId) {
     return actionError("This content and connection do not belong to the same company.");
   }
+
+  const destinationError = checkDestinationDomain(content, connection);
+  if (destinationError) return actionError(destinationError);
 
   // Idempotency + concurrency: a SELECT ... FOR UPDATE row lock on the
   // Content row — the same idiom lib/jobs/job-table.ts already uses for
@@ -341,7 +456,7 @@ export async function publishContentAction(input: PublishInput): Promise<ActionR
 
   if (preflight.kind === "already_published") {
     const p = preflight.publication;
-    return actionSuccess({ externalId: p.externalId, externalUrl: p.externalUrl, publishedAt: p.publishedAt, alreadyPublished: true });
+    return actionSuccess({ externalId: p.externalId, externalUrl: p.externalUrl, publishedAt: p.publishedAt, alreadyPublished: true, urlConflict: false });
   }
   if (preflight.kind === "already_attempted") {
     return actionError("A publish attempt already exists for this content and connection. Use retry instead.");
@@ -382,9 +497,12 @@ export async function retryPublishAction(input: PublishInput): Promise<ActionRes
 
   if (!content || !connection) return actionError("Content not found.");
 
-  if (content.seoProject.companyId !== connection.companyId) {
+  if (content.companyId !== connection.companyId) {
     return actionError("This content and connection do not belong to the same company.");
   }
+
+  const destinationError = checkDestinationDomain(content, connection);
+  if (destinationError) return actionError(destinationError);
 
   const preflight = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "Content" WHERE id = ${contentId} FOR UPDATE`;
@@ -425,7 +543,7 @@ export async function retryPublishAction(input: PublishInput): Promise<ActionRes
   switch (preflight.kind) {
     case "already_published": {
       const p = preflight.publication;
-      return actionSuccess({ externalId: p.externalId, externalUrl: p.externalUrl, publishedAt: p.publishedAt, alreadyPublished: true });
+      return actionSuccess({ externalId: p.externalId, externalUrl: p.externalUrl, publishedAt: p.publishedAt, alreadyPublished: true, urlConflict: false });
     }
     case "no_job":
       return actionError("No publish attempt exists for this content and connection yet. Publish it first.");

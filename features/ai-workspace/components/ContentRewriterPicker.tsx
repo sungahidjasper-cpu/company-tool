@@ -27,6 +27,14 @@ type ContentOption = { id: string; title: string; url: string | null; wordCount:
 type ContentRewriterPickerProps = {
   seoProjectOptions: SeoProjectOption[];
   contentByProject: Record<string, ContentOption[]>;
+  /**
+   * Phase C4.2 — optional preselection handed over from a Content record, so
+   * the user does not have to find the same page again. Already resolved
+   * server-side against this route own company-scoped, body-bearing list; the
+   * generate and apply actions still re-verify ownership independently.
+   */
+  initialSeoProjectId?: string;
+  initialSelectedContentId?: string | null;
 };
 
 /**
@@ -60,13 +68,18 @@ export const SELECT_PROJECT_HINT = "Select an SEO project before generating.";
  * component never re-derives or second-guesses that eligibility, and never
  * trusts anything about a page beyond what the server already vetted.
  */
-export default function ContentRewriterPicker({ seoProjectOptions, contentByProject }: ContentRewriterPickerProps) {
+export default function ContentRewriterPicker({
+  seoProjectOptions,
+  contentByProject,
+  initialSeoProjectId = "",
+  initialSelectedContentId = null,
+}: ContentRewriterPickerProps) {
   // Phase B B5.1 — deliberately unselected. Auto-selecting the first project
   // let a user generate against a project they never consciously chose; the
   // server still re-derives and enforces ownership regardless of this value.
-  const [seoProjectId, setSeoProjectId] = useState("");
+  const [seoProjectId, setSeoProjectId] = useState(initialSeoProjectId);
   const contentOptions = useMemo(() => contentByProject[seoProjectId] ?? [], [contentByProject, seoProjectId]);
-  const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
+  const [selectedContentId, setSelectedContentId] = useState<string | null>(initialSelectedContentId);
 
   const [jobResult, setJobResult] = useState<ContentRewriterJobResult | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);

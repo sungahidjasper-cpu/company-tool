@@ -29,15 +29,20 @@ export async function proxy(request: NextRequest) {
   const isProtectedRoute = PROTECTED_PREFIXES.some((prefix) =>
     pathname.startsWith(prefix)
   );
-  const isLoginRoute = pathname === "/login";
 
   if (isProtectedRoute && !token) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  if (isLoginRoute && token) {
-    return NextResponse.redirect(new URL("/dashboard", request.url));
-  }
+  // Deliberately does NOT redirect an already-authenticated visitor away from
+  // /login here. getToken() only decrypts the JWT — it can't run the jwt
+  // callback's live securityVersion check (lib/auth.ts's getCurrentUser()
+  // does), so a stale-but-still-decryptable cookie would make this redirect
+  // fire even when requireUser() correctly considers the session invalid,
+  // bouncing /login -> /dashboard -> /login forever. /login's own page
+  // component already performs the equivalent (DB-validated) redirect via
+  // getCurrentUser(), so this middleware-level shortcut is redundant for the
+  // valid-session case and actively harmful for the stale-cookie case.
 
   const response = NextResponse.next();
   if (isProtectedRoute) {

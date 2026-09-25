@@ -42,7 +42,7 @@ const MANAGER = { id: "user-manager", role: "MANAGER", companyId: COMPANY_A };
 const EMPLOYEE = { id: "user-employee", role: "EMPLOYEE", companyId: COMPANY_A };
 
 const SEO_PROJECT = { id: "seo-1", companyId: COMPANY_A, name: "Acme SEO", domain: "acme.test" };
-const CONTENT_ROW = { id: "content-1", seoProjectId: "seo-1", deletedAt: null, seoProject: { companyId: COMPANY_A } };
+const CONTENT_ROW = { id: "content-1", seoProjectId: "seo-1", deletedAt: null, companyId: COMPANY_A, seoProject: { companyId: COMPANY_A } };
 
 const VALID_INPUT = { seoProjectId: "seo-1" };
 
@@ -86,7 +86,7 @@ describe("startSchemaMarkupGenerationAction", () => {
   });
 
   it("5. rejects when the supplied contentId belongs to another company", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue({ id: "content-1", seoProject: { companyId: COMPANY_B } });
+    mockedPrisma.content.findUnique.mockResolvedValue({ id: "content-1", companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } });
     const result = await startSchemaMarkupGenerationAction({ ...VALID_INPUT, contentId: "content-1" });
     expect(result.success).toBe(false);
     if (!result.success) expect(result.message).toMatch(/not found/i);
@@ -135,9 +135,94 @@ describe("startSchemaMarkupGenerationAction", () => {
   });
 
   it("10. rejects a contentId belonging to another company even when its seoProjectId matches", async () => {
-    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, seoProject: { companyId: COMPANY_B } });
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } });
     const result = await startSchemaMarkupGenerationAction({ ...VALID_INPUT, contentId: "content-1" });
     expect(result.success).toBe(false);
     expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * C4.3 follow-up — the server-side lifecycle boundary.
+ *
+ * The route only lists live projects and live Content, and the C4 contextual
+ * action hides itself for a trashed record, but neither is the security
+ * boundary. These tests drive the action directly, the way a crafted request
+ * would, and pin that a soft-deleted project or Content is rejected there.
+ */
+describe("startSchemaMarkupGenerationAction — soft-deleted records are rejected server-side", () => {
+  const TRASHED = new Date("2026-08-12T00:00:00.000Z");
+
+  it("11. ALLOWED — an active owned project with active owned Content still works (the fix must not over-reject)", async () => {
+    const result = await startSchemaMarkupGenerationAction({ ...VALID_INPUT, contentId: "content-1" });
+    expect(result.success).toBe(true);
+    expect(mockedCreateAiGenerationJob).toHaveBeenCalled();
+  });
+
+  it("12. ALLOWED — a project row that simply omits deletedAt is treated as live, never wrongly rejected", async () => {
+    // SEO_PROJECT deliberately has no deletedAt key at all; a `!== null`
+    // check would reject it, which is why the truthy form is used.
+    expect("deletedAt" in SEO_PROJECT).toBe(false);
+    const result = await startSchemaMarkupGenerationAction(VALID_INPUT);
+    expect(result.success).toBe(true);
+  });
+
+  it("13. REJECTED — a soft-deleted SEO project, even though it belongs to the actor's own company", async () => {
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, deletedAt: TRASHED });
+    const result = await startSchemaMarkupGenerationAction(VALID_INPUT);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/not found/i);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("14. REJECTED — a soft-deleted SEO project is refused even when no contentId is supplied at all", async () => {
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, deletedAt: TRASHED });
+    const result = await startSchemaMarkupGenerationAction({ seoProjectId: "seo-1" });
+    expect(result.success).toBe(false);
+    expect(mockedRunAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("15. REJECTED — soft-deleted Content under a live, owned project", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, deletedAt: TRASHED });
+    const result = await startSchemaMarkupGenerationAction({ ...VALID_INPUT, contentId: "content-1" });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.message).toMatch(/not found/i);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("16. REJECTED — a FOREIGN project (another company) is still refused, unchanged by the lifecycle checks", async () => {
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, companyId: COMPANY_B });
+    const result = await startSchemaMarkupGenerationAction(VALID_INPUT);
+    expect(result.success).toBe(false);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("17. REJECTED — FOREIGN Content (another company) is still refused", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, companyId: COMPANY_B, seoProject: { companyId: COMPANY_B } });
+    const result = await startSchemaMarkupGenerationAction({ ...VALID_INPUT, contentId: "content-1" });
+    expect(result.success).toBe(false);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("18. REJECTED — PROJECT MISMATCH: Content of the same company but a different project", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, seoProjectId: "seo-OTHER" });
+    const result = await startSchemaMarkupGenerationAction({ ...VALID_INPUT, contentId: "content-1" });
+    expect(result.success).toBe(false);
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("19. a rejected request never reaches the generator — no job row, no runner invocation, so no AI spend", async () => {
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, deletedAt: TRASHED });
+    await startSchemaMarkupGenerationAction({ ...VALID_INPUT, contentId: "content-1" });
+    expect(mockedCreateAiGenerationJob).not.toHaveBeenCalled();
+    expect(mockedRunAiGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("20. a trashed project and trashed Content together are refused at the PROJECT check, before Content is ever read", async () => {
+    mockedPrisma.sEOProject.findUnique.mockResolvedValue({ ...SEO_PROJECT, deletedAt: TRASHED });
+    mockedPrisma.content.findUnique.mockResolvedValue({ ...CONTENT_ROW, deletedAt: TRASHED });
+    const result = await startSchemaMarkupGenerationAction({ ...VALID_INPUT, contentId: "content-1" });
+    expect(result.success).toBe(false);
+    expect(mockedPrisma.content.findUnique).not.toHaveBeenCalled();
   });
 });

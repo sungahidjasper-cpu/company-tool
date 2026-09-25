@@ -418,6 +418,8 @@ async function main() {
       update: {},
       create: {
         id: IDS.contentOne,
+        companyId: seoProject.companyId,
+        clientId: seoProject.clientId,
         seoProjectId: seoProject.id,
         authorId: employeeOne.id,
         title: "Emergency Plumbing FAQ",
@@ -431,6 +433,8 @@ async function main() {
       update: {},
       create: {
         id: IDS.contentTwo,
+        companyId: seoProject.companyId,
+        clientId: seoProject.clientId,
         seoProjectId: seoProject.id,
         authorId: employeeOne.id,
         title: "How Much Does a Water Heater Installation Cost?",
